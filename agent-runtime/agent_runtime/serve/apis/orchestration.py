@@ -334,7 +334,7 @@ def _fallback_terminal_done(execution_id: str) -> str:
         "data": {},
         "index": 0,
         "executionId": execution_id,
-        "createdTime": int(time.time()),
+        "createdTime": int(time.time() * 1000),
     }
     return f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
 
