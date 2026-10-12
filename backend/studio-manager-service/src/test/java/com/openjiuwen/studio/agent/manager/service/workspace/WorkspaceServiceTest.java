@@ -269,6 +269,24 @@ class WorkspaceServiceTest {
     }
 
     @Test
+    void testQueryWorkspace_UserWithoutJoinedWorkspace_ReturnsEmpty() {
+        try (MockedStatic<RequestContextUtils> ctx = mockStatic(RequestContextUtils.class)) {
+            ctx.when(RequestContextUtils::getRequestUserId).thenReturn("uid-1");
+            when(workspaceMemberService.queryAllWorkSpaceInfoByIamUserId("uid-1"))
+                .thenReturn(Collections.emptyList());
+
+            GetWorkspaceListRsp result = workspaceService.queryWorkspace("p1", new QueryWorkspaceQo());
+
+            assertNotNull(result);
+            assertEquals(0, result.getCount());
+            assertNotNull(result.getWorkspaceList());
+            assertTrue(result.getWorkspaceList().isEmpty());
+            verify(workspaceMapper, never()).getWorkspaceByProjectIdAndWorkspaceIds(
+                eq("p1"), anyList(), any());
+        }
+    }
+
+    @Test
     void testValidateIcon_NullIcon() {
         assertDoesNotThrow(() -> workspaceService.validateIcon(null));
     }

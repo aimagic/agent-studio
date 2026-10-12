@@ -304,6 +304,12 @@ public class WorkspaceService implements IWorkspaceService {
 
         List<String> userJoinedWorkspaceIdList = new ArrayList<>(workSpaceMemberMap.keySet());
 
+        // A newly initialized user has no workspace membership yet. Returning here also prevents
+        // an empty id list from being rendered as invalid "IN ()" SQL.
+        if (userJoinedWorkspaceIdList.isEmpty()) {
+            return new GetWorkspaceListRsp().setCount(0).setWorkspaceList(userJoinedWorkspaceInfoList);
+        }
+
         List<WorkspaceEntity> workspaceEntityList = workspaceMapper.getWorkspaceByProjectIdAndWorkspaceIds(projectId,
             userJoinedWorkspaceIdList, queryWorkspaceQo.getType());
 
