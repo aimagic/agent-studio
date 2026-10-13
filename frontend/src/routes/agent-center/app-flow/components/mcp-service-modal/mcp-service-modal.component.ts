@@ -139,6 +139,9 @@ export class MCPServiceModalComponent extends ModalBaseComponent implements OnIn
 
   public mcpInputParams = null;
 
+  /** 渲染用入参（过滤掉引用了环境变量的入参），与 mcpInputParams 共享同一对象引用 */
+  public displayMcpInputParams: IWorkflowField[] = [];
+
   constructor(
     private readonly i18n: I18NextEagerPipe,
     protected override nodeServ: NodeService,
@@ -320,8 +323,14 @@ export class MCPServiceModalComponent extends ModalBaseComponent implements OnIn
     }
     this.inputParamsFormatter();
     this.mcpInputParams = mapTreeAddKeyAndChildIndex(cloneDeep(this.inputParams.filter(item => item.location === 'Input')), 0);
+    this.displayMcpInputParams = this.mcpInputParams.filter(item => !this.isEnvRefParam(item));
     this.outputParams = resSchemaStrMCPField(item.output);
     this.onSave();
+  }
+
+  /** 是否为引用了环境变量的入参，需要在面板隐藏 */
+  public isEnvRefParam(param: IWorkflowField): boolean {
+    return NodeUtils.isEnvVarRefField(param);
   }
 
   public onRefUpdate(info: IParamRef[]) {
@@ -334,6 +343,7 @@ export class MCPServiceModalComponent extends ModalBaseComponent implements OnIn
     }
     this.inputParamsFormatter();
     this.mcpInputParams = mapTreeAddKeyAndChildIndex(cloneDeep(this.inputParams.filter(item => item.location === 'Input')), 0);
+    this.displayMcpInputParams = this.mcpInputParams.filter(item => !this.isEnvRefParam(item));
     this.isInit = false;
   }
 
