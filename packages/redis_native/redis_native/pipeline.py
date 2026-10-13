@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from redis_native.converters import (
@@ -32,6 +33,16 @@ class NativePipeline:
     def __init__(self, pipeline: Any, *, operation: str = "pipeline.execute") -> None:
         self._pipe = pipeline
         self._operation = operation
+        # redis-py 支持 execute(raise_on_error=False)（命令级错误以原始对象返回结果列表）；
+        # 部分替身客户端（fakeredis FakePipeline 等）不支持该参数，回退 raise 路径
+        # （替身错误消息含原文，translate_error 子串识别可覆盖）。构造期探测一次；
+        # execute 尚未就绪（测试替身构造后才注入）时同样回退 raise 路径。
+        execute_method = getattr(pipeline, "execute", None)
+        try:
+            params = inspect.signature(execute_method).parameters if execute_method else {}
+        except (TypeError, ValueError):
+            params = {}
+        self._collect_errors = "raise_on_error" in params
 
     # ---- 入队（返回 self 支持链式）----
 
@@ -118,9 +129,24 @@ class NativePipeline:
 
     async def execute(self) -> list[Any]:
         try:
-            return await self._pipe.execute()
+            if self._collect_errors:
+                # 命令级错误以「原始异常对象」形式出现在结果列表中（redis-py 各版本一致）。
+                # 不走 raise 路径的原因：redis-py 6.4.0 的 raise 消息模板存在格式化缺陷
+                # （输出字面量 "{exception.args}"，原始错误文本丢失，WRONGTYPE 等分类
+                # 无从识别），结果列表中的对象不受该缺陷影响。
+                results = await self._pipe.execute(raise_on_error=False)
+            else:
+                # 替身/不支持 raise_on_error 的客户端：走 raise 路径（原行为）
+                return await self._pipe.execute()
         except REDIS_PY_ERRORS as exc:
+            # 连接/协议层错误（非命令级）：整体失败，翻译上抛
             raise translate_error(exc, operation=self._operation) from exc
+        # 命令级错误：翻译第一个错误上抛（已执行命令生效——Redis 无事务回滚，
+        # 与 raise 路径执行范围一致：非事务命令缓冲一次性发送，事务 EXEC 全执行）。
+        for item in results:
+            if isinstance(item, BaseException):
+                raise translate_error(item, operation=self._operation) from item
+        return results
 
     async def aclose(self) -> None:
         await self._pipe.aclose()
