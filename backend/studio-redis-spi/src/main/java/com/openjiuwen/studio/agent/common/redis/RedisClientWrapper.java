@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import com.alibaba.fastjson2.JSONException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.exc.StreamConstraintsException;
+import com.openjiuwen.studio.agent.common.redis.exception.RedisAccessException;
 import com.openjiuwen.studio.agent.common.redis.exception.RedisExceptionClassifier;
 
 import org.springframework.util.function.ThrowingSupplier;
@@ -56,9 +57,11 @@ public class RedisClientWrapper implements RedisClient {
                 log.warn("Redis data decode failed, method: get, key: {}, degraded to null", key, e);
                 return null;
             }
-            // Redis 连接/超时等故障：服务降级返回 null
+            // Redis 连接/超时等故障：服务降级返回 null；先经 classify 翻译再取类别，
+            // 使原生实现（Redisson 等）的底层异常也能正确分类（非 J4 族时 categoryOf 恒为 ACCESS）
+            RedisAccessException translated = RedisExceptionClassifier.classify(e, "get", key);
             log.error("redis operation failed, method: get, category: {}",
-                RedisExceptionClassifier.categoryOf(e), e);
+                RedisExceptionClassifier.categoryOf(translated), e);
             return null;
         }
     }
@@ -140,7 +143,7 @@ public class RedisClientWrapper implements RedisClient {
         try {
             result = operation.get();
         } catch (Exception e) {
-            log.error("redis operation failed, method: {}, category: {}", methodName, RedisExceptionClassifier.categoryOf(e), e);
+            logCategoryError(e, methodName, null);
         }
         redisCost(startTime, methodName);
 
@@ -152,9 +155,16 @@ public class RedisClientWrapper implements RedisClient {
         try {
             operation.run();
         } catch (Exception e) {
-            log.error("redis operation failed, method: {}, category: {}", methodName, RedisExceptionClassifier.categoryOf(e), e);
+            logCategoryError(e, methodName, null);
         }
         redisCost(startTime, methodName);
+    }
+
+    /** 统一分类错误日志：先经 classify 翻译（字符串匹配覆盖任意实现的底层异常）再取短类别。 */
+    private void logCategoryError(Exception e, String methodName, String key) {
+        RedisAccessException translated = RedisExceptionClassifier.classify(e, methodName, key);
+        log.error("redis operation failed, method: {}, category: {}",
+            methodName, RedisExceptionClassifier.categoryOf(translated), e);
     }
 
     private long getStartTime() {
@@ -234,6 +244,6 @@ public class RedisClientWrapper implements RedisClient {
 
     @Override
     public void setAndKeepTtl(String key, String value, Duration initialDuration) {
-        run(() -> redisClient.setAndKeepTtl(key, value, initialDuration), "set");
+        run(() -> redisClient.setAndKeepTtl(key, value, initialDuration), "setAndKeepTtl");
     }
 }

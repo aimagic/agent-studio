@@ -104,33 +104,43 @@ public class RedisProviderContext {
     }
 
     /**
-     * 获取企业专属参数（带类型转换与默认值）。
+     * 获取企业专属参数（带类型检查与默认值）。
      *
      * @param key 参数名
-     * @param defaultValue 默认值
+     * @param defaultValue 默认值（同时是类型锚点：非 null 时按其类型校验）
      * @param <T> 目标类型
      * @return 参数值；未配置或类型不匹配返回默认值
      */
     @SuppressWarnings("unchecked")
     public <T> T getRawConfig(String key, T defaultValue) {
         Object value = getRawConfig(key);
-        if (value == null) {
+        if (value == null || defaultValue == null) {
             return defaultValue;
         }
-        try {
-            return (T) value;
-        } catch (ClassCastException e) {
+        // 泛型擦除下 (T) value 不会在本方法内抛 CCE（会延迟到调用方 checkcast），
+        // 必须显式按 defaultValue 的运行时类型校验——如 JSON 数字 Integer 传给 Long 锚点。
+        if (!defaultValue.getClass().isInstance(value)) {
             return defaultValue;
         }
+        return (T) value;
     }
 
     /**
      * 获取全部企业专属参数（只读视图）。
      *
-     * @return 不可修改的参数 Map；未配置返回空 Map
+     * @return 不可修改的参数 Map；未配置返回空 Map（JSON null 值项被剔除）
      */
     public Map<String, Object> getRawConfigMap() {
-        return rawConfig != null ? Map.copyOf(rawConfig) : Map.of();
+        if (rawConfig == null || rawConfig.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> nonNull = new java.util.HashMap<>();
+        rawConfig.forEach((k, v) -> {
+            if (v != null) {
+                nonNull.put(k, v);
+            }
+        });
+        return Map.copyOf(nonNull);
     }
 
     /**
@@ -200,7 +210,18 @@ public class RedisProviderContext {
         }
 
         public Builder rawConfig(Map<String, Object> rawConfig) {
-            this.rawConfig = rawConfig != null ? Map.copyOf(rawConfig) : Map.of();
+            if (rawConfig != null) {
+                // Map.copyOf 拒绝 null 值（JSON "key": null 场景），此处过滤为显式契约
+                Map<String, Object> nonNull = new java.util.HashMap<>();
+                rawConfig.forEach((k, v) -> {
+                    if (v != null) {
+                        nonNull.put(k, v);
+                    }
+                });
+                this.rawConfig = Map.copyOf(nonNull);
+            } else {
+                this.rawConfig = Map.of();
+            }
             return this;
         }
 

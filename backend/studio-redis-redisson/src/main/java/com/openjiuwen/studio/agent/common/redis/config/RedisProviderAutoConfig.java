@@ -109,8 +109,10 @@ public class RedisProviderAutoConfig {
                 new TypeReference<Map<String, Object>>() { });
             return result != null ? result : Collections.emptyMap();
         } catch (Exception e) {
+            // 不回显 e.getMessage()：Jackson 的消息含 [Source: (String)"..."] 原文片段，
+            // provider-config 可能携带企业凭证（appId/passport），不得泄入启动日志
             throw new IllegalArgumentException(
-                "redis.provider-config JSON 解析失败: " + e.getMessage(), e);
+                "redis.provider-config JSON 解析失败: " + e.getClass().getSimpleName(), e);
         }
     }
 

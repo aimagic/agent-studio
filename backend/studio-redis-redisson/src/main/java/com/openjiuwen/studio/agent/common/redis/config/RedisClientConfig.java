@@ -7,6 +7,7 @@ package com.openjiuwen.studio.agent.common.redis.config;
 import com.openjiuwen.studio.agent.common.crypt.Ciphers;
 
 import lombok.Data;
+import lombok.ToString;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
@@ -22,6 +23,8 @@ public class RedisClientConfig {
     @Value("${redis.port}")
     private int redisPort;
 
+    /** 已解密明文——排除出 toString，防止未来误打印泄入日志 */
+    @ToString.Exclude
     @Value("${redis.password}")
     private String redisPassword;
 
@@ -65,7 +68,8 @@ public class RedisClientConfig {
     @Value("${redis.provider-class:}")
     private String providerClass;
 
-    /** Provider 专属参数透传（内联 JSON 字符串，框架不解析内部字段） */
+    /** Provider 专属参数透传（可能含企业凭证）——排除出 toString */
+    @ToString.Exclude
     @Value("${redis.provider-config:}")
     private String providerConfig;
 

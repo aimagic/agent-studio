@@ -185,3 +185,14 @@ REDIS_CONTRACT_TARGET=127.0.0.1:6379 REDIS_CONTRACT_PASSWORD=*** \
 出现在结果列表中（各 redis-py 版本一致），逐个翻译后抛第一个——不依赖 raise 消息
 格式。不支持该参数的替身客户端（fakeredis FakePipeline）经构造期签名探测自动回退
 raise 路径（原行为，替身消息含原文可识别）。
+
+## 8. 已知边界（review 2026-10-14 拍板）
+
+| 边界 | 说明 |
+|---|---|
+| **builder 对适配层的强依赖** | agent-builder 与 agent-runtime 共享 venv，`redis_spi` 视为强制依赖（history.py 顶层 import）；`server_fastapi._init_redis_provider` 的 ImportError 回退仅防御无适配层的独立环境。 |
+| **builder 装配失败 fail-fast** | Provider 装配失败（ping 不通/配置错）时 builder 启动终止（与 runtime 一致）——异步存储直调 accessor 无 legacy 回退，半可用状态（同步通/异步永久失败）是慢性隐蔽故障，显式失败交由进程重启自愈。 |
+| **会话缓存格式变更（Java）** | SessionService 迁移后 Redis 中会话值由 RedisTemplate 带类型 JSON 改为纯 JSON：升级瞬间存量登录态失效一次（用户需重新登录，安全降级无崩溃）；滚动部署窗口内新旧 pod 的会话缓存互不可读，窗口期内可能出现重复登录提示。 |
+| **错误消息脱敏** | Java `parseProviderConfig` 与 Python `REDIS_PROVIDER_CONFIG` 校验错误的日志不回显原始配置内容（可能含企业凭证）；`RedisClientConfig` 的 `redisPassword`/`providerConfig` 字段排除出 toString。 |
+| **`redis.provider-class` 为部署信任配置** | 该配置项驱动反射类加载（等价于既有 Spring `logging.config` 等运维原语），仅限 operator 管理，不得暴露给租户级配置入口。 |
+| **wrapper 原始类型方法的失败语义** | `getAndIncrement`/`addAndGet`/包装 `tryLock` 在 Redis 故障时抛 NPE（继承自存量 wrapper 行为，测试已锁定）——与降级契约存在张力，调用方应感知；后续版本可对齐 `lLen` 的零值降级。 |

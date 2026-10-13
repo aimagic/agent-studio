@@ -30,6 +30,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from pydantic import ValidationError
+
 from common_utils.common_config import RedisSettings
 from common_utils.redis_manager import RedisClientManager
 from common_utils.redis_sync_compat import SyncCompatClient
@@ -38,6 +40,9 @@ from redis_spi.exceptions import RedisConfigError, RedisError
 from redis_spi.factory import RedisProviderFactory
 
 logger = logging.getLogger(__name__)
+
+#: 本进程已注册的同步兼容桥（幂等判断：与 accessor 均就绪则重复调用早退）
+_sync_bridge: SyncCompatClient | None = None
 
 #: 两包 Settings 的同名连接字段（password 已在 RedisSettings 层解密后搬运）。
 #: mode 不在此列：两包各有一套同名同值枚举，按 value 重导出（不做类身份耦合）。
@@ -83,18 +88,36 @@ async def init_redis_provider(settings: RedisSettings | None = None) -> Any:
 
     - settings 缺省时按环境构造（与旧 RedisClientManager.init() 同源同判据）；
     - 未配置返回 None（由 lifespan 转为旧口径 RuntimeError）；
-    - 幂等（accessor.initialize 语义）：重复调用复用既有装配；
+    - 幂等：accessor 与同步桥均装配后，重复调用复用既有装配与视图
+      （同步桥为自持循环+专属连接池，重复注册会泄漏，必须早退）；
     - 返回值（主池客户端）与 common_utils.get_redis_client() 过渡委托返回
       同一对象，保持旧「全局单客户端身份」不变量；
-    - 装配成功后注册同步兼容桥（当前事件循环），使 get_sync_client() 的
-      既有同步调用方（builder history 存储）零改动切换 Provider。
+    - 原生视图在同步桥注册**之前**获取：非 native 且无兼容视图的 Provider
+      在此处 fail-fast，不产生「桥已注册而视图不可用」的半注册态；
+    - 装配成功后注册同步兼容桥，使 get_sync_client() 的既有同步调用方
+      （builder history 存储）零改动切换 Provider。
     """
+    global _sync_bridge
     legacy = settings if settings is not None else RedisSettings()
     if not legacy.host and not legacy.cluster_nodes:
         logger.warning("Redis not configured, provider not initialized.")
         return None
 
-    provider_settings = build_provider_settings(legacy)
+    # 幂等早退：主装配与同步桥均就绪时复用（视图对同一 client 稳定可重复取）
+    if _sync_bridge is not None and accessor.is_initialized():
+        return _as_native_view(accessor.get_redis())
+
+    try:
+        provider_settings = build_provider_settings(legacy)
+    except ValidationError as exc:
+        # pydantic 校验错误消息含 input_value= 原始配置（可能带企业凭证），
+        # 重包装为只含错误位置的自描述配置错误
+        locations = "; ".join(str(e.get("loc", "?")) for e in exc.errors()[:5])
+        raise RedisConfigError(
+            f"Redis Provider 配置校验失败（字段: {locations}），"
+            "请检查 REDIS_PROVIDER_CONFIG 等 REDIS_* 环境变量"
+        ) from exc
+
     try:
         client = await accessor.initialize(provider_settings)
     except RedisConfigError:
@@ -104,10 +127,15 @@ async def init_redis_provider(settings: RedisSettings | None = None) -> Any:
         # 连接/命令类失败对齐旧 lifespan 口径（RuntimeError 文案不变）
         raise RuntimeError(f"Redis connection check failed: {exc}") from exc
 
+    # 先取原生视图：非 native 且无兼容视图在此 fail-fast（无半注册态）
+    native = _as_native_view(client)
+
     # 注册同步兼容桥：自持专用后台循环 + 经 RedisProviderFactory.create 独立装配
     # 专属客户端（与主客户端互不共享连接池）。任意线程（含事件循环线程，如
     # builder Controller 在 Executor.__init__ 里同步调 load_session 的场景）的
     # 同步调用都调度到桥循环执行，无死锁。
+    if _sync_bridge is not None:
+        _sync_bridge.close()
     sync_bridge = SyncCompatClient(
         lambda: RedisProviderFactory.create(provider_settings)
     )
@@ -118,8 +146,8 @@ async def init_redis_provider(settings: RedisSettings | None = None) -> Any:
         logger.warning("SyncCompatClient init failed, sync path stays legacy", exc_info=True)
     else:
         RedisClientManager.set_sync_compat(sync_bridge)
+        _sync_bridge = sync_bridge
 
-    native = _as_native_view(client)
     logger.info(
         "Redis client initialized: provider=%s, mode=%s, host=%s:%s",
         provider_settings.provider,

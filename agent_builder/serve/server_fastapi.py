@@ -38,7 +38,10 @@ async def _init_redis_provider() -> None:
 
     装配含 ping fail-fast；成功后 common_utils 委托层自动切换：
     异步面（history 存储 SPI 直调）与同步面（get_sync_client 返回同步兼容桥）。
-    适配层包未安装（独立环境）或装配失败时回退 legacy 客户端，warn 不阻断启动。
+    适配层包未安装（独立环境）时回退 legacy 客户端；**装配失败则 fail-fast
+    终止启动**——history 异步存储直调 accessor，半可用状态（同步通/异步永久
+    RedisConfigError）是慢性隐蔽故障，显式失败交由进程重启自愈更可运维
+    （与 runtime server lifespan 行为一致）。
     """
     try:
         from common_utils.redis_provider_bootstrap import init_redis_provider
@@ -47,11 +50,12 @@ async def _init_redis_provider() -> None:
             "redis adapter packages not installed, fallback to legacy redis client"
         )
         return
-    try:
-        await init_redis_provider()
-        logger.info("Redis provider initialized (delegation active)")
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"Redis provider init failed, fallback to legacy: {e}")
+    client = await init_redis_provider()
+    if client is None:
+        # Redis 未配置（REDIS_HOST/CLUSTER_NODES 全空）：维持 legacy 行为
+        logger.warning("Redis not configured, provider not initialized")
+        return
+    logger.info("Redis provider initialized (delegation active)")
 
 
 async def _ping_redis() -> None:
@@ -196,6 +200,14 @@ async def lifespan(app: FastAPI):  # noqa: redefined-outer-name
     try:
         yield
     finally:
+        # 优雅关闭 Redis：同步兼容桥（专用循环+连接池）与 Provider/legacy 客户端
+        # （测试/集成环境反复启停时防泄漏；一次性进程由 daemon 线程兜底）
+        try:
+            from common_utils.redis_manager import RedisClientManager
+
+            await RedisClientManager.get_instance().close()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Redis client close failed (non-critical): {e}")
         try:
             import storage
 

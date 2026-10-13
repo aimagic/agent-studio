@@ -27,8 +27,9 @@ import java.util.stream.Collectors;
  * 1. redis.provider-class 显式指定（全限定类名或 ServiceLoader 注册名）
  * 2. redis.client-type = custom → ServiceLoader 自动发现（classpath 仅一个 Provider 时自动选取）
  * 3. redis.client-type = memory（存量值，测试用）
- * 4. 存量 RedisClient3rd classpath 自动兼容（过渡期，打迁移提示）
- * 5. redis.client-type = redisson（缺省）
+ * 4. redis.client-type 显式 = redisson → 直接缺省实现（短路，不被 legacy 兼容覆盖）
+ * 5. 存量 RedisClient3rd classpath 自动兼容（过渡期，仅在未显式指定实现时）
+ * 6. redis.client-type = redisson（缺省）
  *
  * 名字解析失败必须自描述：报错列出全部可用实现名与注入方式提示。
  */
@@ -68,14 +69,20 @@ public final class RedisProviderResolver {
             return createMemory();
         }
 
-        // 4. 存量 RedisClient3rd classpath 自动兼容（过渡期）
+        // 4. 显式 redisson：短路，不被 classpath 上的存量 RedisClient3rd 自动兼容覆盖
+        //    （operator 明确选择缺省实现时应尊重该选择；legacy 兼容仅兜未显式指定的场景）
+        if ("redisson".equals(clientType)) {
+            return createDefaultRedisson(config);
+        }
+
+        // 5. 存量 RedisClient3rd classpath 自动兼容（过渡期）
         if (isLegacyThirdPartyPresent()) {
             log.warn("检测到存量 RedisClient3rd 类，将自动兼容启用。"
                 + "请迁移到 RedisProvider SPI（redis.provider-class 配置项）。");
             return createLegacyThirdParty(config);
         }
 
-        // 5. 缺省 redisson（直接使用 Spring 管理的完整配置）
+        // 6. 缺省 redisson（直接使用 Spring 管理的完整配置）
         return createDefaultRedisson(config);
     }
 

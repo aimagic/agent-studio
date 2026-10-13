@@ -49,6 +49,8 @@ class SyncCompatClient:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._closed = False
+        # 生命周期互斥锁：防并发 initialize 双建循环线程（泄漏）与对已停循环二次 stop
+        self._lifecycle_lock = threading.Lock()
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -57,37 +59,44 @@ class SyncCompatClient:
 
         幂等：已初始化直接返回；装配失败停循环后上抛。
         """
-        if self._client is not None:
-            return
-        if self._closed:
-            raise RuntimeError("SyncCompatClient already closed")
+        with self._lifecycle_lock:
+            if self._client is not None:
+                return
+            if self._closed:
+                raise RuntimeError("SyncCompatClient already closed")
 
-        self._loop = asyncio.new_event_loop()
-        self._loop_thread = threading.Thread(
-            target=self._loop.run_forever, name="redis-sync-compat", daemon=True
-        )
-        self._loop_thread.start()
-        try:
-            self._client = self._call(self._client_factory, "initialize")
-        except BaseException:
-            self._stop_loop()
-            raise
+            self._loop = asyncio.new_event_loop()
+            self._loop_thread = threading.Thread(
+                target=self._loop.run_forever, name="redis-sync-compat", daemon=True
+            )
+            self._loop_thread.start()
+            try:
+                self._client = self._call(self._client_factory, "initialize")
+            except BaseException:
+                self._stop_loop()
+                raise
         logger.info("SyncCompatClient initialized (dedicated loop + own client)")
 
     def close(self) -> None:
         """幂等关闭：先关客户端，再停桥循环。"""
-        if self._closed:
-            return
-        self._closed = True
-        if self._client is not None and self._loop is not None:
-            aclose = getattr(self._client, "aclose", None)
-            if callable(aclose):
-                try:
-                    self._run(aclose(), "aclose")
-                except Exception as exc:  # noqa: BLE001 - 关闭尽力而为
-                    logger.warning("SyncCompatClient aclose failed: %s", exc)
-        self._client = None
-        self._stop_loop()
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            self._closed = True
+            if self._client is not None and self._loop is not None:
+                aclose = getattr(self._client, "aclose", None)
+                if callable(aclose):
+                    try:
+                        self._run(aclose(), "aclose")
+                    except Exception as exc:  # noqa: BLE001 - 关闭尽力而为
+                        logger.warning("SyncCompatClient aclose failed: %s", exc)
+            self._client = None
+            self._stop_loop()
+
+    @property
+    def closed(self) -> bool:
+        """是否已关闭（bootstrap 幂等判断用）。"""
+        return self._closed
 
     def _stop_loop(self) -> None:
         if self._loop is not None:
@@ -103,12 +112,19 @@ class SyncCompatClient:
 
     def _run(self, coro: Any, method: str) -> Any:
         """把协程调度到桥循环执行，调用线程阻塞等待结果（守卫由 _call 负责）。"""
-        if threading.current_thread() is self._loop_thread:
+        # 快照循环引用：close() 并发置 None 时不以裸 AttributeError 暴露
+        loop = self._loop
+        loop_thread = self._loop_thread
+        if loop is None:
+            raise RuntimeError(
+                f"SyncCompatClient.{method} called on a closed/uninitialized client"
+            )
+        if threading.current_thread() is loop_thread:
             # 防御：桥循环线程只跑桥协程，正常不会出现；真出现即逻辑错误
             raise RuntimeError(
                 f"SyncCompatClient.{method} called from its own loop thread"
             )
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
         try:
             return future.result(timeout=self._call_timeout)
         except FutureTimeoutError as exc:
@@ -124,6 +140,10 @@ class SyncCompatClient:
         return self._run(coro_factory(), method)
 
     def _ensure_ready(self, method: str) -> None:
+        if self._closed:
+            raise RuntimeError(
+                f"SyncCompatClient.{method} called after close()"
+            )
         if self._loop is None:
             raise RuntimeError(
                 f"SyncCompatClient.{method} called before initialize()"
