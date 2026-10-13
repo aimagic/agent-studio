@@ -336,36 +336,59 @@ def _build_chat_upstream_body(body: dict, model_name: str, is_stream: bool) -> d
     return up_body
 
 
-def _normalize_reasoning_fields(obj: Union[dict, list]) -> Union[dict, list]:
-    """把 vLLM/DeepSeek 类上游散落在 ``reasoning`` 字段的思考内容归一为 ``reasoning_content``。
+_MAX_SSE_LINE_BUFFER = 1 << 20  # 1 MiB：单行 SSE 缓冲上限，超限降级为字节直通，防内存无界增长
+
+
+def _fill_reasoning_content(msg: dict) -> bool:
+    """缺 ``reasoning_content``（缺失/``null``/空串均视为未提供）且 ``reasoning`` 非空时补齐。
+
+    原地变更 ``msg``，返回是否发生过补齐；``reasoning_content`` 已有真值时以其为准不覆盖，
+    ``reasoning`` 原样保留不删除。
+    """
+    reasoning = msg.get("reasoning")
+    if reasoning and not msg.get("reasoning_content"):
+        msg["reasoning_content"] = reasoning
+        return True
+    return False
+
+
+def _normalize_reasoning_fields(obj) -> bool:
+    """把 vLLM/DeepSeek 类上游的思考内容从 ``reasoning`` 归一为 ``reasoning_content``。
 
     前端/运行时的调测链路只消费 ``reasoning_content``；vLLM（DeepSeek-V4-Flash 等）在
     流式 ``delta.reasoning`` 与非流式 ``message.reasoning`` 返回思考，导致调测页不显示。
-    以「值」判断兜底条件：``reasoning_content`` 缺失、为 ``null`` 或空串时都视为未提供，
-    用非空 ``reasoning`` 补齐；仅当 ``reasoning_content`` 已有真值时以其为准、``reasoning``
-    原样保留不删除。同样逻辑覆盖 choices[].message / choices[].delta / 顶层，递归。
+    仅处理 OpenAI chat/completions 约定承载思考的两个位点——``choices[].message`` 与
+    ``choices[].delta``；不做全 JSON 递归，避免把 ``tool_calls``/``usage``/日志/元数据中
+    可能存在的同名 ``reasoning`` 子结构一起改写、造成本函数职责外的影响面。
+    原地变更 ``obj``，返回是否发生过补齐，供调用方决定是否需要重序列化（未补齐即字节
+    可原样直通）。
     """
-    if isinstance(obj, dict):
-        reasoning = obj.get("reasoning")
-        if reasoning and not obj.get("reasoning_content"):
-            obj["reasoning_content"] = reasoning
-        for value in obj.values():
-            _normalize_reasoning_fields(value)
-    elif isinstance(obj, list):
-        for item in obj:
-            _normalize_reasoning_fields(item)
-    return obj
+    if not isinstance(obj, dict):
+        return False
+    choices = obj.get("choices")
+    if not isinstance(choices, list):
+        return False
+    changed = False
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        for field in ("message", "delta"):
+            target = choice.get(field)
+            if isinstance(target, dict) and _fill_reasoning_content(target):
+                changed = True
+    return changed
 
 
 def _transform_chat_sse_line(line: bytes) -> bytes:
-    """单行 SSE 变换：``data:`` 行是 JSON（且非 [DONE]/[ERROR]）时做 reasoning 归一。
+    """单行 SSE 变换：仅当该行确实需要补齐 ``reasoning_content`` 时才重序列化。
 
-    非 JSON 的 ``data:`` 行（keep-alive 注释等）与 ``event:`` / 空行原样透传，保证
-    ``data: [DONE]`` 终止符与事件边界不被破坏。``payload`` 先 ``strip`` 去掉行尾换行
-    再比对终止符，否则 [DONE]/[ERROR] 守卫永不命中（原实现靠 json.loads 失败兜底透传，
-    属死代码）。解析/重序列化/编码任一环节异常（畸形 JSON、孤立代理项导致
-    ``.encode('utf-8')`` 抛 UnicodeEncodeError 等）一律原样透传该行——绝不因单行转换
-    失败中断整条 SSE 流，畸形上游数据的容错性不劣于原先的字节直通。
+    非 ``data:`` 行、``data: [DONE]``/``[ERROR]``、非 JSON 行、以及无需补齐的 JSON 行一律
+    按原始字节（含原行终止符）直通，避免对上游未变内容做无谓的重新序列化（原样保留
+    上游空白/换行、``\\uXXXX`` 转义风格、重复键与数字字面量），与改造前的字节透明转发
+    保持一致。``payload`` 先 ``strip`` 去掉行尾换行再比对 [DONE]/[ERROR]，让显式守卫
+    真正生效（避免依赖 json.loads 失败兜底）。解析或重序列化任一环节异常（畸形 JSON、
+    孤立代理项导致 ``.encode('utf-8')`` 抛 UnicodeEncodeError 等）一律降级为原样透传，
+    绝不因单行转换失败中断整条 SSE 流。
     """
     data_marker = b"data:"
     if not line.strip() or not line.startswith(data_marker):
@@ -375,26 +398,58 @@ def _transform_chat_sse_line(line: bytes) -> bytes:
         return line
     try:
         obj = json.loads(payload)
-        _normalize_reasoning_fields(obj)
+    except (ValueError, TypeError):
+        return line
+    if not _normalize_reasoning_fields(obj):
+        return line
+    try:
         return b"data: " + json.dumps(obj, ensure_ascii=False).encode("utf-8") + b"\n"
-    except (ValueError, TypeError, UnicodeEncodeError):
+    except UnicodeEncodeError:
         return line
 
 
+def _find_sse_line_end(buffer: bytes):
+    """定位最早的 SSE 行终止符，支持 ``\\n``、``\\r\\n`` 与裸 ``\\r`` 三种行尾。
+
+    返回 ``(终止符起始下标, 终止符长度)``；未找到返回 ``(-1, 0)``。``\\r`` 恰位于缓冲区
+    末尾时暂不判定（可能是跨包拆分的 ``\\r\\n`` 前半），等待下一 chunk 再决定，避免误切。
+    """
+    lf = buffer.find(b"\n")
+    cr = buffer.find(b"\r")
+    if cr == -1:
+        return (lf, 1) if lf != -1 else (-1, 0)
+    if lf == -1 or cr < lf:
+        if cr == len(buffer) - 1:
+            return (-1, 0)
+        if buffer[cr + 1:cr + 2] == b"\n":
+            return (cr, 2)
+        return (cr, 1)
+    return (lf, 1)
+
+
 async def _iter_relay_with_reasoning_transform(response: httpx.Response):
-    """按行缓冲转发流式响应，并把跨包拆分的 SSE 行重组后再走归一变换。"""
+    """按行缓冲转发流式响应：跨包拆行、``\\r\\n``/裸 ``\\r`` 行尾重组为完整行后走归一变换。
+
+    保留原始行终止符字节，无需补齐的行原样直通；单行超过 ``_MAX_SSE_LINE_BUFFER`` 时把
+    已缓冲字节直接放行并清空缓冲（该行整体降级为字节直通、不再累积后续字节参与拼接），
+    防止异常或恶意上游持续发送无换行数据导致内存无界增长。流结束时若仍有残余缓冲
+    （末行无终止符），按原样再走一次变换，不额外补 ``\\n``。
+    """
     buffer = b""
     async for chunk in response.aiter_raw():
         buffer += chunk
         while True:
-            newline = buffer.find(b"\n")
-            if newline == -1:
+            idx, sep = _find_sse_line_end(buffer)
+            if idx == -1:
+                if len(buffer) > _MAX_SSE_LINE_BUFFER:
+                    yield buffer
+                    buffer = b""
                 break
-            line = buffer[:newline]
-            buffer = buffer[newline + 1:]
-            yield _transform_chat_sse_line(line.rstrip(b"\r") + b"\n")
+            raw_line = buffer[:idx + sep]
+            buffer = buffer[idx + sep:]
+            yield _transform_chat_sse_line(raw_line)
     if buffer:
-        yield _transform_chat_sse_line(buffer.rstrip(b"\r") + b"\n")
+        yield _transform_chat_sse_line(buffer)
 
 
 # ----------------------------- chat -----------------------------
@@ -455,7 +510,9 @@ async def chat_completions(
                             upstream_body=resp.text,
                         )
                     # vLLM 类上游把思考放 message.reasoning，归一为 reasoning_content 供前端消费
-                    return _normalize_reasoning_fields(resp.json())
+                    resp_data = resp.json()
+                    _normalize_reasoning_fields(resp_data)
+                    return resp_data
                 except httpx.HTTPError as exc:
                     raise _upstream_transport_error(url, exc) from exc
                 finally:
