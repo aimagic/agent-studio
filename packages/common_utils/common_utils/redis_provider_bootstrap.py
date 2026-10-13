@@ -27,7 +27,6 @@ agent-builder 共享 venv）；未安装环境的调用方应 try/except ImportE
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -36,6 +35,7 @@ from common_utils.redis_manager import RedisClientManager
 from common_utils.redis_sync_compat import SyncCompatClient
 from redis_spi import RedisMode, RedisProviderSettings, accessor
 from redis_spi.exceptions import RedisConfigError, RedisError
+from redis_spi.factory import RedisProviderFactory
 
 logger = logging.getLogger(__name__)
 
@@ -104,10 +104,20 @@ async def init_redis_provider(settings: RedisSettings | None = None) -> Any:
         # 连接/命令类失败对齐旧 lifespan 口径（RuntimeError 文案不变）
         raise RuntimeError(f"Redis connection check failed: {exc}") from exc
 
-    # 注册同步兼容桥（当前事件循环 = SPI 客户端所属循环，桥上协程与客户端同环）
-    RedisClientManager.set_sync_compat(
-        SyncCompatClient(client, asyncio.get_running_loop())
+    # 注册同步兼容桥：自持专用后台循环 + 经 RedisProviderFactory.create 独立装配
+    # 专属客户端（与主客户端互不共享连接池）。任意线程（含事件循环线程，如
+    # builder Controller 在 Executor.__init__ 里同步调 load_session 的场景）的
+    # 同步调用都调度到桥循环执行，无死锁。
+    sync_bridge = SyncCompatClient(
+        lambda: RedisProviderFactory.create(provider_settings)
     )
+    try:
+        sync_bridge.initialize()
+    except Exception:
+        # 同步面装配失败不拖垮主客户端装配（异步面已可用），warn 后不注册
+        logger.warning("SyncCompatClient init failed, sync path stays legacy", exc_info=True)
+    else:
+        RedisClientManager.set_sync_compat(sync_bridge)
 
     native = _as_native_view(client)
     logger.info(

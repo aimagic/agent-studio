@@ -392,8 +392,13 @@ class RedisClientManager:
 
         过渡委托：已装配 Provider 适配层时一并关闭。Provider 客户端与 legacy
         实例是不同连接池，二者均幂等关闭；未装配/包未安装时仅关 legacy。
-        同步兼容桥随 Provider 关闭一并失效（置空）。
+        同步兼容桥随 Provider 关闭一并释放（桥自持循环与专属客户端）。
         """
+        if self._sync_compat is not None:
+            try:
+                self._sync_compat.close()
+            except Exception as e:  # noqa: BLE001 - 关闭尽力而为
+                logger.warning("Sync compat client close failed: %s", e)
         type(self)._sync_compat = None
         if _provider_is_initialized():
             await _provider_aclose()

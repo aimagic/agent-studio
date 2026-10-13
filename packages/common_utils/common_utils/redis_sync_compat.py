@@ -1,54 +1,114 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""SPI 异步客户端的 redis-py 同步兼容面（sync-over-async 线程桥）。
+"""SPI 异步客户端的 redis-py 同步兼容面（sync-over-async 专用循环桥）。
 
 背景：Redis Provider 适配层（redis_spi）只有异步协议面；builder 的同步存储类
 （nl_to_agent/storage/history.py 的 ImRedisConversation / SessionStorage）以
 redis-py 同步调用形态工作（get / set(ex=) / delete / expire / exists / rpush /
-lrange / llen），且其上层接口（BaseConversationMemory）约束同步签名，无法改异步。
+lrange / llen），且其上层接口（BaseConversationMemory）约束同步签名，无法改异步；
+Controller 甚至在事件循环线程内同步调用（Executor.__init__ → load_session）。
 
-方案：把同步调用经 asyncio.run_coroutine_threadsafe 调度回 SPI 客户端所属的
-事件循环（装配循环，即进程主循环），在调用线程阻塞等待结果——与 builder 既有
-的 llm_bridge._run_async 桥接模式同构。
+方案：本桥自持**专用后台事件循环**，并在该循环上经 RedisProviderFactory.create
+独立装配专属客户端（与 accessor 主客户端互不共享连接池）。任意线程（含装配
+循环/事件循环线程）的同步调用经 run_coroutine_threadsafe 调度到桥循环执行、
+调用线程阻塞等待——目标循环与调用线程所属循环无关，无死锁场景。
 
 语义约定：
   - 返回值透传 SPI 语义（native 实现默认 bytes，与 legacy decode_responses=False
     一致，调用方零感知）；
-  - 在装配循环线程内直接调用会死锁，此处 fail-fast 抛 RuntimeError；
-  - close 为 no-op：客户端生命周期归 accessor（进程级装配，随 aclose 释放）。
+  - 生产路径 client_factory=RedisProviderFactory.create(settings)（含 ping
+    fail-fast）；测试可注入替身工厂；
+  - close 为幂等：先在桥循环上关闭客户端，再停循环。
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from redis_spi.types import Duration
 
+logger = logging.getLogger(__name__)
+
 
 class SyncCompatClient:
-    """redis-py 同步调用形态的 SPI 客户端桥（须在 SPI 客户端所属事件循环内构造）。"""
+    """redis-py 同步调用形态的自包含桥（专用循环 + 独立 Provider 客户端）。"""
 
-    def __init__(self, client: Any, loop: asyncio.AbstractEventLoop,
-                 *, call_timeout: float = 60.0):
-        self._client = client
-        self._loop = loop
+    def __init__(
+        self,
+        client_factory: Callable[..., Awaitable[Any]],
+        *,
+        call_timeout: float = 60.0,
+    ):
+        self._client_factory = client_factory
         self._call_timeout = call_timeout
-        # 构造发生在装配循环线程（lifespan），记录用于死锁防护
-        self._loop_thread = threading.current_thread()
+        self._client: Any = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread: threading.Thread | None = None
+        self._closed = False
+
+    # ---------------------------------------------------------------- lifecycle
+
+    def initialize(self) -> None:
+        """启动桥循环并独立装配客户端（含 ping fail-fast）。
+
+        幂等：已初始化直接返回；装配失败停循环后上抛。
+        """
+        if self._client is not None:
+            return
+        if self._closed:
+            raise RuntimeError("SyncCompatClient already closed")
+
+        self._loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(
+            target=self._loop.run_forever, name="redis-sync-compat", daemon=True
+        )
+        self._loop_thread.start()
+        try:
+            self._client = self._call(self._client_factory, "initialize")
+        except BaseException:
+            self._stop_loop()
+            raise
+        logger.info("SyncCompatClient initialized (dedicated loop + own client)")
+
+    def close(self) -> None:
+        """幂等关闭：先关客户端，再停桥循环。"""
+        if self._closed:
+            return
+        self._closed = True
+        if self._client is not None and self._loop is not None:
+            aclose = getattr(self._client, "aclose", None)
+            if callable(aclose):
+                try:
+                    self._run(aclose(), "aclose")
+                except Exception as exc:  # noqa: BLE001 - 关闭尽力而为
+                    logger.warning("SyncCompatClient aclose failed: %s", exc)
+        self._client = None
+        self._stop_loop()
+
+    def _stop_loop(self) -> None:
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._loop_thread is not None:
+            self._loop_thread.join(timeout=5)
+        if self._loop is not None:
+            self._loop.close()
+        self._loop = None
+        self._loop_thread = None
 
     # ---------------------------------------------------------------- internal
 
-    def _call(self, coro_factory: Any, method: str) -> Any:
-        """把协程调度回装配循环执行，调用线程阻塞等待结果。"""
+    def _run(self, coro: Any, method: str) -> Any:
+        """把协程调度到桥循环执行，调用线程阻塞等待结果（守卫由 _call 负责）。"""
         if threading.current_thread() is self._loop_thread:
+            # 防御：桥循环线程只跑桥协程，正常不会出现；真出现即逻辑错误
             raise RuntimeError(
-                f"SyncCompatClient.{method} 在装配事件循环线程内被调用会死锁；"
-                "异步上下文请直接使用 redis_spi.accessor 的异步客户端"
+                f"SyncCompatClient.{method} called from its own loop thread"
             )
-        future = asyncio.run_coroutine_threadsafe(coro_factory(), self._loop)
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         try:
             return future.result(timeout=self._call_timeout)
         except FutureTimeoutError as exc:
@@ -57,6 +117,21 @@ class SyncCompatClient:
                 f"Redis sync compat call '{method}' timed out "
                 f"after {self._call_timeout}s"
             ) from exc
+
+    def _call(self, coro_factory: Callable[[], Any], method: str) -> Any:
+        """守卫通过后才求值协程工厂（工厂可能访问 self._client）。"""
+        self._ensure_ready(method)
+        return self._run(coro_factory(), method)
+
+    def _ensure_ready(self, method: str) -> None:
+        if self._loop is None:
+            raise RuntimeError(
+                f"SyncCompatClient.{method} called before initialize()"
+            )
+        if self._client is None and method != "initialize":
+            raise RuntimeError(
+                f"SyncCompatClient.{method} called before initialize()"
+            )
 
     # ---------------------------------------------------------------- String
 
@@ -106,15 +181,16 @@ class SyncCompatClient:
         """LLEN。"""
         return self._call(lambda: self._client.llen(key), "llen")
 
-    # ---------------------------------------------------------------- lifecycle
+    # ---------------------------------------------------------------- misc
 
-    def close(self) -> None:
-        """no-op：客户端生命周期归 accessor（进程级装配，随 aclose 释放）。"""
+    def ping(self) -> bool:
+        """PING（redis-py 兼容探活）。"""
+        return self._call(lambda: self._client.ping(), "ping")
 
-    def keys(self, pattern: str) -> list[bytes]:  # noqa: D401 - redis-py 兼容面
-        """KEYS（谨慎使用，仅小键空间场景）。"""
+    def keys(self, pattern: str) -> list[bytes]:
+        """KEYS（经 SCAN 迭代实现，仅小键空间场景）。"""
+
         async def _do() -> list[bytes]:
-            found = [key async for key in self._client.scan_iter(match=pattern)]
-            return list(found)
+            return [key async for key in self._client.scan_iter(match=pattern)]
 
         return self._call(_do, "keys")

@@ -1,9 +1,9 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""SyncCompatClient（sync-over-async 线程桥）与 RedisClientManager 同步面接线测试。
+"""SyncCompatClient（专用循环 + 独立客户端的自包含同步桥）测试。
 
-覆盖：redis-py 调用形态的同步往返（String/List/Key）、bytes 透传语义、
-装配循环线程内调用的死锁防护、委托层 get_sync_client 注册优先与 reset 清理。
+关键回归用例：事件循环线程内同步调用（builder Controller 在 Executor.__init__
+里同步调 load_session 的形态）必须成功——桥循环与调用线程所属循环无关。
 """
 
 import asyncio
@@ -44,15 +44,11 @@ class StubAsyncClient:
         return key in self.strings or key in self.lists
 
     async def exists(self, *keys):
-        return sum(
-            1 for key in keys if key in self.strings or key in self.lists
-        )
+        return sum(1 for key in keys if key in self.strings or key in self.lists)
 
     async def rpush(self, key, *values):
         bucket = self.lists.setdefault(key, [])
-        bucket.extend(
-            v if isinstance(v, bytes) else str(v).encode() for v in values
-        )
+        bucket.extend(v if isinstance(v, bytes) else str(v).encode() for v in values)
         return len(bucket)
 
     async def lrange(self, key, start, stop):
@@ -64,31 +60,26 @@ class StubAsyncClient:
     async def llen(self, key):
         return len(self.lists.get(key, []))
 
+    async def ping(self):
+        return True
+
+    async def aclose(self):
+        self.strings.clear()
+        self.lists.clear()
+
 
 @pytest.fixture
-def loop_thread():
-    """独立事件循环线程（模拟进程主循环）。"""
-    loop = asyncio.new_event_loop()
-    thread = threading.Thread(target=loop.run_forever, daemon=True)
-    thread.start()
-    yield loop
-    loop.call_soon_threadsafe(loop.stop)
-    thread.join(timeout=5)
-    loop.close()
+def bridge():
+    """已初始化的桥（注入 stub 工厂）。"""
+    stub = StubAsyncClient()
+    client = SyncCompatClient(lambda: _return(stub))
+    client.initialize()
+    yield client, stub
+    client.close()
 
 
-def _make_bridge_on_loop(loop, client):
-    """在循环线程内构造桥（对齐 lifespan 装配场景，死锁防护才能生效）。"""
-    ready = threading.Event()
-    holder = {}
-
-    def _construct():
-        holder["bridge"] = SyncCompatClient(client, asyncio.get_running_loop())
-        ready.set()
-
-    loop.call_soon_threadsafe(_construct)
-    assert ready.wait(timeout=5), "bridge construction timed out"
-    return holder["bridge"]
+async def _return(value):
+    return value
 
 
 @pytest.fixture(autouse=True)
@@ -99,58 +90,91 @@ def _reset_manager():
 
 
 class TestSyncCompatClient:
-    def test_string_get_set_ex_roundtrip(self, loop_thread):
-        bridge = _make_bridge_on_loop(loop_thread, StubAsyncClient())
-        assert bridge.set("k1", "v1", ex=60) == b"OK"
-        assert bridge.get("k1") == b"v1"
-        assert bridge.get("missing") is None
+    def test_string_get_set_ex_roundtrip(self, bridge):
+        client, _ = bridge
+        assert client.set("k1", "v1", ex=60) == b"OK"
+        assert client.get("k1") == b"v1"
+        assert client.get("missing") is None
 
-    def test_list_rpush_lrange_llen(self, loop_thread):
-        bridge = _make_bridge_on_loop(loop_thread, StubAsyncClient())
-        assert bridge.rpush("hist", "a", "b", "c") == 3
-        assert bridge.lrange("hist", 0, -1) == [b"a", b"b", b"c"]
-        assert bridge.lrange("hist", 1, 1) == [b"b"]
-        assert bridge.llen("hist") == 3
-        assert bridge.llen("missing") == 0
+    def test_list_rpush_lrange_llen(self, bridge):
+        client, _ = bridge
+        assert client.rpush("hist", "a", "b", "c") == 3
+        assert client.lrange("hist", 0, -1) == [b"a", b"b", b"c"]
+        assert client.lrange("hist", 1, 1) == [b"b"]
+        assert client.llen("hist") == 3
+        assert client.llen("missing") == 0
 
-    def test_key_delete_expire_exists(self, loop_thread):
-        bridge = _make_bridge_on_loop(loop_thread, StubAsyncClient())
-        bridge.set("k", "v")
-        assert bridge.exists("k") == 1
-        assert bridge.expire("k", 30) is True
-        assert bridge.delete("k") == 1
-        assert bridge.exists("k") == 0
-        assert bridge.delete("k") == 0
-        assert bridge.expire("k", 30) is False
+    def test_key_delete_expire_exists_ping(self, bridge):
+        client, _ = bridge
+        client.set("k", "v")
+        assert client.exists("k") == 1
+        assert client.expire("k", 30) is True
+        assert client.ping() is True
+        assert client.delete("k") == 1
+        assert client.exists("k") == 0
+        assert client.delete("k") == 0
+        assert client.expire("k", 30) is False
 
-    def test_deadlock_guard_on_loop_thread(self, loop_thread):
-        bridge = _make_bridge_on_loop(loop_thread, StubAsyncClient())
+    def test_call_from_event_loop_thread_succeeds(self, bridge):
+        """回归用例：事件循环线程内同步调用（n2l Controller 形态）不得死锁/抛错。
+
+        旧版桥（复用装配循环 + 循环线程内 fail-fast）在此形态抛 RuntimeError
+        导致 n2l 请求 13100004；自包含桥（专用循环）下该形态必须成功。
+        """
+        client, _ = bridge
+        result = {}
         done = threading.Event()
-        holder = {}
 
-        def _call_on_loop_thread():
-            try:
-                bridge.get("k")
-                holder["error"] = None
-            except RuntimeError as exc:
-                holder["error"] = exc
-            finally:
-                done.set()
+        async def _scenario():
+            # 在事件循环线程内直接同步调用桥
+            result["set"] = client.set("loop-thread", "v", ex=60)
+            result["get"] = client.get("loop-thread")
+            done.set()
 
-        loop_thread.call_soon_threadsafe(_call_on_loop_thread)
-        assert done.wait(timeout=5)
-        assert isinstance(holder["error"], RuntimeError)
-        assert "死锁" in str(holder["error"])
+        async def _runner():
+            await _scenario()
+
+        loop = asyncio.new_event_loop()
+        t = threading.Thread(target=loop.run_until_complete, args=(_runner(),))
+        t.start()
+        t.join(timeout=10)
+        loop.close()
+        assert done.is_set(), "event-loop-thread sync call did not finish"
+        assert result["get"] == b"v"
+
+    def test_call_before_initialize_raises(self):
+        client = SyncCompatClient(lambda: _return(StubAsyncClient()))
+        with pytest.raises(RuntimeError, match="before initialize"):
+            client.get("k")
+
+    def test_initialize_idempotent(self):
+        stub = StubAsyncClient()
+        client = SyncCompatClient(lambda: _return(stub))
+        client.initialize()
+        client.initialize()  # 幂等
+        assert client.get("k2") is None
+        client.close()
+        client.close()  # 幂等
+
+    def test_close_releases_client(self):
+        stub = StubAsyncClient()
+        client = SyncCompatClient(lambda: _return(stub))
+        client.initialize()
+        client.set("gone", "x", ex=10)
+        client.close()
+        assert stub.strings == {}, "aclose 应清空客户端状态"
+        with pytest.raises(RuntimeError):
+            client.get("gone")
 
 
 class TestManagerSyncCompatWiring:
-    def test_get_sync_client_prefers_registered_compat(self, loop_thread):
-        bridge = _make_bridge_on_loop(loop_thread, StubAsyncClient())
-        RedisClientManager.set_sync_compat(bridge)
-        assert RedisClientManager.get_instance().get_sync_client() is bridge
+    def test_get_sync_client_prefers_registered_compat(self, bridge):
+        client, _ = bridge
+        RedisClientManager.set_sync_compat(client)
+        assert RedisClientManager.get_instance().get_sync_client() is client
 
-    def test_reset_clears_registered_compat(self, loop_thread):
-        bridge = _make_bridge_on_loop(loop_thread, StubAsyncClient())
-        RedisClientManager.set_sync_compat(bridge)
+    def test_reset_clears_registered_compat(self, bridge):
+        client, _ = bridge
+        RedisClientManager.set_sync_compat(client)
         RedisClientManager.reset()
         assert RedisClientManager._sync_compat is None
