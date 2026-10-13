@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import com.alibaba.fastjson2.JSONException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.exc.StreamConstraintsException;
+import com.openjiuwen.studio.agent.common.redis.exception.RedisExceptionClassifier;
 
 import org.springframework.util.function.ThrowingSupplier;
 
@@ -56,7 +57,8 @@ public class RedisClientWrapper implements RedisClient {
                 return null;
             }
             // Redis 连接/超时等故障：服务降级返回 null
-            log.error("redis operation failed, method: get", e);
+            log.error("redis operation failed, method: get, category: {}",
+                RedisExceptionClassifier.categoryOf(e), e);
             return null;
         }
     }
@@ -138,7 +140,7 @@ public class RedisClientWrapper implements RedisClient {
         try {
             result = operation.get();
         } catch (Exception e) {
-            log.error("redis operation failed, method: {}", methodName, e);
+            log.error("redis operation failed, method: {}, category: {}", methodName, RedisExceptionClassifier.categoryOf(e), e);
         }
         redisCost(startTime, methodName);
 
@@ -150,7 +152,7 @@ public class RedisClientWrapper implements RedisClient {
         try {
             operation.run();
         } catch (Exception e) {
-            log.error("redis operation failed, method: {}", methodName, e);
+            log.error("redis operation failed, method: {}, category: {}", methodName, RedisExceptionClassifier.categoryOf(e), e);
         }
         redisCost(startTime, methodName);
     }

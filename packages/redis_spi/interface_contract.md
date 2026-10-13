@@ -50,7 +50,7 @@
 ### 2.3 Java 侧对应口径
 
 - `RedisClient` 接口 = Python 核心面的 Java 子集（String/Key + 锁 + List + 计数器 + `getRaw` 原文读取）；
-  死接口（`setObj`/`scoredSorted*`）`@Deprecated` + default 抛 `UnsupportedOperationException`，不计入自研 Provider 强制实现面。
+  死接口（`setObj`/`scoredSorted*`）`@Deprecated` + default 抛 `CapabilityUnsupportedException`，不计入自研 Provider 强制实现面。
 - 装配：`RedisProviderResolver` 五级解析链（显式 `redis.provider-class` > ServiceLoader > memory > legacy RedisClient3rd 兼容 > 缺省 redisson）。
 - **锁语义**：可重入（Redisson RLock 同构）；`tryLock(maxWait)` 等待超时语义；跨线程互斥。
 - **计数器 TTL 属实现定义**：`timeoutSeconds` 为提示值（Redisson 的 options timeout 不兑现过期；
@@ -74,9 +74,14 @@ manager 02xxxxx / workflow 10xxxx / builder 131xxxx / NL2 100029 谱系）：
 | 260008 | `RedisScriptError` | Lua 脚本运行期 / NOSCRIPT |
 | 260009 | `RedisClusterError` | 集群拓扑类错误 |
 
-Java 侧对应：`RedisProviderException`（SPI 装配/初始化失败，启动期 fail-fast，报错自描述列可用实现名）。
-异常分类族（J4 的 RedisAccessException 体系）为后续增量，当前 Java 侧沿用 Wrapper 降级语义
-（连接/解码失败降级 null、溢出抛 `RedisReadOverflowException`）。
+Java 侧对应（J4 已交付，`studio-redis-spi` 的 `exception/` 包）：
+`RedisAccessException`（根，携带 redisKey/operation）→ `RedisConnectionFailureException`（可重试可降级）/
+`RedisTimeoutException`（写/计数结果可能未知，禁盲重试）/ `RedisCommandException`（含
+`RedisWrongTypeException` 子类）/ `CapabilityUnsupportedException`；既有异常归族：
+`RedisReadOverflowException` ⊂ `RedisCommandException`、`RedisProviderException` ⊂ `RedisAccessException`。
+`RedisExceptionClassifier`（类名/消息字符串匹配，零 Redisson 依赖）供 Provider 边界翻译与
+Wrapper 分类日志使用。Wrapper 降级行为不变（连接/解码失败降级 null、溢出抛异常），
+分类供需要区分的调用方使用（Q12 渐进口径）。两栈分类对齐 Python 260000 段。
 
 ## 4. Provider 接入契约
 

@@ -4,6 +4,8 @@
 
 package com.openjiuwen.studio.agent.common.redis;
 
+import com.openjiuwen.studio.agent.common.redis.exception.CapabilityUnsupportedException;
+
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -66,11 +68,11 @@ public interface RedisClient {
      * @param key   用于标识值的键。
      * @param value 与键关联的对象。
      * @deprecated 主业务树零调用，属死接口，已 default 化（不计入自研 Provider 强制实现面）。
-     *             未覆写的实现调用时抛 {@link UnsupportedOperationException}。
+     *             未覆写的实现调用时抛 {@link CapabilityUnsupportedException}。
      */
     @Deprecated
     default void setObj(String key, Object value) {
-        throw new UnsupportedOperationException(
+        throw new CapabilityUnsupportedException(
             "setObj is a deprecated dead operation, not implemented by this provider: " + key);
     }
 
@@ -95,11 +97,11 @@ public interface RedisClient {
      * 设置redis的有序集合，timeStamp:value
      *
      * @param key 键
-     * @deprecated 主业务树零调用，属死接口，已 default 化。未覆写的实现调用时抛 {@link UnsupportedOperationException}。
+     * @deprecated 主业务树零调用，属死接口，已 default 化。未覆写的实现调用时抛 {@link CapabilityUnsupportedException}。
      */
     @Deprecated
     default void scoredSortedSet(String key, Long timeStamp, String str) {
-        throw new UnsupportedOperationException(
+        throw new CapabilityUnsupportedException(
             "scoredSortedSet is a deprecated dead operation, not implemented by this provider: " + key);
     }
 
@@ -110,11 +112,11 @@ public interface RedisClient {
      * @param startTime startTime
      * @param endTime endTime
      * @return List<String> list
-     * @deprecated 主业务树零调用，属死接口，已 default 化。未覆写的实现调用时抛 {@link UnsupportedOperationException}。
+     * @deprecated 主业务树零调用，属死接口，已 default 化。未覆写的实现调用时抛 {@link CapabilityUnsupportedException}。
      */
     @Deprecated
     default List<String> scoredSortedGet(String key, Long startTime, Long endTime) {
-        throw new UnsupportedOperationException(
+        throw new CapabilityUnsupportedException(
             "scoredSortedGet is a deprecated dead operation, not implemented by this provider: " + key);
     }
 
@@ -124,11 +126,11 @@ public interface RedisClient {
      * @param key key
      * @param startTime startTime
      * @param endTime endTime
-     * @deprecated 主业务树零调用，属死接口，已 default 化。未覆写的实现调用时抛 {@link UnsupportedOperationException}。
+     * @deprecated 主业务树零调用，属死接口，已 default 化。未覆写的实现调用时抛 {@link CapabilityUnsupportedException}。
      */
     @Deprecated
     default void scoredSortedRemoveList(String key, Long startTime, Long endTime) {
-        throw new UnsupportedOperationException(
+        throw new CapabilityUnsupportedException(
             "scoredSortedRemoveList is a deprecated dead operation, not implemented by this provider: " + key);
     }
 
@@ -137,11 +139,11 @@ public interface RedisClient {
      *
      * @param key key
      * @param str str
-     * @deprecated 主业务树零调用，属死接口，已 default 化。未覆写的实现调用时抛 {@link UnsupportedOperationException}。
+     * @deprecated 主业务树零调用，属死接口，已 default 化。未覆写的实现调用时抛 {@link CapabilityUnsupportedException}。
      */
     @Deprecated
     default void scoredSortedRemove(String key, String str) {
-        throw new UnsupportedOperationException(
+        throw new CapabilityUnsupportedException(
             "scoredSortedRemove is a deprecated dead operation, not implemented by this provider: " + key);
     }
 

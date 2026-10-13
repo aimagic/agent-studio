@@ -4,6 +4,8 @@
 
 package com.openjiuwen.studio.agent.common.redis.spi;
 
+import com.openjiuwen.studio.agent.common.redis.exception.RedisAccessException;
+
 /**
  * Redis Provider 装配失败统一异常（启动期 fail-fast，不静默降级）。
  *
@@ -12,14 +14,16 @@ package com.openjiuwen.studio.agent.common.redis.spi;
  * - 实现类未实现 RedisProviderFactory / RedisClient 接口
  * - 工厂 create() 抛出异常
  * - 配置缺失（如 custom 模式但未指定 provider-class）
+ *
+ * J4 归族：{@link RedisAccessException} 子类（operation=provider，无 key 上下文）。
  */
-public class RedisProviderException extends RuntimeException {
+public class RedisProviderException extends RedisAccessException {
 
     public RedisProviderException(String message) {
-        super(message);
+        super(message, null, null, "provider");
     }
 
     public RedisProviderException(String message, Throwable cause) {
-        super(message, cause);
+        super(message, cause, null, "provider");
     }
 }
