@@ -103,6 +103,7 @@ import com.openjiuwen.studio.agent.manager.entity.ir.ConversationInputVariable;
 import com.openjiuwen.studio.agent.manager.entity.ir.ConversationVariable;
 import com.openjiuwen.studio.agent.manager.entity.ir.IrContext;
 import com.openjiuwen.studio.agent.manager.enums.JsonSchemaType;
+import com.openjiuwen.studio.agent.manager.enums.PluginCallModeEnum;
 import com.openjiuwen.studio.agent.manager.enums.ResourceTypeEnum;
 import com.openjiuwen.studio.agent.manager.enums.ToolType;
 import com.openjiuwen.studio.agent.manager.mapper.MappingMapper;
@@ -294,6 +295,16 @@ public class IrAdapterService {
      * 参数相关修饰字段
      */
     private static final String PARAMS_WRAPPER = "paramsWrapper";
+
+    /**
+     * 插件调用模式（custom / api）
+     */
+    private static final String CALL_MODE = "callMode";
+
+    /**
+     * 自定义组件类型标识（ComponentClassPool 查找键）
+     */
+    private static final String COMPONENT_TYPE = "componentType";
 
     /**
      * 参数相关修饰字段
@@ -1659,20 +1670,22 @@ public class IrAdapterService {
         }
         result.put(NAME, displayName);
         result.put(DESCRIPTION, toolEntity.getToolDesc());
-        result.put(URL, toolEntity.getRequestInfo().getUrl());
-        result.put(METHOD, toolEntity.getRequestInfo().getMethod());
-        Map<String, String> headers = toolEntity.getRequestInfo().getHeaders() != null
-            ? toolEntity.getRequestInfo().getHeaders() : new HashMap<>();
-        if (!CollectionUtils.isEmpty(headers)) {
-            // 存量未加密数据无需解密
-            headers.forEach((key, value) -> {
-                try {
-                    String decryptedValue = encryptionAdapter.decrypt(value);
-                    headers.put(key, decryptedValue);
-                } catch (Exception e) {
-                    log.warn("Fail to decrypt plugin header [{}].", key);
-                }
-            });
+        Map<String, String> headers = new HashMap<>();
+        if (toolEntity.getRequestInfo() != null) {
+            result.put(URL, toolEntity.getRequestInfo().getUrl());
+            result.put(METHOD, toolEntity.getRequestInfo().getMethod());
+            Map<String, String> rawHeaders = toolEntity.getRequestInfo().getHeaders() != null
+                ? toolEntity.getRequestInfo().getHeaders() : new HashMap<>();
+            if (!CollectionUtils.isEmpty(rawHeaders)) {
+                rawHeaders.forEach((key, value) -> {
+                    try {
+                        String decryptedValue = encryptionAdapter.decrypt(value);
+                        headers.put(key, decryptedValue);
+                    } catch (Exception e) {
+                        log.warn("Fail to decrypt plugin header [{}].", key);
+                    }
+                });
+            }
         }
         SchemaConfig inputSchema = JSON.parseObject(toolEntity.getInputSchema(), SchemaConfig.class);
         fillHeaders(inputSchema, headers);
@@ -1748,7 +1761,40 @@ public class IrAdapterService {
             result.put(CREDENTIAL_OWNER_ID, RequestContextUtils.getRequestUserId());
         }
 
+        // 自定义插件：传递 callMode 和 componentType 供 runtime 分流
+        String callMode = toolEntity.getCallMode();
+        if (StringUtils.isEmpty(callMode)) {
+            callMode = PluginCallModeEnum.API.getCode();
+        }
+        result.put(CALL_MODE, callMode);
+        if (PluginCallModeEnum.CUSTOM.getCode().equals(callMode)) {
+            String componentType = extractComponentType(toolEntity.getMetadata());
+            if (StringUtils.isNotEmpty(componentType)) {
+                result.put(COMPONENT_TYPE, componentType);
+            }
+        }
+
         return result;
+    }
+
+    /**
+     * 从 metadata 中提取 componentType。
+     *
+     * <p>metadata 可能是 JSON 字符串（包含 component_type 字段）或纯字符串。</p>
+     *
+     * @param metadata 工具元数据
+     * @return componentType，未找到时返回 null
+     */
+    private String extractComponentType(String metadata) {
+        if (StringUtils.isEmpty(metadata)) {
+            return null;
+        }
+        try {
+            JSONObject meta = JSON.parseObject(metadata);
+            return meta.getString("component_type");
+        } catch (JSONException e) {
+            return null;
+        }
     }
 
     /**

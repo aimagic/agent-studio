@@ -87,6 +87,8 @@ jobs:
           cp -f agent-runtime/requirements.txt docker/studio-runtime/requirements.txt
           rm -rf docker/studio-runtime/bin
           cp -rf docker/studio-runtime/script docker/studio-runtime/bin
+          rm -rf docker/studio-runtime/extensions
+          cp -rf agent-runtime/extensions docker/studio-runtime/extensions
 
       - name: Prepare studio-builder artifacts
         run: |

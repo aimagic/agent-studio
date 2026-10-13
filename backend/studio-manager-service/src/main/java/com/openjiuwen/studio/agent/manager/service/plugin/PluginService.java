@@ -1908,16 +1908,19 @@ public class PluginService implements IPluginService {
 
         // 构建requestInfo字段，包括BasicInfo和tool_info
         UrlInfo urlInfo = null;
-        if (pluginInfo.getUrl().contains("{")) {
-            urlInfo = parseVariableUrl(pluginInfo.getUrl());
+        String url = pluginInfo != null ? pluginInfo.getUrl() : null;
+        if (StringUtils.isBlank(url)) {
+            urlInfo = new UrlInfo();
+        } else if (url.contains("{")) {
+            urlInfo = parseVariableUrl(url);
         } else {
-            urlInfo = parseUrl(pluginInfo.getUrl());
+            urlInfo = parseUrl(url);
         }
         BasicInfo basicInfo = BasicInfo.builder()
             .host(urlInfo.getHost())
             .protocol(urlInfo.getProtocol())
             .path(urlInfo.getBasePath())
-            .inputSchema(pluginInfo.getInputSchema())
+            .inputSchema(pluginInfo != null ? pluginInfo.getInputSchema() : null)
             .build();
 
         // 适配多斜杠的问题
@@ -2009,17 +2012,20 @@ public class PluginService implements IPluginService {
         BasicInfo basicInfo = null;
         RequestInfo requestInfo = body.getRequestInfo();
         UrlInfo urlInfo = null;
-        if (requestInfo.getUrl().contains("{")) {
-            urlInfo = parseVariableUrl(requestInfo.getUrl());
+        String url = requestInfo != null ? requestInfo.getUrl() : null;
+        if (StringUtils.isBlank(url)) {
+            urlInfo = new UrlInfo();
+        } else if (url.contains("{")) {
+            urlInfo = parseVariableUrl(url);
         } else {
-            urlInfo = parseUrl(requestInfo.getUrl());
+            urlInfo = parseUrl(url);
         }
 
         basicInfo = BasicInfo.builder()
             .host(urlInfo.getHost())
             .protocol(urlInfo.getProtocol())
             .path(urlInfo.getBasePath())
-            .inputSchema(requestInfo.getInputSchema())
+            .inputSchema(requestInfo != null ? requestInfo.getInputSchema() : null)
             .build();
 
         // basic path若只有/,则忽略
@@ -2285,7 +2291,7 @@ public class PluginService implements IPluginService {
      */
     public void adaptPluginUrlWhenCreateOrModify(BasicInfo basicInfo, UrlInfo urlInfo) {
         String basePath = urlInfo.getBasePath();
-        if (basePath.endsWith("/")) {
+        if (basePath != null && basePath.endsWith("/")) {
             basePath = basePath.substring(0, basePath.length() - 1);
             basicInfo.setPath(basePath);
         }

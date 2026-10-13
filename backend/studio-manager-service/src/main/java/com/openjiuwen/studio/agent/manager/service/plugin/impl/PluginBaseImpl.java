@@ -222,6 +222,7 @@ public class PluginBaseImpl implements IPluginBase {
         toolEntity.setType(pluginEntity.getType());
         toolEntity.setIntfType(buildIntfType(pluginEntity.getIntfType(), toolId));
         toolEntity.setMetadata(pluginEntity.getMetadata());
+        toolEntity.setCallMode(pluginEntity.getCallMode());
         toolEntity.setCreator(pluginEntity.getCreator());
         toolEntity.setCreatorId(pluginEntity.getCreatorId());
         toolEntity.setCreatedOn(pluginEntity.getCreatedOn());
@@ -281,7 +282,7 @@ public class PluginBaseImpl implements IPluginBase {
         pluginEntity.setAuthRequired(toolEntity.getAuthRequired());
         pluginEntity.setTraceId(toolEntity.getTraceId());
         pluginEntity.setPublished(toolEntity.getPublished());
-        pluginEntity.setCallMode("api");
+        pluginEntity.setCallMode(toolEntity.getCallMode() == null ? "api" : toolEntity.getCallMode());
         return pluginEntity;
     }
 
@@ -610,7 +611,7 @@ public class PluginBaseImpl implements IPluginBase {
                     throw new AgentStudioException(StudioError.TOOL_INPUT_INVALID);
                 }
             }
-        } else {
+        } else if (!"custom".equals(pluginEntity.getCallMode())) {
             // 未知格式
             log.error("request info is null please check plugin {}", pluginEntity.getPluginId());
             throw new AgentStudioException(StudioError.TOOL_INPUT_INVALID);
@@ -1387,10 +1388,13 @@ public class PluginBaseImpl implements IPluginBase {
     private BasicInfo buildBasicInfoOld(PluginEntity pluginEntity, ToolInfo toolInfo, String toolId) {
         // 构建requestInfo字段，包括BasicInfo和tool_info
         UrlInfo urlInfo = null;
-        if (toolInfo.getUrl().contains("{")) {
-            urlInfo = parseVariableUrl(toolInfo.getUrl());
+        String url = toolInfo.getUrl();
+        if (StringUtils.isBlank(url)) {
+            urlInfo = new UrlInfo();
+        } else if (url.contains("{")) {
+            urlInfo = parseVariableUrl(url);
         } else {
-            urlInfo = parseUrl(toolInfo.getUrl());
+            urlInfo = parseUrl(url);
         }
         BasicInfo basicInfo = BasicInfo.builder()
                 .host(urlInfo.getHost())

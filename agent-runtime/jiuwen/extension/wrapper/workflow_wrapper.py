@@ -51,6 +51,7 @@ _DEBUG_EVENT_RETURN_TO_SERVICE: dict[str, str] = {
     "_RoutedIntentDetection": "IntentDetection",
     "LoopComponent": "jiuwen.loop",
     "FlowApi": "Api",
+    "FlowCustomApi": "Api",
     "FlowInput": "jiuwen.input",
     "ExceptionInfo": "jiuwen.exception",
     "LoopSetVariable": "jiuwen.setVariable",

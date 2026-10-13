@@ -7,6 +7,7 @@
   - [安装部署](how-to/deploy-service.md)
   - [Beta5 升级部署](how-to/upgrade-from-beta4.md)
   - [开发指南](how-to/development-guide.md)
+  - [自定义插件开发指南](how-to/custom-plugin-development-guide.md)
   - [资产广场预置](how-to/asset-plaza-preset.md)
   - [可观测性部署](how-to/configure-opentelemetry.md)
   - [知识库接入指南](how-to/knowledge-base-guide.md)
