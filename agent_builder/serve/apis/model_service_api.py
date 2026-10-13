@@ -341,12 +341,14 @@ def _normalize_reasoning_fields(obj: Union[dict, list]) -> Union[dict, list]:
 
     前端/运行时的调测链路只消费 ``reasoning_content``；vLLM（DeepSeek-V4-Flash 等）在
     流式 ``delta.reasoning`` 与非流式 ``message.reasoning`` 返回思考，导致调测页不显示。
-    恰好已有 ``reasoning_content`` 时以其为准（上游显式返回过则原样保留），仅当缺失时
-    用 ``reasoning`` 兜底；同样逻辑覆盖 choices[].message / choices[].delta / 顶层。递归。
+    以「值」判断兜底条件：``reasoning_content`` 缺失、为 ``null`` 或空串时都视为未提供，
+    用非空 ``reasoning`` 补齐；仅当 ``reasoning_content`` 已有真值时以其为准、``reasoning``
+    原样保留不删除。同样逻辑覆盖 choices[].message / choices[].delta / 顶层，递归。
     """
     if isinstance(obj, dict):
-        if "reasoning_content" not in obj and "reasoning" in obj:
-            obj["reasoning_content"] = obj["reasoning"]
+        reasoning = obj.get("reasoning")
+        if reasoning and not obj.get("reasoning_content"):
+            obj["reasoning_content"] = reasoning
         for value in obj.values():
             _normalize_reasoning_fields(value)
     elif isinstance(obj, list):
@@ -356,23 +358,27 @@ def _normalize_reasoning_fields(obj: Union[dict, list]) -> Union[dict, list]:
 
 
 def _transform_chat_sse_line(line: bytes) -> bytes:
-    """单行 SSE 变换：``data:`` 行是 JSON（且非 [[DONE]]/[[ERROR]]）时做 reasoning 归一。
+    """单行 SSE 变换：``data:`` 行是 JSON（且非 [DONE]/[ERROR]）时做 reasoning 归一。
 
     非 JSON 的 ``data:`` 行（keep-alive 注释等）与 ``event:`` / 空行原样透传，保证
-    ``data: [DONE]`` 终止符与事件边界不被破坏。
+    ``data: [DONE]`` 终止符与事件边界不被破坏。``payload`` 先 ``strip`` 去掉行尾换行
+    再比对终止符，否则 [DONE]/[ERROR] 守卫永不命中（原实现靠 json.loads 失败兜底透传，
+    属死代码）。解析/重序列化/编码任一环节异常（畸形 JSON、孤立代理项导致
+    ``.encode('utf-8')`` 抛 UnicodeEncodeError 等）一律原样透传该行——绝不因单行转换
+    失败中断整条 SSE 流，畸形上游数据的容错性不劣于原先的字节直通。
     """
     data_marker = b"data:"
     if not line.strip() or not line.startswith(data_marker):
         return line
-    payload = line[len(data_marker):].lstrip()
+    payload = line[len(data_marker):].strip()
     if payload in (b"[DONE]", b"[ERROR]"):
         return line
     try:
         obj = json.loads(payload)
-    except (ValueError, TypeError):
+        _normalize_reasoning_fields(obj)
+        return b"data: " + json.dumps(obj, ensure_ascii=False).encode("utf-8") + b"\n"
+    except (ValueError, TypeError, UnicodeEncodeError):
         return line
-    _normalize_reasoning_fields(obj)
-    return b"data: " + json.dumps(obj, ensure_ascii=False).encode("utf-8") + b"\n"
 
 
 async def _iter_relay_with_reasoning_transform(response: httpx.Response):
