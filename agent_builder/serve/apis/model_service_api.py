@@ -336,6 +336,61 @@ def _build_chat_upstream_body(body: dict, model_name: str, is_stream: bool) -> d
     return up_body
 
 
+def _normalize_reasoning_fields(obj: Union[dict, list]) -> Union[dict, list]:
+    """把 vLLM/DeepSeek 类上游散落在 ``reasoning`` 字段的思考内容归一为 ``reasoning_content``。
+
+    前端/运行时的调测链路只消费 ``reasoning_content``；vLLM（DeepSeek-V4-Flash 等）在
+    流式 ``delta.reasoning`` 与非流式 ``message.reasoning`` 返回思考，导致调测页不显示。
+    恰好已有 ``reasoning_content`` 时以其为准（上游显式返回过则原样保留），仅当缺失时
+    用 ``reasoning`` 兜底；同样逻辑覆盖 choices[].message / choices[].delta / 顶层。递归。
+    """
+    if isinstance(obj, dict):
+        if "reasoning_content" not in obj and "reasoning" in obj:
+            obj["reasoning_content"] = obj["reasoning"]
+        for value in obj.values():
+            _normalize_reasoning_fields(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            _normalize_reasoning_fields(item)
+    return obj
+
+
+def _transform_chat_sse_line(line: bytes) -> bytes:
+    """单行 SSE 变换：``data:`` 行是 JSON（且非 [[DONE]]/[[ERROR]]）时做 reasoning 归一。
+
+    非 JSON 的 ``data:`` 行（keep-alive 注释等）与 ``event:`` / 空行原样透传，保证
+    ``data: [DONE]`` 终止符与事件边界不被破坏。
+    """
+    data_marker = b"data:"
+    if not line.strip() or not line.startswith(data_marker):
+        return line
+    payload = line[len(data_marker):].lstrip()
+    if payload in (b"[DONE]", b"[ERROR]"):
+        return line
+    try:
+        obj = json.loads(payload)
+    except (ValueError, TypeError):
+        return line
+    _normalize_reasoning_fields(obj)
+    return b"data: " + json.dumps(obj, ensure_ascii=False).encode("utf-8") + b"\n"
+
+
+async def _iter_relay_with_reasoning_transform(response: httpx.Response):
+    """按行缓冲转发流式响应，并把跨包拆分的 SSE 行重组后再走归一变换。"""
+    buffer = b""
+    async for chunk in response.aiter_raw():
+        buffer += chunk
+        while True:
+            newline = buffer.find(b"\n")
+            if newline == -1:
+                break
+            line = buffer[:newline]
+            buffer = buffer[newline + 1:]
+            yield _transform_chat_sse_line(line.rstrip(b"\r") + b"\n")
+    if buffer:
+        yield _transform_chat_sse_line(buffer.rstrip(b"\r") + b"\n")
+
+
 # ----------------------------- chat -----------------------------
 
 
@@ -393,7 +448,8 @@ async def chat_completions(
                             upstream_status=resp.status_code,
                             upstream_body=resp.text,
                         )
-                    return resp.json()
+                    # vLLM 类上游把思考放 message.reasoning，归一为 reasoning_content 供前端消费
+                    return _normalize_reasoning_fields(resp.json())
                 except httpx.HTTPError as exc:
                     raise _upstream_transport_error(url, exc) from exc
                 finally:
@@ -423,15 +479,16 @@ async def chat_completions(
                     upstream_body=text,
                 )
 
-            async def _relay():
+            async def _relay_with_reasoning():
                 try:
-                    async for chunk in resp.aiter_raw():
-                        yield chunk
+                    # 逐行归一 vLLM 的 delta.reasoning → delta.reasoning_content
+                    async for line in _iter_relay_with_reasoning_transform(resp):
+                        yield line
                 finally:
                     await resp.aclose()
                     await client.aclose()
 
-            return _relay()
+            return _relay_with_reasoning()
 
         result = await policy.invoke_with_strategy(strategy, invoke_one, stream=stream)
     except resolver.ModelServiceError as exc:
