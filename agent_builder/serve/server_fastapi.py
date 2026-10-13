@@ -33,13 +33,44 @@ logger = logging.getLogger("agent_builder.server_fastapi")
 apps_map = [builder_router, model_service_router, prompt_manage_app]
 
 
+async def _init_redis_provider() -> None:
+    """装配 Redis Provider（缺省 native=行为不变；企业设 REDIS_PROVIDER 切换）。
+
+    装配含 ping fail-fast；成功后 common_utils 委托层自动切换：
+    异步面（history 存储 SPI 直调）与同步面（get_sync_client 返回同步兼容桥）。
+    适配层包未安装（独立环境）或装配失败时回退 legacy 客户端，warn 不阻断启动。
+    """
+    try:
+        from common_utils.redis_provider_bootstrap import init_redis_provider
+    except ImportError:
+        logger.warning(
+            "redis adapter packages not installed, fallback to legacy redis client"
+        )
+        return
+    try:
+        await init_redis_provider()
+        logger.info("Redis provider initialized (delegation active)")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Redis provider init failed, fallback to legacy: {e}")
+
+
 async def _ping_redis() -> None:
     """Best-effort Redis ping at startup (fail-fast on misconfig).
 
     n2l history.py creates its client lazily from the same config_bridge
     settings; this only validates config at boot. Warn-and-continue on failure.
+    Provider 已装配时装配期已 ping fail-fast，直接确认不再重复探活。
     """
     try:
+        try:
+            from redis_spi import accessor
+
+            if accessor.is_initialized():
+                logger.info("Redis connection check passed (provider assembled)")
+                return
+        except ImportError:
+            pass
+
         from common_utils.redis_manager import RedisClientManager
 
         mgr = RedisClientManager.get_instance()
@@ -153,6 +184,9 @@ async def lifespan(app: FastAPI):  # noqa: redefined-outer-name
     # 调度协程到主 loop，避免新建 loop 与主 loop 上的 async 单例（S3StorageProvider 等）跨 loop。
     from agent_builder.adapter.llm_bridge import set_main_loop
     set_main_loop(asyncio.get_running_loop())
+
+    # Redis Provider 装配（缺省 native；成功后委托层异步/同步面自动切换）
+    await _init_redis_provider()
 
     await _init_prompt_store()
     await _ping_redis()
