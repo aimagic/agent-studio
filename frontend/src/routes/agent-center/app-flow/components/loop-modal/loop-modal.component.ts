@@ -616,15 +616,6 @@ export class LoopModalComponent extends ModalBaseComponent implements OnInit {
     this.updateConditionOps();
   }
 
-  /** literal 中间变量是否已填写：显式判空，0/false 是合法值不能用真值判断 */
-  private isLiteralFilled(param: IWorkflowField): boolean {
-    return (
-      param.value.type === 'literal' &&
-      param.value.content !== '' &&
-      param.value.content != null
-    );
-  }
-
   /** ref 中间变量是否已选择引用 */
   private isRefFilled(param: IWorkflowField): boolean {
     return (
@@ -635,8 +626,16 @@ export class LoopModalComponent extends ModalBaseComponent implements OnInit {
   onMidRefChange(init?: boolean) {
     const newMidRefs: IParamRef[] = [];
     this.midParams.forEach((param) => {
-      // 注意：integer 0 / boolean false 是合法字面量，禁止真值判断
-      if ((param.name && this.isLiteralFilled(param)) || this.isRefFilled(param)) {
+      const isLiteral = param.value.type === 'literal';
+      // literal 中间变量：只要已命名即纳入引用树。
+      // 字符串留空是合法运行时值（hasIllegalMidParams 明确豁免、getInputsDSL 也只按
+      // name 校验与序列化），故不能按其字面量内容是否为空来决定它能否被引用：
+      // 否则内容暂空（如切到 string 时默认内容 ''）会让该变量从引用树消失，
+      // 紧随其后的 reSelectRefsWithNewOps 找不到匹配节点，便把下游已建立的引用
+      // 清空——表现为「引用类型不刷新、引用值丢失」。
+      // integer 0 / boolean false 等同理天然纳入，无需真值判断。
+      // ref 中间变量仍需已选择引用。
+      if ((param.name && isLiteral) || this.isRefFilled(param)) {
         const paramCopy = cloneDeep(param);
 
         let willPush: Partial<IParamRef> = {
