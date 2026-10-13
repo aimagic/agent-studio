@@ -387,8 +387,9 @@ def _transform_chat_sse_line(line: bytes) -> bytes:
     上游空白/换行、``\\uXXXX`` 转义风格、重复键与数字字面量），与改造前的字节透明转发
     保持一致。``payload`` 先 ``strip`` 去掉行尾换行再比对 [DONE]/[ERROR]，让显式守卫
     真正生效（避免依赖 json.loads 失败兜底）。解析、归一、重序列化任一环节异常一律降级
-    为原样透传该行：常见失败（畸形 JSON、孤立代理项导致 ``.encode('utf-8')`` 抛
-    UnicodeEncodeError）静默透传；未预期异常（深嵌套 JSON 触发 ``RecursionError``、
+    为原样透传该行：常见失败（畸形 JSON，及孤立代理项导致 ``.encode('utf-8')`` 抛出的
+    UnicodeEncodeError——其本身即 ValueError 子类，无需再单独列出，避免同一 except 块
+    父子异常重复捕获）静默透传；未预期异常（深嵌套 JSON 触发 ``RecursionError``、
     ``MemoryError`` 等）同样透传并记 warning，绝不因单行转换失败中断整条 SSE 流。
     仅捕获 ``Exception`` 不含 ``BaseException``，``asyncio.CancelledError``/
     ``KeyboardInterrupt`` 等取消信号仍可正常向上传播，不会被当作转换失败吞掉。
@@ -404,7 +405,7 @@ def _transform_chat_sse_line(line: bytes) -> bytes:
         if not _normalize_reasoning_fields(obj):
             return line
         return b"data: " + json.dumps(obj, ensure_ascii=False).encode("utf-8") + b"\n"
-    except (ValueError, TypeError, UnicodeEncodeError):
+    except (ValueError, TypeError):
         return line
     except Exception as exc:  # noqa: BLE001 - 兜底任意未预期异常，保证 SSE 流不因单行转换失败而中断
         logger.warning(
