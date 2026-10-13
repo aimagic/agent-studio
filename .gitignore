@@ -88,3 +88,6 @@ docker/image/
 docker/AgentBuilder.tar.gz
 docker/.source-build-hash
 docker/.last-build.env
+
+# redis-py 6.4.0 对齐验证隔离 venv（本地验证产物）
+/agent-runtime/.venv-redis64/
