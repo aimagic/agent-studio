@@ -391,7 +391,7 @@ def _transform_chat_sse_line(line: bytes) -> bytes:
     绝不因单行转换失败中断整条 SSE 流。
     """
     data_marker = b"data:"
-    if not line.strip() or not line.startswith(data_marker):
+    if not line.startswith(data_marker):
         return line
     payload = line[len(data_marker):].strip()
     if payload in (b"[DONE]", b"[ERROR]"):
