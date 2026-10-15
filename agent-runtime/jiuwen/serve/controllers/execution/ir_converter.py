@@ -56,6 +56,7 @@ from jiuwen.extension.patches.parallel_branch_grouping_patch import (
 from jiuwen.extension.workflow_node.flow_agent import FlowAgent, FlowAgentConfig
 from jiuwen.extension.workflow_node.flow_aggregate import Aggregate
 from jiuwen.extension.workflow_node.flow_api import FlowApi
+from jiuwen.extension.workflow_node.flow_custom_api import FlowCustomApi
 from jiuwen.extension.workflow_node.flow_card import FlowCard, FlowCardConfig
 from jiuwen.extension.workflow_node.flow_exception import ExceptionInfo
 from jiuwen.extension.workflow_node.flow_extractor import Extractor
@@ -2395,6 +2396,9 @@ class IRConverter:
             return Extractor(), node_type, configs
 
         if node_type in {"jiuwen.plugin", "jiuwen.api", "jiuwen.flowApi"}:
+            call_mode = configs.get("callMode", "api")
+            if call_mode == "custom":
+                return FlowCustomApi(configs), node_type, configs
             return FlowApi(configs), node_type, configs
 
         if node_type in {"jiuwen.mcp", "jiuwen.flowMcp"}:
