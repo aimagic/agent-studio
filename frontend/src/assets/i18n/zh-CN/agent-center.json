@@ -2177,6 +2177,8 @@
   "sqlmodalcomponent_575": "暂无数据库",
   "sqlmodalcomponent_585": "请选择数据库",
   "sqlmodalcomponent_586": "支持2种输入方式：\n1. 引用上一节点的输出；\n2. 输入SQL语句；\n\n只支持选择一种输入方式；\n不支持输入多个SQL语句；\n查询数据条目数过多时请使用LIMIT限制返回条数。",
+  "sql_param_ref": "参数化引用 {{var}}：用于标量值（字符串、数字等），以 PreparedStatement 参数绑定",
+  "sql_inline_ref": "内联引用 {{{var}}}：用于 SQL 片段（表名、子查询等），直接嵌入 SQL 文本",
   "sqlnodecomponent_590": "未选择数据库",
   "startimportjsonmodalcomponent_594": "{\n  \"name\": \"张三\",\n  \"age\": 30,\n  \"regular\": true,\n  \"skills\": [\n    \"编程\",\n    \"设计\"\n  ]\n}",
   "flowcomponent_608": "异步任务",
