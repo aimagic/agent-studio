@@ -106,6 +106,9 @@ export class PluginDebugModalComponent {
 
   /** 是否存在默认环境（存在绑定关系但未设置默认环境时为 false，用于提示） */
   public hasDefaultEnv = true;
+
+  /** 调测参数是否已就绪（环境变量回填完成）；未就绪前禁止调测，避免提交空参数或未回填参数 */
+  public isParamsReady = false;
   constructor(
     private i18n: I18NextEagerPipe,
     private commonLogic: agentCommonLogic,
@@ -125,6 +128,8 @@ export class PluginDebugModalComponent {
     // 回填绑定的环境变量值：非加密变量直接填充，加密变量前端拿不到明文，交由后端按默认环境解析
     this.applyBoundEnvVarValues(requestArgToDynamicForm).then((list) => {
       this.requestArgToDynamicForm = list;
+      // 参数就绪后才允许调测，避免异步回填完成前提交空参数/未回填参数
+      this.isParamsReady = true;
       this.registerJSONValidationSchema();
     });
   }
@@ -204,6 +209,10 @@ export class PluginDebugModalComponent {
   }
 
   public async onDebugging() {
+    // 安全兜底：参数未就绪（环境变量回填未完成）时直接返回，避免提交空参数或未回填参数
+    if (!this.isParamsReady) {
+      return;
+    }
     this.isLoading = false;
     let dynamicFormPass = true;
     // 检查基础类型入参
@@ -367,15 +376,33 @@ export class PluginDebugModalComponent {
     // 加密环境变量字段保留 ****** 展示（通过必填校验），提交时替换为运行时占位符，
     // 由后端按默认环境解密解析；用户手填的值原样提交。
     this.requestArgToDynamicForm.forEach((item: any) => {
-      if (
-        item?.env_var_ref &&
-        item?.envVarBoundSecret &&
-        params[item.name] === ENV_VAR_SECRET_MASK
-      ) {
+      if (!item?.env_var_ref || !item?.envVarBoundSecret) {
+        return;
+      }
+      if (this.isUntouchedSecretField(item, params[item.name])) {
         params[item.name] = `${ENV_VAR_PLACEHOLDER_PREFIX}${item.env_var_ref}}`;
       }
     });
     return params;
+  }
+
+  /**
+   * 判断加密绑定字段是否仍为「未手动修改」的默认态。
+   * 动态表单会把非 string 类型默认值强制转换（integer/number 的 ****** → 0，boolean → false），
+   * 因此除固定掩码外还需识别这些转换后形态，否则掩码会被当成用户输入而无法替换为运行时占位符，
+   * 导致 0/false 被当作真实值下发且后端不再回填该加密变量。
+   */
+  private isUntouchedSecretField(item: any, submitted: any): boolean {
+    if (submitted === ENV_VAR_SECRET_MASK) {
+      return true;
+    }
+    if (item?.type === 'integer' || item?.type === 'number') {
+      return typeof submitted === 'number' && (Number.isNaN(submitted) || submitted === 0);
+    }
+    if (item?.type === 'boolean') {
+      return submitted === false;
+    }
+    return false;
   }
 
   private registerJSONValidationSchema() {

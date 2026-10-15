@@ -3,6 +3,7 @@
  */
 package com.openjiuwen.studio.agent.manager.service.proxy;
 
+import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.obs.services.model.TemporarySignatureResponse;
@@ -491,6 +492,13 @@ public class AgentServiceProxyService {
         // 调试时按环境变量绑定关系回填参数（用户手填的值优先，加密变量由后端解密）
         EnvVarResolveResult resolveResult =
             resolveEnvVarParams(projectId, workspaceId, pluginId, innerToolId, body.getParameter());
+        if (resolveResult.isLoadFailed()) {
+            // 环境变量加载失败（未找到默认环境、缓存/DB 读取或解析异常）与"变量不存在"区分开，避免误导用户
+            log.warn("[runTool] env var load failed, block debug. projectId={}", projectId);
+            return ResponseModel.success(new RunToolResponseBody().setSuccess(false)
+                .setRawRequestBody(body.getParameter())
+                .setErrorMessage("环境变量加载失败，无法自动回填绑定参数，请检查环境管理中的默认环境与变量配置后重试"));
+        }
         if (!resolveResult.getMissingVars().isEmpty()) {
             // 绑定的环境变量在默认环境中不存在（如切换默认环境后）时直接失败并给出明确提示，
             // 避免把占位符/脱敏值原样下发到目标接口，产生"不知道这样的主机"这类难定位的错误；
@@ -510,8 +518,10 @@ public class AgentServiceProxyService {
     }
 
     /**
-     * 将调测回显（请求 URL/请求头/请求体）中本次解析出的加密变量明文替换为固定掩码。
-     * 仅影响展示，不影响已发出的真实请求；过短的值不脱敏，避免误伤普通内容。
+     * 将调测回显（请求 URL/请求头/请求体/响应体/错误信息）中本次解析出的加密变量明文替换为固定掩码。
+     * 仅影响展示，不影响已发出的真实请求。
+     * 说明：下游异常信息（如 UnknownHostException 带出的绑定主机名）会写入 errorMessage 并回显给用户，
+     * 响应体也可能回显请求参数，因此这两处同样需要统一脱敏。
      */
     private void maskResolvedSecrets(RunToolResponseBody responseBody, Set<String> secretValues) {
         if (responseBody == null || secretValues.isEmpty()) {
@@ -519,6 +529,8 @@ public class AgentServiceProxyService {
         }
         responseBody.setRawRequestUrl(maskSecretText(responseBody.getRawRequestUrl(), secretValues));
         responseBody.setRawRequestBody(maskSecretText(responseBody.getRawRequestBody(), secretValues));
+        responseBody.setErrorMessage(maskSecretText(responseBody.getErrorMessage(), secretValues));
+        responseBody.setRawResponse(maskSecretText(responseBody.getRawResponse(), secretValues));
         if (responseBody.getRawRequestHeaders() != null) {
             Map<String, String> maskedHeaders = new LinkedHashMap<>(responseBody.getRawRequestHeaders());
             maskedHeaders.replaceAll((key, value) -> maskSecretText(value, secretValues));
@@ -526,17 +538,41 @@ public class AgentServiceProxyService {
         }
     }
 
+    /**
+     * 将文本中出现的加密变量明文替换为固定掩码。
+     * 覆盖长短不一的密钥值（不再按长度跳过），并同时替换其在 JSON 中的转义形态，
+     * 避免含引号/换行等特殊字符的密钥以转义字面量形式残留在回显中。
+     */
     private String maskSecretText(String text, Set<String> secretValues) {
         if (StringUtils.isEmpty(text)) {
             return text;
         }
         String masked = text;
-        for (String secretValue : secretValues) {
-            if (StringUtils.hasText(secretValue) && secretValue.length() >= 3) {
-                masked = masked.replace(secretValue, ENV_VAR_SECRET_MASK);
+        // 先长后短，避免短值先命中后导致长值被截断无法匹配
+        List<String> ordered = new ArrayList<>(secretValues);
+        ordered.sort((left, right) -> Integer.compare(right.length(), left.length()));
+        for (String secretValue : ordered) {
+            if (StringUtils.isEmpty(secretValue)) {
+                continue;
+            }
+            masked = masked.replace(secretValue, ENV_VAR_SECRET_MASK);
+            String escaped = toJsonEscaped(secretValue);
+            if (!escaped.equals(secretValue)) {
+                masked = masked.replace(escaped, ENV_VAR_SECRET_MASK);
             }
         }
         return masked;
+    }
+
+    /**
+     * 取变量值在 JSON 字符串中的转义形态（去掉首尾引号），用于覆盖回显里的转义字面量。
+     */
+    private String toJsonEscaped(String value) {
+        String json = JSON.toJSONString(value);
+        if (json != null && json.length() >= 2 && json.startsWith("\"") && json.endsWith("\"")) {
+            return json.substring(1, json.length() - 1);
+        }
+        return value;
     }
 
     /**
@@ -577,7 +613,9 @@ public class AgentServiceProxyService {
         if (envRefMap.isEmpty() && neededNames.isEmpty()) {
             return result;
         }
-        Map<String, LoadedEnvVar> envValues = loadDefaultEnvVarValues(projectId, workspaceId, neededNames);
+        LoadedEnvVars loadedEnvVars = loadDefaultEnvVarValues(projectId, workspaceId, neededNames);
+        Map<String, LoadedEnvVar> envValues = loadedEnvVars.getValues();
+        result.setLoadFailed(loadedEnvVars.isFailed());
         log.info("[runTool] resolve env var params, boundFields={}, placeholderFields={}, matchedEnvVars={}",
             envRefMap.keySet(), placeholderFields.keySet(), envValues.keySet());
         boolean changed = replaceEnvPlaceholders(paramJson, placeholderFields, envValues, result.getMissingVars(),
@@ -614,7 +652,7 @@ public class AgentServiceProxyService {
 
     /**
      * 环境变量回填结果：回填后的参数 JSON 字符串、默认环境中不存在的环境变量名（用于提示）、
-     * 以及本次实际回填的加密变量明文集合（用于调测回显脱敏，不下发额外信息）。
+     * 本次实际回填的加密变量明文集合（用于调测回显脱敏），以及环境变量加载是否失败。
      */
     private static class EnvVarResolveResult {
         private String parameter;
@@ -622,6 +660,8 @@ public class AgentServiceProxyService {
         private final Set<String> missingVars = new LinkedHashSet<>();
 
         private final Set<String> secretValues = new LinkedHashSet<>();
+
+        private boolean loadFailed;
 
         EnvVarResolveResult(String parameter) {
             this.parameter = parameter;
@@ -641,6 +681,36 @@ public class AgentServiceProxyService {
 
         Set<String> getSecretValues() {
             return secretValues;
+        }
+
+        boolean isLoadFailed() {
+            return loadFailed;
+        }
+
+        void setLoadFailed(boolean loadFailed) {
+            this.loadFailed = loadFailed;
+        }
+    }
+
+    /**
+     * 默认环境变量的加载结果：变量值映射 + 加载是否失败。
+     * 加载失败（未找到默认环境、缓存/DB 读取或解析异常）与“变量不存在”需区分处理，避免向用户返回错误的缺失提示。
+     */
+    private static class LoadedEnvVars {
+        private final Map<String, LoadedEnvVar> values = new HashMap<>();
+
+        private boolean failed;
+
+        Map<String, LoadedEnvVar> getValues() {
+            return values;
+        }
+
+        boolean isFailed() {
+            return failed;
+        }
+
+        void markFailed() {
+            this.failed = true;
         }
     }
 
@@ -779,6 +849,10 @@ public class AgentServiceProxyService {
             ToolEntity entity = toolMapper.selectById(pluginId);
             if (entity != null) {
                 collectEnvVarRefs(entity.getInputSchema(), refMap);
+                // 降级路径同样需要覆盖 host/baseURL 的 Path 参数绑定，避免 env_var_ref 丢失
+                if (entity.getRequestInfo() != null) {
+                    collectEnvVarRefs(entity.getRequestInfo().getInputSchema(), refMap);
+                }
             }
         }
         return refMap;
@@ -837,51 +911,68 @@ public class AgentServiceProxyService {
     }
 
     /**
-     * 从项目默认环境加载指定名称的环境变量值（缓存优先，缺失时查 DB），加密变量解密后返回，并标记是否加密。
-     * 与前端环境变量查询口径一致：仅取默认环境，不做跨环境兜底，变量缺失时由调用方给出提示。
+     * 从项目默认环境加载指定名称的环境变量值（缓存优先，未命中回退 DB），加密变量解密后返回并标记是否加密。
+     * 与前端环境变量查询口径一致：仅取默认环境，不做跨环境兜底。
+     * 缓存可能陈旧或缺少目标变量，因此缓存未命中全部变量时仍会回退 DB 补查；
+     * 读取/解析异常导致无法判定变量是否存在时标记为加载失败，由调用方给出区别于"变量不存在"的提示。
      *
      * @param names 需要解析的环境变量名集合
-     * @return 环境变量名到值（含是否加密标记）的映射，加载失败返回空 Map
+     * @return 加载结果（变量值映射 + 是否加载失败）
      */
-    private Map<String, LoadedEnvVar> loadDefaultEnvVarValues(String projectId, String workspaceId,
-        Collection<String> names) {
-        Map<String, LoadedEnvVar> result = new HashMap<>();
+    private LoadedEnvVars loadDefaultEnvVarValues(String projectId, String workspaceId, Collection<String> names) {
+        LoadedEnvVars loaded = new LoadedEnvVars();
         if (StringUtils.isEmpty(projectId) || names == null || names.isEmpty()) {
-            return result;
+            return loaded;
         }
+        List<EnvironmentManagerEntity> defaultEnvs;
         try {
-            List<EnvironmentManagerEntity> defaultEnvs = environmentManagerMapper.findByProjectIdAndIsDefaultTrue(projectId);
-            if (org.springframework.util.CollectionUtils.isEmpty(defaultEnvs)) {
-                log.warn("[runTool] no default environment found for project: {}", projectId);
-                return result;
-            }
-            String envId = defaultEnvs.get(0).getId();
-            String envJson = null;
-            if (StringUtils.hasText(workspaceId)) {
+            defaultEnvs = environmentManagerMapper.findByProjectIdAndIsDefaultTrue(projectId);
+        } catch (Exception e) {
+            log.error("[runTool] query default environment failed for project: {}", projectId, e);
+            loaded.markFailed();
+            return loaded;
+        }
+        if (org.springframework.util.CollectionUtils.isEmpty(defaultEnvs)) {
+            log.warn("[runTool] no default environment found for project: {}", projectId);
+            loaded.markFailed();
+            return loaded;
+        }
+        String envId = defaultEnvs.get(0).getId();
+        boolean readError = false;
+        if (StringUtils.hasText(workspaceId)) {
+            try {
                 String cached = environmentCacheUtil.getEnvironmentCache(envId, workspaceId);
                 if (StringUtils.hasText(cached) && !"{}".equals(cached)) {
-                    envJson = cached;
+                    parseAndFillEnvValues(cached, names, loaded.getValues());
                 }
+            } catch (Exception e) {
+                log.error("[runTool] read environment cache failed, envId: {}", envId, e);
+                readError = true;
             }
-            if (envJson == null && StringUtils.hasText(workspaceId)) {
+        }
+        // 缓存可能陈旧或缺少目标变量，未命中全部变量时回退 DB 补查
+        if (!loaded.getValues().keySet().containsAll(names) && StringUtils.hasText(workspaceId)) {
+            try {
                 EnvironmentVariableEntity byWorkspace =
                     environmentVariableMapper.findByProjectIdAndWorkspaceIdAndEnvId(projectId, workspaceId, envId);
                 if (byWorkspace != null && StringUtils.hasText(byWorkspace.getEnvVariable())) {
-                    envJson = byWorkspace.getEnvVariable();
+                    parseAndFillEnvValues(byWorkspace.getEnvVariable(), names, loaded.getValues());
                 }
+            } catch (Exception e) {
+                log.error("[runTool] query environment variables from db failed, envId: {}", envId, e);
+                readError = true;
             }
-            if (StringUtils.hasText(envJson) && !"{}".equals(envJson)) {
-                parseAndFillEnvValues(envJson, names, result);
-            }
-            Set<String> missing = new HashSet<>(names);
-            missing.removeAll(result.keySet());
-            if (!missing.isEmpty()) {
-                log.warn("[runTool] env vars not found in default environment for project {}: {}", projectId, missing);
-            }
-        } catch (Exception e) {
-            log.error("[runTool] load default env var values failed", e);
         }
-        return result;
+        Set<String> missing = new HashSet<>(names);
+        missing.removeAll(loaded.getValues().keySet());
+        if (!missing.isEmpty()) {
+            log.warn("[runTool] env vars not found in default environment for project {}: {}", projectId, missing);
+            // 存在读取/解析异常时无法判定变量是否真的不存在，按加载失败处理，避免误报"变量不存在"
+            if (readError) {
+                loaded.markFailed();
+            }
+        }
+        return loaded;
     }
 
     /**

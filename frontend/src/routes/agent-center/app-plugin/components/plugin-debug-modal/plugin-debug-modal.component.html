@@ -19,7 +19,7 @@
       <dynamic-node-params *ngIf="requestArgToDynamicForm.length" #dynamicFormIns [inputList]="requestArgToDynamicForm"></dynamic-node-params>
     </div>
     <div class="cutline"></div>
-    <button class="debug-btn" nz-button nzType="primary" (click)="onDebugging()" [disabled]="isLoading">
+    <button class="debug-btn" nz-button nzType="primary" (click)="onDebugging()" [disabled]="isLoading || !isParamsReady">
       {{ 'start_debug' | i18nextEager }}
     </button>
   </div>
