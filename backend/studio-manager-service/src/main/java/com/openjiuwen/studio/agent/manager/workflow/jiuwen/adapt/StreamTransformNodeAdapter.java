@@ -105,12 +105,32 @@ public class StreamTransformNodeAdapter extends AbstractIRNodeAdapter {
         Map<String, Object> irTransformer = new HashMap<>();
         irTransformer.put(VARIABLES, variables);
 
-        // 尝试解析为 JSON 对象，若非 JSON 则保留字符串
-        try {
-            irTransformer.put(FRAME_TEMPLATE, objectMapper.readTree(frameTemplate));
-            irTransformer.put(FINAL_TEMPLATE, objectMapper.readTree(convertJson(variables, frameTemplate)));
-        } catch (Exception e) {
-            throw new AgentStudioException(StudioError.FRAME_TEMPLATE_INVALID_JSON);
+        // 尝试解析为 JSON 对象
+        // 支持纯占位符格式（如 {{raw_output}}）：将整个输入作为帧引用
+        if (variables.isEmpty() && frameTemplate.matches("\\{\\{[^.}]+\\}\\}")) {
+            // 纯占位符：创建变量，src_path 设为变量名（runtime 会自动清空 src_path 返回整个帧）
+            String pureVarName = frameTemplate.replaceAll("\\{\\{|\\}\\}", "").trim();
+            Map<String, Object> wholeInputVar = new HashMap<>();
+            wholeInputVar.put(NAME, pureVarName);
+            wholeInputVar.put(SRC_PATH, pureVarName);
+            wholeInputVar.put(CONCAT, false);
+            variables.add(wholeInputVar);
+            irTransformer.put(VARIABLES, variables);
+            // frame_template 使用变量名作为 key
+            String wrappedTemplate = "{\"" + pureVarName + "\": \"{{" + pureVarName + "}}\"}";
+            try {
+                irTransformer.put(FRAME_TEMPLATE, objectMapper.readTree(wrappedTemplate));
+                irTransformer.put(FINAL_TEMPLATE, objectMapper.readTree(wrappedTemplate));
+            } catch (Exception e) {
+                throw new AgentStudioException(StudioError.FRAME_TEMPLATE_INVALID_JSON);
+            }
+        } else {
+            try {
+                irTransformer.put(FRAME_TEMPLATE, objectMapper.readTree(frameTemplate));
+                irTransformer.put(FINAL_TEMPLATE, objectMapper.readTree(convertJson(variables, frameTemplate)));
+            } catch (Exception e) {
+                throw new AgentStudioException(StudioError.FRAME_TEMPLATE_INVALID_JSON);
+            }
         }
 
         // 有聚合字段时，必须设置成true
