@@ -112,7 +112,7 @@ public class StreamTransformNodeAdapter extends AbstractIRNodeAdapter {
             String pureVarName = frameTemplate.replaceAll("\\{\\{|\\}\\}", "").trim();
             Map<String, Object> wholeInputVar = new HashMap<>();
             wholeInputVar.put(NAME, pureVarName);
-            wholeInputVar.put(SRC_PATH, pureVarName);
+            wholeInputVar.put(SRC_PATH, "");
             wholeInputVar.put(CONCAT, false);
             variables.add(wholeInputVar);
             irTransformer.put(VARIABLES, variables);
