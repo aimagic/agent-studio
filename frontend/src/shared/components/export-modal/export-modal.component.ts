@@ -48,6 +48,11 @@ export class ExportModalComponent implements OnInit {
     return this.modalData.exportTypeOptions.find((item) => item.id === this.exportType);
   }
 
+  /** 当前 exportType 是否支持运行时资产导出（仅 agent/workflow/controller；Plugin 等不支持，巡检 #5） */
+  public get supportsRuntimeAssetExport(): boolean {
+    return !!ExportModalComponent.RUNTIME_ASSET_ID_MAP[this.exportType];
+  }
+
   public listOfColumns: any[] = [];
   public listOfData: any[] = [];
   public total = 0;
@@ -60,6 +65,13 @@ export class ExportModalComponent implements OnInit {
   public setOfCheckedId = new Set<any>();
   public selectedRowsMap = new Map<any, any>();
   public isRuntimeAssetExporting = false;
+
+  /** 运行时资产导出支持的 exportType → 行 ID 字段映射（巡检 #5：不支持类型隐藏按钮） */
+  private static readonly RUNTIME_ASSET_ID_MAP: Record<string, string> = {
+    agent: 'agent_id',
+    workflow: 'workflow_id',
+    controller: 'agent_id',
+  };
 
   public get allChecked(): boolean {
     return this.listOfData.length > 0 && this.listOfData.every((item) =>
@@ -320,8 +332,7 @@ export class ExportModalComponent implements OnInit {
       return;
     }
     const row = rows[0];
-    const idMap: Record<string, string> = { agent: 'agent_id', workflow: 'workflow_id', controller: 'agent_id' };
-    const idField = idMap[this.exportType];
+    const idField = ExportModalComponent.RUNTIME_ASSET_ID_MAP[this.exportType];
     const resourceId = idField ? row[idField] : undefined;
     if (!resourceId) {
       // 未知 exportType 或缺 ID，不发请求

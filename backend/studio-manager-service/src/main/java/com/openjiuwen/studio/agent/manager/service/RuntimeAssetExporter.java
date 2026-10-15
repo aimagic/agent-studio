@@ -23,7 +23,10 @@ import com.openjiuwen.studio.agent.manager.workflow.resource.model.RuntimeAssetM
 import com.openjiuwen.studio.agent.manager.workflow.resource.model.RuntimeAssetManifest.ManifestAsset;
 import com.openjiuwen.studio.agent.manager.workflow.resource.model.RuntimeAssetManifest.ManifestResource;
 import com.openjiuwen.studio.agent.manager.workflow.resource.model.RuntimeAssetManifest.ManifestSummary;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 
 import org.apache.commons.lang3.StringUtils;
@@ -35,7 +38,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -96,9 +101,18 @@ public class RuntimeAssetExporter {
     @org.springframework.beans.factory.annotation.Value("${spring.profiles.active:dev}")
     private String springProfile;
 
+    /**
+     * manifest.json 序列化器：用 Jackson 识别 {@link RuntimeAssetManifest} 上的
+     * {@code com.fasterxml.jackson.annotation.JsonProperty} 蛇形契约
+     * （manifest_version/export_id/total_size_bytes/...）；fastjson2 不识别 Jackson 注解会输出驼峰，
+     * 破坏导入工具读取的蛇形契约（bug004 #2）。NON_NULL 纳入策略对齐 fastjson2 默认省空字段行为。
+     */
+    private static final ObjectMapper MANIFEST_MAPPER = new ObjectMapper()
+        .setSerializationInclusion(JsonInclude.Include.NON_NULL);
+
     private java.util.concurrent.Semaphore exportSemaphore;
 
-    @javax.annotation.PostConstruct
+    @PostConstruct
     private void initSemaphore() {
         // 兜底：maxConcurrent 配 0 或负数时 Semaphore 永远拿不到许可，会导致导出永久 busy。
         this.exportSemaphore = new java.util.concurrent.Semaphore(Math.max(1, maxConcurrent));
@@ -135,15 +149,18 @@ public class RuntimeAssetExporter {
      */
     public byte[] exportRuntimeAssetZip(String projectId, String workspaceId,
         String resourceType, String resourceId, String version) {
-        // 越权校验：显式 projectId/workspaceId 必须与 RequestContext（拦截器从鉴权注入）一致
+        // 越权校验：显式 projectId/workspaceId 必须与 RequestContext（拦截器从鉴权注入）一致。
+        // bug005 #3：上下文为空时直接拒绝（fail-closed），不再放行——否则 validateResourceOwnership
+        // 会完全信任请求参数中的 project_id/workspace_id，攻击者可传他人 project/workspace/resourceId
+        // 越权导出他人 IR+模型鉴权+KB+技能。导出 API 走鉴权，无合法的空上下文场景。
         String ctxProjectId = RequestContextUtils.getRequestProjectId();
         String ctxWorkspaceId = RequestContextUtils.getRequestWorkspaceId();
-        if (StringUtils.isNotBlank(ctxProjectId) && !ctxProjectId.equals(projectId)) {
+        if (StringUtils.isBlank(ctxProjectId) || !ctxProjectId.equals(projectId)) {
             log.error("runtime_asset_export_forbidden|request_project_id={}|ctx_project_id={}", projectId, ctxProjectId);
             throw new AgentStudioException(StudioError.USER_WORKSPACE_PERMISSION_INVALID,
                 "project_id does not match the authenticated context");
         }
-        if (StringUtils.isNotBlank(ctxWorkspaceId) && !ctxWorkspaceId.equals(workspaceId)) {
+        if (StringUtils.isBlank(ctxWorkspaceId) || !ctxWorkspaceId.equals(workspaceId)) {
             log.error("runtime_asset_export_forbidden|request_workspace_id={}|ctx_workspace_id={}",
                 workspaceId, ctxWorkspaceId);
             throw new AgentStudioException(StudioError.USER_WORKSPACE_PERMISSION_INVALID,
@@ -362,19 +379,21 @@ public class RuntimeAssetExporter {
 
     /**
      * 从根/子 IR 提取 skill 资产 + 子 IR ir_path 对齐 + authId 提取（SDD 5.1/5.2/5.4）。
-     * <p>遍历已收集的 agent_ir/workflow_ir 资产，读 IR JSON：
+     * <p>工作队列（worklist）逐个处理已收集的 agent_ir/workflow_ir 资产，读 IR JSON：
      * <ul>
      *   <li>SDD 5.4：取 configs.skills.skill_info[].skill_path（skill 资产）</li>
      *   <li>SDD 5.1：取 configs.workflows[].ir_path / configs.agents[].ir_path
      *       （子资产版本以父 IR 内嵌 ir_path 为准，t_mapping 版本仅交叉校验）</li>
      *   <li>SDD 5.2：递归提取所有 extension.authId（5 处：modelConfig/工作流model/LLM节点/Questioner/意图检测）</li>
      * </ul>
+     * <p>版本对齐产生的新版本子 IR（替换 t_mapping 旧版本）入队继续抽取其 skill/child ir_path/authId
+     * （bug004 #3：原遍历调用前快照，新版本子 IR 不再回扫致漏导依赖）；
+     * processedKeys+collectedKeys 去重防环。
      * @return 提取到的 authId 集合（供 model-auth 收集使用）
      */
     private Set<String> collectIrDerivedAssets(List<ManifestAsset> assets, Set<String> collectedKeys,
         List<ManifestAsset> irAssets, String rootProjectId, Map<String, String> obsCache) {
         Set<String> authIds = new HashSet<>();
-        Set<String> childIrPaths = new HashSet<>();
         // resourceId → 已收集的 IR asset（用于子 IR 版本冲突检测：t_mapping 版本 vs 父 IR 内嵌 ir_path 版本）
         Map<String, ManifestAsset> irByResourceId = new HashMap<>();
         for (ManifestAsset existing : irAssets) {
@@ -383,7 +402,14 @@ public class RuntimeAssetExporter {
                 irByResourceId.put(rid, existing);
             }
         }
-        for (ManifestAsset asset : irAssets) {
+        // 工作队列：初始为调用前快照；版本对齐新增的子 IR 入队继续抽取（bug004 #3）。processedKeys 防同 key 重复处理。
+        Deque<ManifestAsset> worklist = new ArrayDeque<>(irAssets);
+        Set<String> processedKeys = new HashSet<>();
+        while (!worklist.isEmpty()) {
+            ManifestAsset asset = worklist.poll();
+            if (!processedKeys.add(asset.getKey())) {
+                continue; // 同 key 已处理（去重防环）
+            }
             String irJson;
             try {
                 irJson = getCachedObject(asset.getKey(), obsCache);
@@ -393,6 +419,7 @@ public class RuntimeAssetExporter {
             if (StringUtils.isBlank(irJson)) {
                 continue;
             }
+            Set<String> childIrPaths = new HashSet<>();
             try {
                 JSONObject ir = JSON.parseObject(irJson);
                 JSONObject configs = ir.getJSONObject("configs");
@@ -408,6 +435,13 @@ public class RuntimeAssetExporter {
                             JSONObject skill = skillInfo.getJSONObject(i);
                             String skillPath = skill.getString("skill_path");
                             if (StringUtils.isNotBlank(skillPath)) {
+                                // bug007 #1：skill_path 必须归属当前用户（格式 {userId}/skills/...），
+                                // 防 IR 可构造 user-{他人userId}/skills/... 跨用户读取他人技能。
+                                if (!isOwnedSkillPath(skillPath)) {
+                                    log.warn("runtime_asset_export_skill_skipped|skill_path={}|reason=unowned",
+                                        skillPath);
+                                    continue;
+                                }
                                 addAsset(assets, collectedKeys, skillPath, TYPE_SKILL);
                             }
                         }
@@ -423,34 +457,46 @@ public class RuntimeAssetExporter {
             } catch (Exception e) {
                 log.warn("collectIrDerivedAssets parse IR failed, key={}. {}", asset.getKey(), e.getMessage());
             }
-        }
-        // SDD 5.1：子资产版本以父 IR 内嵌 ir_path 为准。t_mapping 版本与 ir_path 版本冲突时，
-        // ir_path 胜出（运行态按父 IR 内嵌 ir_path 加载子资产），并在 manifest note 记录差异（巡检 #3/#4）。
-        for (String irPath : childIrPaths) {
-            String type = irPath.startsWith("workflow/") ? TYPE_WORKFLOW_IR : TYPE_AGENT_IR;
-            String rid = parseResourceIdFromIrKey(irPath);
-            ManifestAsset existing = (rid != null) ? irByResourceId.get(rid) : null;
-            if (existing != null) {
-                if (existing.getKey().equals(irPath)) {
-                    continue; // 同 key 已收集，去重
+            // SDD 5.1：子资产版本以父 IR 内嵌 ir_path 为准。t_mapping 版本与 ir_path 版本冲突时，
+            // ir_path 胜出（运行态按父 IR 内嵌 ir_path 加载子资产），并在 manifest note 记录差异（巡检 #3/#4）。
+            // 版本对齐产生的新子 IR 入队，使其 skill/更深 child ir_path/authId 也被收集（bug004 #3）。
+            for (String irPath : childIrPaths) {
+                String type = irPath.startsWith("workflow/") ? TYPE_WORKFLOW_IR : TYPE_AGENT_IR;
+                String rid = parseResourceIdFromIrKey(irPath);
+                // bug007 #1：子 IR ir_path 必须归属当前 workspace（防 IR 可构造路径跨租户读取他人 IR）。
+                // bug007 #2：先校验合法性 + 归属，通过再 remove 旧 asset；不通过则保留 t_mapping 合法版本，不静默缺失。
+                if (!isValidAssetKey(irPath, type) || !isOwnedChildIr(rid, type)) {
+                    log.warn("runtime_asset_export_child_ir_skipped|ir_path={}|resource_id={}|reason=invalid_or_unowned",
+                        irPath, rid);
+                    continue;
                 }
-                // 版本冲突：ir_path 为准，移除 t_mapping 版本，加入 ir_path 版本
-                String oldVer = parseVersionFromIrKey(existing.getKey());
-                assets.remove(existing);
-                collectedKeys.remove(existing.getKey());
-                ManifestAsset added = addAsset(assets, collectedKeys, irPath, type);
-                if (added != null) {
-                    added.setNote("version aligned to parent IR ir_path; t_mapping version=" + oldVer);
-                    if (rid != null) {
-                        irByResourceId.put(rid, added);
+                ManifestAsset existing = (rid != null) ? irByResourceId.get(rid) : null;
+                if (existing != null) {
+                    if (existing.getKey().equals(irPath)) {
+                        continue; // 同 key 已收集，去重
                     }
-                }
-                log.warn("runtime_asset_export_version_mismatch|resource_id={}|mapping_version={}|ir_path={}",
-                    rid, oldVer, irPath);
-            } else {
-                ManifestAsset added = addAsset(assets, collectedKeys, irPath, type);
-                if (added != null && rid != null) {
-                    irByResourceId.put(rid, added);
+                    // 版本冲突：ir_path 为准，移除 t_mapping 版本，加入 ir_path 版本（校验已通过，安全 remove）
+                    String oldVer = parseVersionFromIrKey(existing.getKey());
+                    assets.remove(existing);
+                    collectedKeys.remove(existing.getKey());
+                    ManifestAsset added = addAsset(assets, collectedKeys, irPath, type);
+                    if (added != null) {
+                        added.setNote("version aligned to parent IR ir_path; t_mapping version=" + oldVer);
+                        if (rid != null) {
+                            irByResourceId.put(rid, added);
+                        }
+                        worklist.add(added);
+                    }
+                    log.warn("runtime_asset_export_version_mismatch|resource_id={}|mapping_version={}|ir_path={}",
+                        rid, oldVer, irPath);
+                } else {
+                    ManifestAsset added = addAsset(assets, collectedKeys, irPath, type);
+                    if (added != null) {
+                        if (rid != null) {
+                            irByResourceId.put(rid, added);
+                        }
+                        worklist.add(added);
+                    }
                 }
             }
         }
@@ -564,7 +610,15 @@ public class RuntimeAssetExporter {
             if (StringUtils.isBlank(msJson)) {
                 continue;
             }
-            JSONObject msObj = JSON.parseObject(msJson);
+            // bug006：parseObject 包 try/catch —— model-service 文件损坏/非 JSON 时跳过该资产，不让 JSONException 冒泡返回 500。
+            JSONObject msObj;
+            try {
+                msObj = JSON.parseObject(msJson);
+            } catch (Exception e) {
+                log.warn("collectModelAuthFromIrs parse model-service failed, key={}, skip. {}",
+                    msAsset.getKey(), e.getMessage());
+                continue;
+            }
             // model-service 文件结构：{"type":"model", "data": {...}}
             JSONObject msData = msObj.getJSONObject("data");
             if (msData == null) {
@@ -616,7 +670,15 @@ public class RuntimeAssetExporter {
         if (StringUtils.isBlank(msJson)) {
             return;
         }
-        JSONObject msObj = JSON.parseObject(msJson);
+        // bug006：parseObject 包 try/catch —— model-service 文件损坏/非 JSON 时按 SDD 5.6 标 missing 继续，
+        // 不让 JSONException 冒泡到 doExportRuntimeAssetZip 返回 500（破坏可靠性约定）。
+        JSONObject msObj;
+        try {
+            msObj = JSON.parseObject(msJson);
+        } catch (Exception e) {
+            log.warn("collectModelAssets parse model-service failed, key={}, skip. {}", modelServiceKey, e.getMessage());
+            return;
+        }
         // model-service 文件结构：{"type":"model", "data": {provider_id, project_id, auth_metadata_id, ...}}
         // 字段在 data 嵌套对象里，非顶层
         JSONObject msData = msObj.getJSONObject("data");
@@ -712,7 +774,14 @@ public class RuntimeAssetExporter {
         if (StringUtils.isBlank(kbJson)) {
             return;
         }
-        JSONObject kbObj = JSON.parseObject(kbJson);
+        // bug006：parseObject 包 try/catch —— KB 引用文件损坏/非 JSON 时跳过，不让 JSONException 冒泡返回 500。
+        JSONObject kbObj;
+        try {
+            kbObj = JSON.parseObject(kbJson);
+        } catch (Exception e) {
+            log.warn("collectKbAssets parse kb-reference failed, key={}, skip. {}", kbRefKey, e.getMessage());
+            return;
+        }
         String connectionId = kbObj.getString("connectionId");
         if (StringUtils.isNotBlank(connectionId)) {
             String connKey = String.format("kb-connection/ir/connection/%s.json", connectionId);
@@ -829,15 +898,145 @@ public class RuntimeAssetExporter {
      * 添加资产到清单（去重）。critical（根 IR/metadata 缺失终止）由 buildZipWithManifest
      * 通过 isCriticalAsset 判断，此处不标记。
      */
+    /**
+     * 添加资产到清单（去重 + 路径合法性校验）。critical（根 IR/metadata 缺失终止）由 buildZipWithManifest
+     * 通过 isCriticalAsset 判断，此处不标记。
+     * <p>路径校验（bug005 #2）：IR 内容（skill_path / ir_path / reference.path）可被构造（如导入的智能体包），
+     * 未校验直接作为 OBS key 读取 + ZIP entry 名写入 → 跨租户 OBS 读取泄露 / Zip Slip 解压越界。
+     * {@link #isValidAssetKey} 拒绝绝对路径、.. 路径段、反斜杠、控制字符；非法 key 记 warn 跳过（不入包、不读 OBS）。
+     */
     private ManifestAsset addAsset(List<ManifestAsset> assets, Set<String> collectedKeys, String key, String type) {
-        if (StringUtils.isBlank(key) || !collectedKeys.add(key)) {
-            return null; // 空或已收集（去重）
+        if (!isValidAssetKey(key, type)) {
+            if (StringUtils.isNotBlank(key)) {
+                log.warn("runtime_asset_export_invalid_key_skipped|key={}|type={}", key, type);
+            }
+            return null; // 空 or 非法路径（跳过，不入包）
+        }
+        if (!collectedKeys.add(key)) {
+            return null; // 已收集（去重）
+        }
+        // bug007 #3：上限前置校验。原 max-assets 校验在全部收集完成后才触发（collectIrDerivedAssets
+        // 工作队列 + collectModelAuthFromIrs 笛卡尔积可在上限生效前累积大量资产 + OBS getObject）。
+        // addAsset 是所有资产入清单的单一收口点，在此提前校验，防恶意/异常 IR 在上限前触发大量 OBS 读取（DoS）。
+        if (assets.size() >= maxAssets) {
+            throw new AgentStudioException(StudioError.EXPORT_LENGTH_TOO_LARGE,
+                "assets count " + assets.size() + " exceeds max " + maxAssets);
         }
         ManifestAsset asset = new ManifestAsset();
         asset.setType(type);
         asset.setKey(key);
         assets.add(asset);
         return asset;
+    }
+
+    /** 资产 object key 合法前缀白名单（bug006 #1：约束 IR 可构造路径到已知合法前缀，防跨租户 OBS 读取）。 */
+    private static final List<String> ASSET_KEY_PREFIXES = List.of(
+        CommonConstant.AGENT + "/" + CommonConstant.Workflow.IR + "/",       // agent/ir/  (agent/controller IR)
+        CommonConstant.WORKFLOW + "/" + CommonConstant.Workflow.IR + "/",     // workflow/ir/  (workflow IR)
+        "model-service/ir/",        // model-service 配置
+        "model-auth/auth/",         // model-auth 鉴权配置
+        "kb-connection/ir/",        // KB 引用 + 连接配置
+        Constants.OBS_METADATA_DIR + "/"   // metadata/  发布元数据
+        // 技能 skill_path 格式 {userId}/skills/...，userId 非固定前缀，不纳入白名单；
+        // 由 isOwnedSkillPath（bug007 #1）校验首段 userId 匹配当前用户，归属通过即放行。
+    );
+
+    /**
+     * 校验资产 object key 合法性（bug005 #2 防路径遍历 + bug006 #1 防跨租户读取 + bug007 #1 技能归属）。
+     * <p>两层校验：
+     * <ul>
+     *   <li>黑名单（bug005 #2）：拒绝绝对路径、.. 路径段、反斜杠（Zip Slip）、控制字符（\0 截断）。</li>
+     *   <li>白名单前缀（bug006 #1）：非 skill 类型 key 必须以已知合法前缀开头（agent/ir/、workflow/ir/、
+     *       model-service/ir/、model-auth/auth/、kb-connection/ir/、metadata/）。技能 skill_path 由调用方
+     *       经 {@link #isOwnedSkillPath}（bug007 #1）校验 userId 归属，不纳入固定前缀白名单（userId 非固定前缀）。</li>
+     * </ul>
+     * @param type 资产类型（TYPE_SKILL 等），用于决定是否跳过前缀白名单
+     * @return true 合法；false 非法（调用方跳过该资产，不读 OBS、不写 ZIP entry）
+     */
+    private boolean isValidAssetKey(String key, String type) {
+        if (StringUtils.isBlank(key)) {
+            return false;
+        }
+        String k = key.trim();
+        if (k.isEmpty() || k.charAt(0) == '/') {
+            return false; // 绝对路径
+        }
+        if (k.indexOf('\\') >= 0) {
+            return false; // 反斜杠（Windows 路径分隔符，防 Zip Slip on Windows）
+        }
+        for (int i = 0; i < k.length(); i++) {
+            if (k.charAt(i) < 0x20) {
+                return false; // 控制字符（含 \0，防截断）
+            }
+        }
+        for (String seg : k.split("/")) {
+            if ("..".equals(seg)) {
+                return false; // .. 路径段遍历
+            }
+        }
+        // 技能 skill_path 格式 {userId}/skills/...，userId 非固定前缀，由 isOwnedSkillPath 校验归属，
+        // 跳过前缀白名单（仅过黑名单）。
+        if (TYPE_SKILL.equals(type)) {
+            return true;
+        }
+        // 白名单前缀（bug006 #1）：约束到已知合法前缀，防 IR 可构造路径跨租户读取
+        for (String prefix : ASSET_KEY_PREFIXES) {
+            if (k.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false; // 不在合法前缀白名单内（跨租户/未知前缀）
+    }
+
+    /**
+     * 校验子 IR ir_path 的 resourceId 是否归属当前 workspace（bug007 #1，防跨租户读取他人 IR）。
+     * <p>复用 {@link #validateResourceOwnership} 语义：workflow → WorkflowMapper，agent/controller → AgentMapper。
+     * rid 为 null（非标准 ir key）或归属不通过 → 拒绝（不入包、不读 OBS）。
+     * @return true 归属当前 workspace；false 不归属或无法判定（调用方跳过该子 IR）
+     */
+    private boolean isOwnedChildIr(String rid, String type) {
+        if (StringUtils.isBlank(rid)) {
+            return false; // 非标准 ir key，无法校验归属 → 拒绝
+        }
+        String projectId = RequestContextUtils.getRequestProjectId();
+        String workspaceId = RequestContextUtils.getRequestWorkspaceId();
+        if (StringUtils.isBlank(projectId) || StringUtils.isBlank(workspaceId)) {
+            // bug005 #3：上下文为空时 fail-closed（已在 exportRuntimeAssetZip 前置校验，此处防御性再判）
+            return false;
+        }
+        String resType = TYPE_WORKFLOW_IR.equals(type) ? RES_TYPE_WORKFLOW : RES_TYPE_AGENT;
+        try {
+            if (RES_TYPE_WORKFLOW.equals(resType)) {
+                List<com.openjiuwen.studio.agent.manager.entity.WorkflowEntity> workflows =
+                    workflowMapper.selectByWorkflowIds(projectId, workspaceId, List.of(rid));
+                return workflows != null && !workflows.isEmpty();
+            }
+            return agentMapper.selectByProjectIdAndWorkspaceId(projectId, workspaceId, rid) != null;
+        } catch (Exception e) {
+            log.warn("isOwnedChildIr ownership check failed, rid={}. {}. skip child IR.", rid, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 校验 skill_path 是否归属当前用户（bug007 #1，防跨用户读取他人技能）。
+     * <p>skill_path 格式 {@code {userId}/skills/{skillId}/{version}/{name}.zip}
+     * （[CommonConstant.Skill.SKILL_VERSION_FILE_PATH_TEMPLATE](../../constant/CommonConstant.java)）。
+     * 首段（`/` 前的 userId）必须等于当前请求用户 ID。
+     * @return true 归属当前用户；false 不归属或无法判定（调用方跳过该 skill）
+     */
+    private boolean isOwnedSkillPath(String skillPath) {
+        if (StringUtils.isBlank(skillPath)) {
+            return false;
+        }
+        String pathUserId;
+        int slashIdx = skillPath.indexOf('/');
+        pathUserId = (slashIdx > 0) ? skillPath.substring(0, slashIdx) : skillPath;
+        String currentUserId = RequestContextUtils.getRequestUserId();
+        if (StringUtils.isBlank(currentUserId)) {
+            return false; // 无法校验归属 → fail-closed
+        }
+        return currentUserId.equals(pathUserId);
     }
 
     /**
@@ -982,7 +1181,9 @@ public class RuntimeAssetExporter {
             summary.setMissingCount(missingCount);
 
             zos.putNextEntry(new ZipEntry("manifest.json"));
-            zos.write(JSON.toJSONString(manifest).getBytes(StandardCharsets.UTF_8));
+            // bug004 #2：用 Jackson 序列化 manifest（识别 @JsonProperty 蛇形契约），fastjson2 不识别 Jackson
+            // 注解会输出驼峰（manifestVersion/exportId/...），破坏导入工具 tools/import_asset_zip.py 的蛇形契约。
+            zos.write(MANIFEST_MAPPER.writeValueAsBytes(manifest));
             zos.closeEntry();
             zos.finish();
             return baos.toByteArray();

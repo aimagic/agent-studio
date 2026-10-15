@@ -384,14 +384,17 @@ class RuntimeAssetExporterTest {
     }
 
     @Test
-    void testAuthCheck_contextProjectIdBlank_skipsCheck() {
-        // RequestContext projectId 为空（未鉴权场景）时，不校验、放行（避免误拦）
+    void testAuthCheck_contextProjectIdBlank_rejects() {
+        // bug005 #3：RequestContext 上下文为空时直接拒绝（fail-closed），不再放行——
+        // 否则 validateResourceOwnership 会信任请求参数，攻击者可传他人 project/workspace/resourceId 越权导出。
         mockDefaultAgent();
         try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn("");
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn("");
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            assertDoesNotThrow(() -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            AgentStudioException ex = assertThrows(AgentStudioException.class,
+                () -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            assertEquals(StudioError.USER_WORKSPACE_PERMISSION_INVALID, ex.getErrorCode());
         }
     }
 
@@ -433,7 +436,8 @@ class RuntimeAssetExporterTest {
     @Test
     void testSkillBinary_readStreamNotTextChannel() throws Exception {
         mockDefaultAgent();
-        String skillPath = "user-1/skills/sk-1/v1/skill.zip";
+        // bug007 #1：skill_path userId 必须匹配 getRequestUserId（mock 返回 testUser）
+        String skillPath = "testUser/skills/sk-1/v1/skill.zip";
         String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
         // 根 IR 内嵌 skill_info.skill_path
         when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithSkillJson(skillPath));
@@ -485,7 +489,261 @@ class RuntimeAssetExporterTest {
         }
     }
 
+    // ===== bug004 #2：manifest 蛇形契约（@JsonProperty，fastjson2 会输出驼峰破坏契约）=====
+
+    @Test
+    void testManifest_usesSnakeCaseContract() throws Exception {
+        mockDefaultAgent();
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            byte[] manifestBytes = extractZipEntry(zip, "manifest.json");
+            assertNotNull(manifestBytes, "manifest.json should exist in zip");
+            String manifest = new String(manifestBytes, java.nio.charset.StandardCharsets.UTF_8);
+            // 正向：蛇形契约字段存在（导入工具 tools/import_asset_zip.py 读 manifest_version/export_id/total_size_bytes）
+            assertTrue(manifest.contains("\"manifest_version\""), "manifest should use snake_case manifest_version");
+            assertTrue(manifest.contains("\"export_id\""), "manifest should use snake_case export_id");
+            assertTrue(manifest.contains("\"total_size_bytes\""), "manifest should use snake_case total_size_bytes");
+            assertTrue(manifest.contains("\"total_assets\""), "manifest should use snake_case total_assets");
+            // 反向：驼峰不应出现（fastjson2 默认按 Java 字段名输出驼峰，破坏蛇形契约）
+            assertFalse(manifest.contains("\"manifestVersion\""), "manifest should NOT contain camelCase manifestVersion");
+            assertFalse(manifest.contains("\"exportId\""), "manifest should NOT contain camelCase exportId");
+        }
+    }
+
+    // ===== bug004 #3：版本对齐后的新版本子 IR 重新进入抽取，其更深 child IR/skill 被收集 =====
+
+    @Test
+    void testSubIrVersionConflict_newVersionDerivedAssetsCollected() throws Exception {
+        mockDefaultAgent();
+        String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
+        String oldSubKey = "workflow/ir/sub-wf-001/sub-wf-001_old-ver-000.json";
+        String newSubKey = "workflow/ir/sub-wf-001/sub-wf-001_new-ver-999.json";
+        String grandchildKey = "workflow/ir/grand-001/grand-001_v1.json";
+        // bug007 #1：skill_path userId 必须匹配 getRequestUserId（mock 返回 testUser）
+        String skillPath = "testUser/skills/sk-grd/v1/skill.zip";
+        // t_mapping 给子工作流 old-ver；根 IR 内嵌 ir_path 指向 new-ver（版本冲突 → new-ver 胜出）
+        List<MappingEntity> mappings = new ArrayList<>();
+        mappings.add(mapping("workflow", "sub-wf-001", "old-ver-000"));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any())).thenReturn(mappings);
+        when(mgObsService.getObject(oldSubKey)).thenReturn("{\"configs\":{}}");
+        // new-ver 子 IR：自身引用更深层 grandchild IR + skill（bug004 #3：这些应被收集，原快照遍历会漏）
+        when(mgObsService.getObject(newSubKey)).thenReturn(workflowIrWithChildAndSkillJson(grandchildKey, skillPath));
+        when(mgObsService.getObject(grandchildKey)).thenReturn("{\"configs\":{}}");
+        when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithWorkflowsJson(newSubKey));
+        // skill 走二进制流（不 mock 则标 missing 不入包，无法断言）
+        when(mgObsService.readObsFileStream(skillPath))
+            .thenReturn(new ByteArrayInputStream(new byte[] {0x41, 0x42, 0x43}));
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            Set<String> names = zipEntryNames(zip);
+            // 版本对齐后的 new-ver 子 IR 重新进入抽取 → 其更深层 child IR 被收集（bug004 #3）
+            verify(mgObsService, atLeast(1)).getObject(grandchildKey);
+            assertTrue(names.contains(grandchildKey), "grandchild IR of version-aligned sub-IR should be in zip");
+            // new-ver 子 IR 的 skill 被收集（bug004 #3）
+            assertTrue(names.contains(skillPath), "skill of version-aligned sub-IR should be in zip");
+        }
+    }
+
+    // ===== bug005 #2：IR 衍生路径遍历校验（../ 跨租户 OBS 读取 + Zip Slip）=====
+
+    @Test
+    void testInvalidIrPath_traversalRejected_notReadNotZipped() throws Exception {
+        mockDefaultAgent();
+        String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
+        // 恶意 skill_path（../ 遍历）+ 恶意 child ir_path（../ 遍历）——IR 可被构造（如导入的智能体包）
+        String maliciousSkill = "../../other-tenant/secret.zip";
+        String maliciousIrPath = "../../other-tenant/evil.json";
+        when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithTraversalPathsJson(maliciousSkill, maliciousIrPath));
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            Set<String> names = zipEntryNames(zip);
+            // 恶意路径不入包（防 Zip Slip 解压越界）
+            assertFalse(names.contains(maliciousSkill), "traversal skill_path must NOT be in zip");
+            assertFalse(names.contains(maliciousIrPath), "traversal ir_path must NOT be in zip");
+            // 恶意路径不从 OBS 读取（防跨租户数据泄露）
+            verify(mgObsService, never()).readObsFileStream(maliciousSkill);
+            verify(mgObsService, never()).getObject(maliciousIrPath);
+        }
+    }
+
+    // ===== bug006 #1：跨租户前缀校验（非 ../ 的合法相对路径，但指向其他租户前缀）=====
+
+    @Test
+    void testCrossTenantPrefix_rejected_notReadNotZipped() throws Exception {
+        mockDefaultAgent();
+        String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
+        // 恶意但"合法相对路径"：无 ../（过黑名单），但前缀是其他租户/未知目录——白名单应拒绝
+        // bug006 #1：旧 isValidAssetKey 只拦 ../，放行此 key；新白名单按合法前缀拒绝
+        String crossTenantSkill = "other-tenant/skills/secret.zip";
+        String crossTenantIrPath = "other-tenant/agent/ir/evil/evil_v1.json";
+        when(mgObsService.getObject(rootIrKey))
+            .thenReturn(agentIrWithTraversalPathsJson(crossTenantSkill, crossTenantIrPath));
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            Set<String> names = zipEntryNames(zip);
+            // 跨租户前缀路径不入包
+            assertFalse(names.contains(crossTenantSkill), "cross-tenant skill_path must NOT be in zip");
+            assertFalse(names.contains(crossTenantIrPath), "cross-tenant ir_path must NOT be in zip");
+            // 跨租户前缀路径不从 OBS 读取（防跨租户数据泄露）
+            verify(mgObsService, never()).readObsFileStream(crossTenantSkill);
+            verify(mgObsService, never()).getObject(crossTenantIrPath);
+        }
+    }
+
+    // ===== bug007 #1：子资源归属校验（跨用户 skill + 跨 workspace 子 IR）=====
+
+    @Test
+    void testUnownedSkillPath_rejected() throws Exception {
+        mockDefaultAgent();
+        // skill_path userId 与当前请求用户（testUser）不一致 → 拒绝（防跨用户读取他人技能）
+        String unownedSkill = "other-user/skills/sk-1/v1/skill.zip";
+        String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
+        when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithSkillJson(unownedSkill));
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            Set<String> names = zipEntryNames(zip);
+            assertFalse(names.contains(unownedSkill), "unowned skill_path must NOT be in zip");
+            verify(mgObsService, never()).readObsFileStream(unownedSkill);
+        }
+    }
+
+    @Test
+    void testUnownedChildIr_rejected() throws Exception {
+        mockDefaultAgent();
+        // 子 IR ir_path 的 resourceId 不归属当前 workspace → 拒绝（防跨 workspace 读取他人 IR）
+        String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
+        String unownedChildIr = "workflow/ir/other-wf/other-wf_v1.json";
+        when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithWorkflowsJson(unownedChildIr));
+        // override：other-wf 不归属当前 workspace → null
+        when(workflowMapper.selectByWorkflowIds(eq(PROJECT_ID), eq(WORKSPACE_ID), anyList()))
+            .thenReturn(new ArrayList<>());
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            Set<String> names = zipEntryNames(zip);
+            assertFalse(names.contains(unownedChildIr), "unowned child IR must NOT be in zip");
+            verify(mgObsService, never()).getObject(unownedChildIr);
+        }
+    }
+
+    // ===== bug007 #2：版本冲突先校验，非法 ir_path 保留 t_mapping 合法版本（不静默缺失）=====
+
+    @Test
+    void testVersionConflict_invalidIrPath_keepsMappingVersion() throws Exception {
+        mockDefaultAgent();
+        String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
+        String validMappingKey = "workflow/ir/sub-wf-001/sub-wf-001_old-ver-000.json";
+        // 父 IR 内嵌的 ir_path 非法（跨租户前缀）→ 不应移除 t_mapping 合法版本（bug007 #2）
+        String invalidIrPath = "other-tenant/workflow/ir/sub-wf-001/sub-wf-001_new-ver.json";
+        List<MappingEntity> mappings = new ArrayList<>();
+        mappings.add(mapping("workflow", "sub-wf-001", "old-ver-000"));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any())).thenReturn(mappings);
+        when(mgObsService.getObject(validMappingKey)).thenReturn("{\"configs\":{}}");
+        when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithWorkflowsJson(invalidIrPath));
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            Set<String> names = zipEntryNames(zip);
+            // t_mapping 合法版本保留（未被非法 ir_path 替换/移除）
+            assertTrue(names.contains(validMappingKey), "valid t_mapping version must be kept");
+            // 非法 ir_path 不入包
+            assertFalse(names.contains(invalidIrPath), "invalid ir_path must NOT replace valid version");
+        }
+    }
+
+    // ===== bug007 #3：addAsset 上限前置校验（防恶意 IR 在上限生效前累积大量 OBS 读取 DoS）=====
+
+    @Test
+    void testMaxAssets_enforcedDuringCollection() {
+        // maxAssets 配 2 → 根 IR + metadata 已占 2，子 IR 收集时第 3 个 asset 触发上限抛异常
+        ReflectionTestUtils.setField(exporter, "maxAssets", 2);
+        mockDefaultAgent();
+        List<MappingEntity> mappings = new ArrayList<>();
+        mappings.add(mapping("workflow", "sub-wf-001", VERSION));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any())).thenReturn(mappings);
+        String subWfIrKey = "workflow/ir/sub-wf-001/sub-wf-001_" + VERSION + ".json";
+        when(mgObsService.getObject(subWfIrKey)).thenReturn("{\"configs\":{}}");
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            // 根 IR + metadata = 2，子 IR 第 3 个触发 EXPORT_LENGTH_TOO_LARGE
+            AgentStudioException ex = assertThrows(AgentStudioException.class,
+                () -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            assertEquals(StudioError.EXPORT_LENGTH_TOO_LARGE, ex.getErrorCode());
+        }
+    }
+
     // ===== 巡检 #7：STRATEGY auth_id_list 逐子模型鉴权收集 =====
+
+    // ===== bug006：model-service/KB 文件损坏（非 JSON）不冒泡 500，按 SDD 5.6 继续 =====
+
+    @Test
+    void testCorruptModelServiceJson_skipsAndCompletesExport() throws Exception {
+        mockDefaultAgent();
+        // t_mapping 含一个 model 资源，其 model-service 文件内容损坏（非 JSON）
+        List<MappingEntity> mappings = new ArrayList<>();
+        mappings.add(mapping("model", "corrupt-ms", null));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any())).thenReturn(mappings);
+        when(mgObsService.getObject("model-service/ir/corrupt-ms.json")).thenReturn("<<<not-json>>>");
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            // 损坏 model-service 非根资产 → 不抛 500，导出正常完成（根 IR + metadata 入包）
+            byte[] zip = assertDoesNotThrow(
+                () -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            Set<String> names = zipEntryNames(zip);
+            // 根 IR + metadata 仍入包（导出未被破坏）
+            assertTrue(names.contains("agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json"),
+                "root IR should still be in zip");
+            // 关键：parse 失败 → 不收集 model-auth（addModelAuthAsset 在 parse 之后，parse 失败 return 跳过）
+            // model-service key 本身在 parse 前已 addAsset（入包，内容为损坏字节），但 model-auth 不应被收集
+            boolean hasModelAuth = names.stream().anyMatch(n -> n.startsWith("model-auth/auth/"));
+            assertFalse(hasModelAuth, "corrupt model-service should skip model-auth collection");
+        }
+    }
+
+    @Test
+    void testCorruptKbReferenceJson_skipsAndCompletesExport() throws Exception {
+        mockDefaultAgent();
+        // t_mapping 含一个 repo（KB 引用），其 kb-reference 文件内容损坏（非 JSON）
+        List<MappingEntity> mappings = new ArrayList<>();
+        mappings.add(mapping("repo", "corrupt-kb", null));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any())).thenReturn(mappings);
+        when(mgObsService.getObject("kb-connection/ir/knowledge-base/corrupt-kb.json")).thenReturn("<<<not-json>>>");
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = assertDoesNotThrow(
+                () -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            Set<String> names = zipEntryNames(zip);
+            // KB 引用文件本身仍入包（收集阶段已 addAsset），但 KB 连接不收集（parse 失败跳过）
+            // 关键断言：损坏 KB 非根资产 → 不抛 500，导出正常完成
+            assertTrue(names.contains("agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json"),
+                "root IR should still be in zip");
+        }
+    }
 
     @Test
     void testStrategyAuthIdList_collected() {
@@ -517,6 +775,23 @@ class RuntimeAssetExporterTest {
 
     // ===== 辅助：IR 构建 =====
 
+    /** 根 IR 内嵌恶意 skill_path + 恶意 child ir_path（含 ../ 遍历，bug005 #2 路径校验） */
+    private String agentIrWithTraversalPathsJson(String maliciousSkillPath, String maliciousChildIrPath) {
+        Map<String, Object> ir = new HashMap<>();
+        ir.put("agentId", AGENT_ID);
+        Map<String, Object> skill = new HashMap<>();
+        skill.put("skill_path", maliciousSkillPath);
+        Map<String, Object> skills = new HashMap<>();
+        skills.put("skill_info", List.of(skill));
+        Map<String, Object> wf = new HashMap<>();
+        wf.put("ir_path", maliciousChildIrPath);
+        Map<String, Object> configs = new HashMap<>();
+        configs.put("skills", skills);
+        configs.put("workflows", List.of(wf));
+        ir.put("configs", configs);
+        return com.alibaba.fastjson2.JSON.toJSONString(ir);
+    }
+
     private String agentIrWithWorkflowsJson(String childIrPath) {
         Map<String, Object> ir = new HashMap<>();
         ir.put("agentId", AGENT_ID);
@@ -536,6 +811,22 @@ class RuntimeAssetExporterTest {
         Map<String, Object> skills = new HashMap<>();
         skills.put("skill_info", List.of(skill));
         Map<String, Object> configs = new HashMap<>();
+        configs.put("skills", skills);
+        ir.put("configs", configs);
+        return com.alibaba.fastjson2.JSON.toJSONString(ir);
+    }
+
+    /** 子工作流 IR：自身引用更深层 child IR（ir_path）+ skill（bug004 #3 验证 new-ver 子 IR 派生资产被收集） */
+    private String workflowIrWithChildAndSkillJson(String childIrPath, String skillPath) {        Map<String, Object> ir = new HashMap<>();
+        ir.put("workflowId", "sub-wf-001");
+        Map<String, Object> configs = new HashMap<>();
+        Map<String, Object> wf = new HashMap<>();
+        wf.put("ir_path", childIrPath);
+        configs.put("workflows", List.of(wf));
+        Map<String, Object> skill = new HashMap<>();
+        skill.put("skill_path", skillPath);
+        Map<String, Object> skills = new HashMap<>();
+        skills.put("skill_info", List.of(skill));
         configs.put("skills", skills);
         ir.put("configs", configs);
         return com.alibaba.fastjson2.JSON.toJSONString(ir);

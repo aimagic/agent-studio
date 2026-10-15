@@ -109,6 +109,7 @@
     </button>
     <button
       type="button"
+      *ngIf="supportsRuntimeAssetExport"
       nz-button
       nzType="default"
       [disabled]="setOfCheckedId.size !== 1 || isRuntimeAssetExporting"

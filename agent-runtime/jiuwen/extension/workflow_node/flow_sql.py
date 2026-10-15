@@ -39,10 +39,12 @@ class FlowSqlStatusCode(Enum):
 
     SUCCESS = (0, "success")
     SQL_INIT_ERROR = (101750, "Sql component init error. msg={msg}")
-    SQL_EXECUTE_ERROR = (101751, "SQL node execution failed: manager datasource execute API returned an error or was unreachable")
+    SQL_EXECUTE_ERROR = (101751, "Sql component execute error")
     DATASOURCE_NOT_FOUND = (101753, "Datasource not found: {datasourceId}")
     SQL_INJECTION_BLOCKED = (101754, "Inline variable '{key}' contains unsafe content: {detail}")
-    MANAGER_NOT_DEPLOYED = (101755, "SQL node execution failed: manager is not deployed in runtime (AGENT_MANAGER_ENDPOINT not configured). SQL nodes require the manager datasource execute API.")
+    # 101754 已被 upstream 的 SQL_INJECTION_BLOCKED 占用，本地 MANAGER_NOT_DEPLOYED 改用 101755。
+    MANAGER_NOT_DEPLOYED = (101755, "Sql component cannot execute: manager not deployed in runtime"
+                                      " (AGENT_MANAGER_ENDPOINT is empty)")
 
 
 class FlowSql(WorkflowComponent):
@@ -189,13 +191,6 @@ class FlowSql(WorkflowComponent):
         )
 
         try:
-            # 运行态未部署 manager 时，SQL 节点无法执行（数据源执行 API 由 manager 提供）。
-            # 友好提示用户部署 manager，而非抛底层 URL 格式异常。
-            if not MANAGER_ENDPOINT or not MANAGER_ENDPOINT.strip():
-                raise JiuWenBaseException(
-                    error_code=FlowSqlStatusCode.MANAGER_NOT_DEPLOYED.value[0],
-                    message=FlowSqlStatusCode.MANAGER_NOT_DEPLOYED.value[1],
-                )
             user_fields = self._extract_user_fields(inputs)
             result = await self._call_execute_api(user_fields)
             outputs = {
@@ -249,6 +244,13 @@ class FlowSql(WorkflowComponent):
 
     async def _call_execute_api(self, user_fields: dict) -> dict:
         """调用 Java manager 的 SQL 执行 API"""
+        # 前置检查：运行态未部署 manager（AGENT_MANAGER_ENDPOINT 为空）时友好提示，避免拼出空 host URL
+        # 导致连接错误（错误码 101755，i18n 由 ErrorContextBuilder 按 code 查 runtime-msg_{lang}.properties 解析）。
+        if not MANAGER_ENDPOINT or not MANAGER_ENDPOINT.strip():
+            raise JiuWenBaseException(
+                error_code=FlowSqlStatusCode.MANAGER_NOT_DEPLOYED.value[0],
+                message=FlowSqlStatusCode.MANAGER_NOT_DEPLOYED.value[1],
+            )
         url = SQL_EXECUTE_URL_TEMPLATE.format(
             MANAGER_ENDPOINT, self._datasource_id
         )
@@ -267,16 +269,8 @@ class FlowSql(WorkflowComponent):
             async with http_session.post(url, json=body) as resp:
                 if resp.status != 200:
                     error_text = await resp.text()
-                    # manager 原始响应（含 redis/k8s/request_id 等内部细节）只进日志，不外露给用户，
-                    # 避免泄露内部架构；对外 message 只给概要，详细排查走日志。
-                    workflow_logger.error(
-                        "FlowSql manager execute failed: datasource_id=%s, status=%s, manager_response=%s",
-                        self._datasource_id, resp.status, error_text,
-                        event_type=LogEventType.WORKFLOW_COMPONENT_ERROR,
-                        component_type_str="FlowSql",
-                    )
                     raise JiuWenBaseException(
                         error_code=FlowSqlStatusCode.SQL_EXECUTE_ERROR.value[0],
-                        message=FlowSqlStatusCode.SQL_EXECUTE_ERROR.value[1],
+                        message=f"Manager execute API failed: {resp.status}: {error_text}",
                     )
                 return await resp.json()
