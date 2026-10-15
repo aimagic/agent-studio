@@ -232,6 +232,34 @@ export class AppAgentRepoService {
     });
   }
 
+  /** 导出运行时资产（ZIP + manifest，供运行态加载）。返回 ZIP blob 直接下载。 */
+  public exportRuntimeAsset(params: {
+    resource_type: string;
+    resource_id: string;
+    version?: string;
+  }): Promise<Blob> {
+    return this.http
+      .postBlobAsync({
+        url: `${this.prefix}/agents/runtime-asset/export`,
+        params,
+        dataType: 'blob',
+      })
+      .catch((error) => {
+        // 解析 Blob 错误体并提示；非 Blob 错误（网关超时/401/网络层失败等无响应体）兜底提示，避免静默失败
+        if (error?.data instanceof Blob) {
+          this.http.parseBlobError(error.data).subscribe({
+            error: (err) => {
+              MessageComponent.showError(err?.error_msg);
+            },
+          });
+        } else {
+          MessageComponent.showError(error?.error_msg || error?.message);
+        }
+        // rethrow：让调用方区分成功/失败。此前吞异常会导致组件 .then 误关弹窗、丢失用户选择
+        throw error;
+      });
+  }
+
   /** 语言转文字 */
   public queryShortAudio(data): Promise<any> {
     return this.http.postAsync({

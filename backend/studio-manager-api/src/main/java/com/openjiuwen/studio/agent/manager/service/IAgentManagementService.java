@@ -201,6 +201,19 @@ public interface IAgentManagementService {
     ExportResourceRsp exportResource(String projectId, String workspaceId, String accept, ExportResourceParams body);
 
     /**
+     * 导出运行时资产（ZIP + manifest），供运行态加载。返回 ZIP 字节流供前端直接下载。
+     *
+     * @param projectId    项目ID（与 RequestContext 校验一致性，防越权）
+     * @param workspaceId 工作空间ID（与 RequestContext 校验一致性，防越权）
+     * @param resourceType agent / controller / workflow
+     * @param resourceId   智能体 ID 或工作流 ID
+     * @param version      版本号，缺省/"latest" 导出当前发布版本
+     * @return ZIP 字节流
+     */
+    byte[] exportRuntimeAssetZip(String projectId, String workspaceId,
+        String resourceType, String resourceId, String version);
+
+    /**
      * exportTools
      *
      * @param projectId projectId

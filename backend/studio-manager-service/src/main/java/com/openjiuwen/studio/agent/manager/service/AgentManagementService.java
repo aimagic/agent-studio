@@ -356,6 +356,9 @@ public class AgentManagementService implements IAgentManagementService {
     private AgentExportService agentExportService;
 
     @Autowired
+    private RuntimeAssetExporter runtimeAssetExporter;
+
+    @Autowired
     private ShareResourceMapper shareResourceMapper;
 
     /**
@@ -4025,6 +4028,13 @@ public class AgentManagementService implements IAgentManagementService {
     public ExportResourceRsp exportResource(String projectId, String workspaceId, String accept,
         ExportResourceParams body) {
         return agentExportService.exportResource(projectId, workspaceId, accept, body);
+    }
+
+    @Override
+    public byte[] exportRuntimeAssetZip(String projectId, String workspaceId,
+        String resourceType, String resourceId, String version) {
+        return runtimeAssetExporter.exportRuntimeAssetZip(projectId, workspaceId,
+            resourceType, resourceId, version);
     }
 
     /**
