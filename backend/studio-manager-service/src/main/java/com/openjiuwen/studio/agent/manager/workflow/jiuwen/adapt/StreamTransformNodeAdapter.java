@@ -108,16 +108,17 @@ public class StreamTransformNodeAdapter extends AbstractIRNodeAdapter {
         // 尝试解析为 JSON 对象
         // 支持纯占位符格式（如 {{raw_output}}）：将整个输入作为帧引用
         if (variables.isEmpty() && frameTemplate.matches("\\{\\{[^.}]+\\}\\}")) {
-            // 纯占位符：创建变量，src_path 设为变量名（runtime 会自动清空 src_path 返回整个帧）
-            String pureVarName = frameTemplate.replaceAll("\\{\\{|\\}\\}", "").trim();
+            // 纯占位符：创建变量，name 和 src_path 都设为 _input
+            // 这样 _build_transformer_config 会匹配 v.name == _source_field 并清空 src_path
+            // 运行时 _read_src 在 src_path 为空时返回整个帧对象
             Map<String, Object> wholeInputVar = new HashMap<>();
-            wholeInputVar.put(NAME, pureVarName);
-            wholeInputVar.put(SRC_PATH, "");
+            wholeInputVar.put(NAME, "_input");
+            wholeInputVar.put(SRC_PATH, "_input");
             wholeInputVar.put(CONCAT, false);
             variables.add(wholeInputVar);
             irTransformer.put(VARIABLES, variables);
-            // frame_template 使用变量名作为 key
-            String wrappedTemplate = "{\"" + pureVarName + "\": \"{{" + pureVarName + "}}\"}";
+            // frame_template 使用 _input 变量引用
+            String wrappedTemplate = "{\"_input\": \"{{_input}}\"}";
             try {
                 irTransformer.put(FRAME_TEMPLATE, objectMapper.readTree(wrappedTemplate));
                 irTransformer.put(FINAL_TEMPLATE, objectMapper.readTree(wrappedTemplate));
