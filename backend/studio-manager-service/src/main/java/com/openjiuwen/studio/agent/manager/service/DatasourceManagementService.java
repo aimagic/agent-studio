@@ -84,6 +84,8 @@ public class DatasourceManagementService implements IDatasourceManagementService
         } catch (Exception e) {
             log.error("datasource connectivity check failed: {}", e.getMessage());
             lastError = e.getMessage();
+        } finally {
+            connectionFactory.removeConnectionPool(entity.getId());
         }
         entity.setStatus(status);
         entity.setLastErrorMessage(lastError);
@@ -138,6 +140,8 @@ public class DatasourceManagementService implements IDatasourceManagementService
         } catch (Exception e) {
             log.error("datasource connectivity check failed: {}", e.getMessage());
             lastError = e.getMessage();
+        } finally {
+            connectionFactory.removeConnectionPool(datasourceId);
         }
         entity.setStatus(status);
         entity.setLastErrorMessage(lastError);
