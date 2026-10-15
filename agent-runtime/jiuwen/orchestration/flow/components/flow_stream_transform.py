@@ -268,6 +268,12 @@ class FlowStreamTransform(Invokable):
             return {USER_FIELDS: value}
         return {USER_FIELDS: {self._output_field: value}}
 
+    def _format_answer(self, frame):
+        """Serialize dict/list frames to JSON string for frontend display."""
+        if isinstance(frame, (dict, list)):
+            return json.dumps(frame, ensure_ascii=False, default=str)
+        return frame
+
     async def _handle_streaming(
         self,
         out_stream: AsyncIterator[Any],
@@ -287,7 +293,7 @@ class FlowStreamTransform(Invokable):
                         code=StreamCode.PARTIAL_CONTENT.value,
                         msg=StreamDataMsg.SUCCESS.value,
                         data=get_data_of_streaming_with_metadata(
-                            answer=prev, metadata=self.metadata
+                            answer=self._format_answer(prev), metadata=self.metadata
                         ),
                         execution_id=stream_related_info.execution_id,
                         index=idx,
@@ -302,7 +308,7 @@ class FlowStreamTransform(Invokable):
                     code=StreamCode.MESSAGE_END.value,
                     msg=StreamDataMsg.MESSAGE_END.value,
                     data=get_data_of_streaming_with_metadata(
-                        answer=prev, metadata=self.metadata
+                        answer=self._format_answer(prev), metadata=self.metadata
                     ),
                     execution_id=stream_related_info.execution_id,
                     index=idx,
