@@ -391,16 +391,22 @@ export class PluginDebugModalComponent {
    * 动态表单会把非 string 类型默认值强制转换（integer/number 的 ****** → 0，boolean → false），
    * 因此除固定掩码外还需识别这些转换后形态，否则掩码会被当成用户输入而无法替换为运行时占位符，
    * 导致 0/false 被当作真实值下发且后端不再回填该加密变量。
+   * 类型强转后的 0/false 与用户真实输入无法从值本身区分，须结合表单控件 pristine 状态判定：
+   * 仅当控件未被用户编辑过时才视为默认态，用户手输的 0/false 原样提交（手动输入优先）。
    */
   private isUntouchedSecretField(item: any, submitted: any): boolean {
     if (submitted === ENV_VAR_SECRET_MASK) {
       return true;
     }
     if (item?.type === 'integer' || item?.type === 'number') {
-      return typeof submitted === 'number' && (Number.isNaN(submitted) || submitted === 0);
+      return (
+        typeof submitted === 'number' &&
+        (Number.isNaN(submitted) || submitted === 0) &&
+        this.dynamicFormIns?.isControlPristine(item.name) === true
+      );
     }
     if (item?.type === 'boolean') {
-      return submitted === false;
+      return submitted === false && this.dynamicFormIns?.isControlPristine(item.name) === true;
     }
     return false;
   }

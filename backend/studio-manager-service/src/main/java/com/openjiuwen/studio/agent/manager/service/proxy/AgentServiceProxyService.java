@@ -578,10 +578,13 @@ public class AgentServiceProxyService {
     /**
      * 按插件参数绑定的环境变量（env_var_ref）回填调测入参。
      * 仅当参数为空或为脱敏占位符（固定掩码 ******）时回填，用户手填的值优先；加密变量在后端解密后再回填，明文不下发前端。
-     * 绑定关系覆盖工具的 input_schema 以及 request_info.basic_info.input_schema（host/baseURL 的 Path 参数）。
+     * 绑定参数已全部被用户手填时跳过环境变量加载，默认环境缺失或读取异常不阻断调测（手动输入优先）。
+     * 绑定关系覆盖工具的 input_schema 以及 request_info.basic_info.input_schema（host/baseURL 的 Path 参数），
+     * 数组格式按当前调测工具过滤，避免合并同插件其它工具的绑定。
      * 占位符 {@code ${_env.plugin_url_params.NAME}} 的解析仅限 schema 中声明了 env_var_ref 的绑定字段，
      * 且引用的变量名必须与该字段绑定的变量一致，防止任意入参套取（加密）环境变量明文。
-     * 只取项目默认环境的变量（与前端口径一致）；未能解析的变量名记录到结果中，由调用方给出明确提示：
+     * 只取项目默认环境的变量（与前端口径一致，值不做 trim）；回填值按 schema 声明类型归一（integer/number/boolean）。
+     * 未能解析的变量名记录到结果中，由调用方给出明确提示：
      * 脱敏占位符无法解析、或必填参数为空且变量缺失时均计入缺失并拦截；非必填参数为空时允许继续。
      *
      * @param projectId 项目 id
@@ -613,13 +616,28 @@ public class AgentServiceProxyService {
         if (envRefMap.isEmpty() && neededNames.isEmpty()) {
             return result;
         }
+        // 判断是否有绑定字段需要后端回填（空值、脱敏掩码或含运行时占位符）；
+        // 绑定参数已全部被用户手填时无需加载环境变量，默认环境缺失或读取异常不再阻断调测（手动输入优先）
+        boolean needsEnvResolution = !placeholderFields.isEmpty();
+        for (Map.Entry<String, EnvVarBinding> entry : envRefMap.entrySet()) {
+            Object current = paramJson.get(entry.getKey());
+            String currentStr = current == null ? "" : String.valueOf(current);
+            if (StringUtils.hasText(currentStr) && !isMaskedPlaceholder(currentStr)) {
+                continue;
+            }
+            needsEnvResolution = true;
+            break;
+        }
+        if (!needsEnvResolution) {
+            return result;
+        }
         LoadedEnvVars loadedEnvVars = loadDefaultEnvVarValues(projectId, workspaceId, neededNames);
         Map<String, LoadedEnvVar> envValues = loadedEnvVars.getValues();
         result.setLoadFailed(loadedEnvVars.isFailed());
         log.info("[runTool] resolve env var params, boundFields={}, placeholderFields={}, matchedEnvVars={}",
             envRefMap.keySet(), placeholderFields.keySet(), envValues.keySet());
-        boolean changed = replaceEnvPlaceholders(paramJson, placeholderFields, envValues, result.getMissingVars(),
-            result.getSecretValues());
+        boolean changed = replaceEnvPlaceholders(paramJson, placeholderFields, envRefMap, envValues,
+            result.getMissingVars(), result.getSecretValues());
         for (Map.Entry<String, EnvVarBinding> entry : envRefMap.entrySet()) {
             String fieldName = entry.getKey();
             EnvVarBinding binding = entry.getValue();
@@ -632,7 +650,8 @@ public class AgentServiceProxyService {
             }
             LoadedEnvVar loaded = envValues.get(binding.getVarName());
             if (loaded != null) {
-                paramJson.put(fieldName, loaded.getValue());
+                // 按 schema 声明类型归一回填值，避免下游接口收到字符串形式的数字/布尔值
+                paramJson.put(fieldName, coerceBySchemaType(loaded.getValue(), binding.getType()));
                 changed = true;
                 if (loaded.isSecret()) {
                     // 记录回填的加密变量明文，供调测回显统一脱敏
@@ -737,16 +756,20 @@ public class AgentServiceProxyService {
     }
 
     /**
-     * 参数的环境变量绑定关系：绑定的环境变量名与该参数是否必填（取 schema 顶层 required 数组）。
+     * 参数的环境变量绑定关系：绑定的环境变量名、该参数是否必填（取 schema 顶层 required 数组）
+     * 与 schema 声明类型（用于回填值的类型归一）。
      */
     private static class EnvVarBinding {
         private final String varName;
 
         private final boolean required;
 
-        EnvVarBinding(String varName, boolean required) {
+        private final String type;
+
+        EnvVarBinding(String varName, boolean required, String type) {
             this.varName = varName;
             this.required = required;
+            this.type = type;
         }
 
         String getVarName() {
@@ -756,6 +779,38 @@ public class AgentServiceProxyService {
         boolean isRequired() {
             return required;
         }
+
+        String getType() {
+            return type;
+        }
+    }
+
+    /**
+     * 按 schema 声明类型对回填值做类型归一（integer/number/boolean），避免下游接口收到字符串形式的数字/布尔值；
+     * 解析失败时保留原始字符串，兼容值与声明类型不匹配的历史配置。
+     */
+    private Object coerceBySchemaType(String value, String schemaType) {
+        if (value == null) {
+            return null;
+        }
+        if ("integer".equals(schemaType)) {
+            try {
+                return Long.parseLong(value);
+            } catch (NumberFormatException e) {
+                return value;
+            }
+        }
+        if ("number".equals(schemaType)) {
+            try {
+                return Double.parseDouble(value);
+            } catch (NumberFormatException e) {
+                return value;
+            }
+        }
+        if ("boolean".equals(schemaType)) {
+            return Boolean.parseBoolean(value);
+        }
+        return value;
     }
 
     /**
@@ -787,23 +842,31 @@ public class AgentServiceProxyService {
     /**
      * 替换参数值中的环境变量占位符，返回是否有替换发生；无法解析的变量名记录到 missingVars，
      * 回填的加密变量明文记录到 resolvedSecretValues 供回显脱敏。
+     * 整体即占位符的字段按 schema 声明类型归一（避免字符串形式的数字/布尔下发），拼接型值保持字符串。
      */
     private boolean replaceEnvPlaceholders(JSONObject paramJson, Map<String, Set<String>> placeholderFields,
-        Map<String, LoadedEnvVar> envValues, Set<String> missingVars, Set<String> resolvedSecretValues) {
+        Map<String, EnvVarBinding> envRefMap, Map<String, LoadedEnvVar> envValues, Set<String> missingVars,
+        Set<String> resolvedSecretValues) {
         boolean changed = false;
         for (Map.Entry<String, Set<String>> entry : placeholderFields.entrySet()) {
             Object value = paramJson.get(entry.getKey());
             if (!(value instanceof String)) {
                 continue;
             }
-            String replaced = (String) value;
+            String original = (String) value;
+            String replaced = original;
+            boolean wholePlaceholder = false;
             for (String name : entry.getValue()) {
                 LoadedEnvVar loaded = envValues.get(name);
                 if (loaded == null) {
                     missingVars.add(name);
                     continue;
                 }
-                String newValue = replaced.replace("${_env.plugin_url_params." + name + "}", loaded.getValue());
+                String placeholder = "${_env.plugin_url_params." + name + "}";
+                if (original.equals(placeholder)) {
+                    wholePlaceholder = true;
+                }
+                String newValue = replaced.replace(placeholder, loaded.getValue());
                 if (!newValue.equals(replaced)) {
                     replaced = newValue;
                     changed = true;
@@ -812,7 +875,12 @@ public class AgentServiceProxyService {
                     }
                 }
             }
-            paramJson.put(entry.getKey(), replaced);
+            if (wholePlaceholder) {
+                EnvVarBinding binding = envRefMap.get(entry.getKey());
+                paramJson.put(entry.getKey(), coerceBySchemaType(replaced, binding == null ? null : binding.getType()));
+            } else {
+                paramJson.put(entry.getKey(), replaced);
+            }
         }
         return changed;
     }
@@ -827,31 +895,35 @@ public class AgentServiceProxyService {
     }
 
     /**
-     * 提取插件参数名到环境变量绑定关系（绑定变量名 + 是否必填）的映射。
+     * 提取插件参数名到环境变量绑定关系（绑定变量名 + 是否必填 + schema 类型）的映射。
      * 优先使用插件完整构建结果（同时覆盖工具 input_schema 与 host/baseURL 的 Path 参数 schema），
-     * 构建失败时回退到 t_tool 原始字段。
+     * 仅在构建失败时才降级直查 t_tool 原始字段，且数组格式按当前调测工具过滤，
+     * 避免"当前工具确实没有绑定"时把同插件其它工具的绑定误注入当前调测请求。
      */
     private Map<String, EnvVarBinding> extractEnvVarRefs(String projectId, String workspaceId, String pluginId,
         String toolId) {
         Map<String, EnvVarBinding> refMap = new HashMap<>();
+        boolean buildFailed = false;
         try {
             ToolEntity built = pluginBase.buildToolByPlugin(projectId, workspaceId, pluginId, toolId);
             if (built != null) {
-                collectEnvVarRefs(built.getInputSchema(), refMap);
+                collectEnvVarRefs(built.getInputSchema(), refMap, toolId);
                 if (built.getRequestInfo() != null) {
-                    collectEnvVarRefs(built.getRequestInfo().getInputSchema(), refMap);
+                    collectEnvVarRefs(built.getRequestInfo().getInputSchema(), refMap, toolId);
                 }
             }
         } catch (Exception e) {
+            buildFailed = true;
             log.warn("[runTool] buildToolByPlugin failed when extracting env var refs, error={}", e.getMessage());
         }
-        if (refMap.isEmpty()) {
+        // 仅在构建失败时降级；构建成功但当前工具无 env_var_ref 属于正常情况，不能再合并原始数组里其它工具的绑定
+        if (buildFailed && refMap.isEmpty()) {
             ToolEntity entity = toolMapper.selectById(pluginId);
             if (entity != null) {
-                collectEnvVarRefs(entity.getInputSchema(), refMap);
+                collectEnvVarRefs(entity.getInputSchema(), refMap, toolId);
                 // 降级路径同样需要覆盖 host/baseURL 的 Path 参数绑定，避免 env_var_ref 丢失
                 if (entity.getRequestInfo() != null) {
-                    collectEnvVarRefs(entity.getRequestInfo().getInputSchema(), refMap);
+                    collectEnvVarRefs(entity.getRequestInfo().getInputSchema(), refMap, toolId);
                 }
             }
         }
@@ -861,9 +933,10 @@ public class AgentServiceProxyService {
     /**
      * 从 schema 中收集参数名到环境变量绑定关系的映射。
      * 兼容两种格式：普通 schema 对象（含 properties）与 ToolInputSchema 数组（[{tool_id, input_schema}]）。
+     * 数组格式为同插件全部工具的 schema，必须按当前调测的 toolId 过滤，避免把其它工具的绑定误注入当前调测。
      * 必填判定以 schema 顶层 required 数组为权威来源，属性级 required 作为兼容。
      */
-    private void collectEnvVarRefs(String schemaStr, Map<String, EnvVarBinding> refMap) {
+    private void collectEnvVarRefs(String schemaStr, Map<String, EnvVarBinding> refMap, String toolId) {
         if (StringUtils.isEmpty(schemaStr)) {
             return;
         }
@@ -873,9 +946,14 @@ public class AgentServiceProxyService {
                 JSONArray array = JSONArray.parseArray(trimmed);
                 for (int i = 0; i < array.size(); i++) {
                     JSONObject item = array.getJSONObject(i);
-                    if (item != null) {
-                        collectEnvVarRefs(item.getString("input_schema"), refMap);
+                    if (item == null) {
+                        continue;
                     }
+                    String itemToolId = item.getString("tool_id");
+                    if (toolId != null && (StringUtils.isEmpty(itemToolId) || !toolId.equals(itemToolId))) {
+                        continue;
+                    }
+                    collectEnvVarRefs(item.getString("input_schema"), refMap, toolId);
                 }
                 return;
             }
@@ -902,7 +980,7 @@ public class AgentServiceProxyService {
                 String ref = prop.getString("env_var_ref");
                 if (StringUtils.hasText(ref)) {
                     boolean required = requiredNames.contains(key) || Boolean.TRUE.equals(prop.getBoolean("required"));
-                    refMap.put(key, new EnvVarBinding(ref, required));
+                    refMap.put(key, new EnvVarBinding(ref, required, prop.getString("type")));
                 }
             }
         } catch (Exception e) {
@@ -989,7 +1067,8 @@ public class AgentServiceProxyService {
                 continue;
             }
             boolean secret = Boolean.TRUE.equals(var.getValue().isSecret());
-            String value = var.getValue().getContent().trim();
+            // 不做 trim，与前端 getEnvVariablesDetail 直接使用 content 的口径一致，保留首尾空格敏感的变量值
+            String value = var.getValue().getContent();
             if (secret) {
                 try {
                     value = CryptoUtils.decrypt(value);
