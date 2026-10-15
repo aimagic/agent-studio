@@ -20,11 +20,19 @@ import { AssetGenerateLoadingIconComponent } from '@shared/components/assets/ass
 import { NoDataIconComponent } from '@shared/components/no-data-icon/no-data-icon.component';
 import { AssetAlertIconComponent } from '@shared/components/assets/asset-alert-icon/asset-alert-icon.component';
 import { initializeReqItem, pluginSchemaStr2Path } from '@routes/agent-center/app-plugin/utils';
+import { EnvManagementService } from '@routes/platform-management/environment-management/env-management.service';
+import { EnvironmentVariablesManagementService } from '@routes/platform-management/environment-variables-management/environment-variables-management.service';
 import { NzModalRef } from 'ng-zorro-antd/modal';
 import { NzButtonModule } from 'ng-zorro-antd/button';
 import { NzIconModule } from 'ng-zorro-antd/icon';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { NzAlertModule } from 'ng-zorro-antd/alert';
+
+/** 加密环境变量的脱敏占位符：回填后通过必填校验，提交后由后端按默认环境解密解析 */
+const ENV_VAR_SECRET_MASK = '******';
+
+/** 运行时环境变量占位符前缀：加密变量提交该占位符，由后端按默认环境解密解析 */
+const ENV_VAR_PLACEHOLDER_PREFIX = '${_env.plugin_url_params.';
 
 @Component({
   selector: 'plugin-debug-modal',
@@ -89,6 +97,15 @@ export class PluginDebugModalComponent {
   public isLoading = false;
 
   public showResponseJson=false;
+
+  /** 绑定的环境变量在当前默认环境中缺失的参数清单（切换默认环境后常见），用于弹窗提示 */
+  public envVarMissingList: { paramName: string; varName: string }[] = [];
+
+  /** 当前默认环境名，用于缺失提示 */
+  public defaultEnvName = '';
+
+  /** 是否存在默认环境（存在绑定关系但未设置默认环境时为 false，用于提示） */
+  public hasDefaultEnv = true;
   constructor(
     private i18n: I18NextEagerPipe,
     private commonLogic: agentCommonLogic,
@@ -96,14 +113,86 @@ export class PluginDebugModalComponent {
     private appPluginRepoServe: AppPluginRepoService,
     private clipboard: Clipboard,
     private agentDataServe: AgentDataService,
+    private envManagementService: EnvManagementService,
+    private envVarService: EnvironmentVariablesManagementService,
   ) {}
 
   ngOnInit() {
     //插件路径参数
     let pluginPathArgs = pluginSchemaStr2Path(this.pluginBodyParams?.request_info?.basic_info?.input_schema)
     pluginPathArgs = pluginPathArgs.map((item) => initializeReqItem(item))
-    this.requestArgToDynamicForm = [...this.requestArgs,...pluginPathArgs];
-    this.registerJSONValidationSchema();
+    const requestArgToDynamicForm = [...this.requestArgs,...pluginPathArgs];
+    // 回填绑定的环境变量值：非加密变量直接填充，加密变量前端拿不到明文，交由后端按默认环境解析
+    this.applyBoundEnvVarValues(requestArgToDynamicForm).then((list) => {
+      this.requestArgToDynamicForm = list;
+      this.registerJSONValidationSchema();
+    });
+  }
+
+  /**
+   * 回填 requestArgs 中通过 env_var_ref 绑定的环境变量值（取当前默认环境）。
+   * 加密变量（secret=true）接口只会返回 ****** 占位符，前端无法拿到明文，回填脱敏占位符由后端解析；
+   * 绑定的变量在默认环境中不存在时（如切换默认环境后），记录到 envVarMissingList 用于提示。
+   */
+  private async applyBoundEnvVarValues(list: any[]): Promise<any[]> {
+    if (!list?.some((item) => item?.env_var_ref)) {
+      return list;
+    }
+    this.envVarMissingList = [];
+    this.hasDefaultEnv = true;
+    this.defaultEnvName = '';
+    try {
+      const envRes = await this.envManagementService.getEnvironmentList({
+        offset: 0,
+        limit: 99,
+        isDefault: true,
+      });
+      const envInfo = envRes?.env_info || [];
+      const defaultEnv = envInfo.find((env: any) => env.isDefault) || envInfo[0];
+      if (!defaultEnv?.id) {
+        this.hasDefaultEnv = false;
+        return list;
+      }
+      this.defaultEnvName = defaultEnv.name || defaultEnv.id;
+      const varRes = await this.envVarService.getEnvVariablesDetail(defaultEnv.id);
+      const varMap = new Map<string, { content: string; secret: boolean }>();
+      (varRes?.variables || []).forEach((variable: any) => {
+        if (variable?.name) {
+          varMap.set(variable.name, {
+            content: variable?.value?.content ?? '',
+            secret: variable?.value?.secret === true,
+          });
+        }
+      });
+      list.forEach((item) => {
+        if (!item?.env_var_ref) {
+          return;
+        }
+        const matched = varMap.get(item.env_var_ref);
+        if (!matched) {
+          // 绑定的环境变量在当前默认环境中不存在（常见于切换默认环境后），记录用于提示
+          this.envVarMissingList.push({ paramName: item.name, varName: item.env_var_ref });
+          return;
+        }
+        item.envVarBound = true;
+        // 加密变量前端拿不到明文，回填脱敏占位符 ******：既能通过必填校验，又由后端按默认环境解密解析；
+        // 用户仍可手动覆盖该值（手动输入优先）。
+        if (matched.secret || matched.content === ENV_VAR_SECRET_MASK) {
+          item.envVarBoundSecret = true;
+          item.value = { ...(item.value || {}), default: ENV_VAR_SECRET_MASK };
+          item.controlValue = ENV_VAR_SECRET_MASK;
+          return;
+        }
+        if (!matched.content) {
+          return;
+        }
+        item.value = { ...(item.value || {}), default: matched.content };
+        item.controlValue = matched.content;
+      });
+    } catch (e) {
+      // 环境变量加载失败不阻塞调试
+    }
+    return list;
   }
 
   /** 按钮禁用：rawResponse为空 或者 errorMessage为空 */
@@ -274,7 +363,19 @@ export class PluginDebugModalComponent {
 
   /** 点击【开始调测】，获取表单key-value，作为插件调测接口的入参 */
   private getDebugBodyParams() {
-    return this.dynamicFormIns?.getDynamicParams();
+    const params = this.dynamicFormIns?.getDynamicParams() || {};
+    // 加密环境变量字段保留 ****** 展示（通过必填校验），提交时替换为运行时占位符，
+    // 由后端按默认环境解密解析；用户手填的值原样提交。
+    this.requestArgToDynamicForm.forEach((item: any) => {
+      if (
+        item?.env_var_ref &&
+        item?.envVarBoundSecret &&
+        params[item.name] === ENV_VAR_SECRET_MASK
+      ) {
+        params[item.name] = `${ENV_VAR_PLACEHOLDER_PREFIX}${item.env_var_ref}}`;
+      }
+    });
+    return params;
   }
 
   private registerJSONValidationSchema() {

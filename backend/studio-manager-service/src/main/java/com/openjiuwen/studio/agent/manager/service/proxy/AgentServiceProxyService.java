@@ -58,6 +58,7 @@ import com.openjiuwen.studio.agent.manager.dto.runtime.RankDocumentsRequest;
 import com.openjiuwen.studio.agent.manager.dto.runtime.StsTextResp;
 import com.openjiuwen.studio.agent.manager.entity.Agent;
 import com.openjiuwen.studio.agent.manager.entity.EnvironmentManagerEntity;
+import com.openjiuwen.studio.agent.manager.entity.EnvironmentVariableEntity;
 import com.openjiuwen.studio.agent.manager.entity.ReleaseChannel;
 import com.openjiuwen.studio.agent.manager.entity.ToolEntity;
 import com.openjiuwen.studio.agent.manager.entity.WorkflowEntity;
@@ -65,6 +66,7 @@ import com.openjiuwen.studio.agent.manager.entity.insight.WorkflowRunResult;
 import com.openjiuwen.studio.agent.manager.entity.md.ModelServiceBase;
 import com.openjiuwen.studio.agent.manager.mapper.AgentMapper;
 import com.openjiuwen.studio.agent.manager.mapper.EnvironmentManagerMapper;
+import com.openjiuwen.studio.agent.manager.mapper.EnvironmentVariableMapper;
 import com.openjiuwen.studio.agent.manager.mapper.ReleaseChannelMapper;
 import com.openjiuwen.studio.agent.manager.mapper.ToolMapper;
 import com.openjiuwen.studio.agent.manager.mapper.WorkflowMapper;
@@ -81,8 +83,11 @@ import com.openjiuwen.studio.agent.manager.rce.client.AgentBuilderClient;
 import com.openjiuwen.studio.agent.manager.rce.client.AgentRuntimeClient;
 import com.openjiuwen.studio.agent.manager.service.AgentRuntimeService;
 import com.openjiuwen.studio.agent.manager.service.debugging.ControllerDebuggingMgmtService;
+import com.openjiuwen.studio.agent.manager.service.environment.EnvironmentCacheUtil;
+import com.openjiuwen.studio.agent.manager.utils.McpJsonUtils;
 
 import com.openjiuwen.studio.agent.manager.service.plugin.IPlugin;
+import com.openjiuwen.studio.agent.manager.service.plugin.IPluginBase;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.MediaType;
@@ -110,6 +115,8 @@ import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
@@ -119,6 +126,18 @@ import java.util.stream.Collectors;
 public class AgentServiceProxyService {
     /** MDC key for request-id，权威来源为 {@link MdcKeys}（COM-02 白名单）。 */
     private static final String REQUEST_ID = MdcKeys.REQUEST_ID;
+
+    /**
+     * 加密环境变量的固定脱敏占位符（六位星号），与前端回填值及环境变量查询接口的脱敏口径严格一致。
+     * 仅精确匹配该值才视为需要后端回填，避免把绑定字段的合法星号字面量（如 ***）误判为占位符。
+     */
+    private static final String ENV_VAR_SECRET_MASK = "******";
+
+    /**
+     * 运行时环境变量占位符：{@code ${_env.plugin_url_params.NAME}}，与工作流/运行态约定一致。
+     */
+    private static final Pattern ENV_PLACEHOLDER_PATTERN =
+        Pattern.compile("\\$\\{_env\\.plugin_url_params\\.([a-zA-Z_$][a-zA-Z0-9_$]*)\\}");
 
     private final AgentRuntimeClient runtimeClient;
 
@@ -143,6 +162,12 @@ public class AgentServiceProxyService {
     private final ToolMapper toolMapper;
 
     private final EnvironmentManagerMapper environmentManagerMapper;
+
+    private final EnvironmentVariableMapper environmentVariableMapper;
+
+    private final EnvironmentCacheUtil environmentCacheUtil;
+
+    private final IPluginBase pluginBase;
 
     private final ReleaseChannelMapper releaseChannelMapper;
 
@@ -241,6 +266,9 @@ public class AgentServiceProxyService {
         WorkflowMapper workflowMapper, ModelServiceMapper modelServiceMapper, OkHttpClientUtils okHttpClientUtils,
         RouterStrategyMapper routerStrategyMapper, FreeModelServiceMapper freeModelServiceMapper,
         ToolMapper toolMapper, EnvironmentManagerMapper environmentManagerMapper,
+        EnvironmentVariableMapper environmentVariableMapper,
+        EnvironmentCacheUtil environmentCacheUtil,
+        IPluginBase pluginBase,
         ReleaseChannelMapper releaseChannelMapper,
         AgentRuntimeService agentRuntimeService,
         ControllerDebuggingMgmtService controllerDebuggingMgmtService, MgObsService mgObsService) {
@@ -255,6 +283,9 @@ public class AgentServiceProxyService {
         this.freeModelServiceMapper = freeModelServiceMapper;
         this.toolMapper = toolMapper;
         this.environmentManagerMapper = environmentManagerMapper;
+        this.environmentVariableMapper = environmentVariableMapper;
+        this.environmentCacheUtil = environmentCacheUtil;
+        this.pluginBase = pluginBase;
         this.releaseChannelMapper = releaseChannelMapper;
         this.agentRuntimeService = agentRuntimeService;
         this.controllerDebuggingMgmtService = controllerDebuggingMgmtService;
@@ -453,9 +484,431 @@ public class AgentServiceProxyService {
     public ResponseEntity<RunToolResponseBody> runTool(String workspaceId, String projectId, RunToolRequestBody body,
         String toolId) {
         String[] tool = body.getToolObsKey().split("#");
-        ToolEntity entity = toolMapper.selectById(tool[0]);
+        String pluginId = tool[0];
+        String innerToolId = tool.length > 1 ? tool[1] : "0";
+        ToolEntity entity = toolMapper.selectById(pluginId);
         checkToolsPermission(entity, projectId, workspaceId);
-        return ResponseModel.success(iPlugin.runTool(projectId, body));
+        // 调试时按环境变量绑定关系回填参数（用户手填的值优先，加密变量由后端解密）
+        EnvVarResolveResult resolveResult =
+            resolveEnvVarParams(projectId, workspaceId, pluginId, innerToolId, body.getParameter());
+        if (!resolveResult.getMissingVars().isEmpty()) {
+            // 绑定的环境变量在默认环境中不存在（如切换默认环境后）时直接失败并给出明确提示，
+            // 避免把占位符/脱敏值原样下发到目标接口，产生"不知道这样的主机"这类难定位的错误；
+            // 回显原始入参（含掩码/占位符，不含明文）便于用户确认提交内容
+            log.warn("[runTool] env vars missing in default environment: {}", resolveResult.getMissingVars());
+            return ResponseModel.success(new RunToolResponseBody().setSuccess(false)
+                .setRawRequestBody(body.getParameter())
+                .setErrorMessage(String.format(
+                    "参数绑定的环境变量 [%s] 在当前默认环境中不存在，请在环境管理中补充该变量，或手动输入参数值后重试",
+                    String.join(", ", resolveResult.getMissingVars()))));
+        }
+        body.setParameter(resolveResult.getParameter());
+        RunToolResponseBody responseBody = iPlugin.runTool(projectId, body);
+        // 加密变量明文不回显：对调测回显统一脱敏（不影响已发出的真实请求），与请求头脱敏回显惯例一致
+        maskResolvedSecrets(responseBody, resolveResult.getSecretValues());
+        return ResponseModel.success(responseBody);
+    }
+
+    /**
+     * 将调测回显（请求 URL/请求头/请求体）中本次解析出的加密变量明文替换为固定掩码。
+     * 仅影响展示，不影响已发出的真实请求；过短的值不脱敏，避免误伤普通内容。
+     */
+    private void maskResolvedSecrets(RunToolResponseBody responseBody, Set<String> secretValues) {
+        if (responseBody == null || secretValues.isEmpty()) {
+            return;
+        }
+        responseBody.setRawRequestUrl(maskSecretText(responseBody.getRawRequestUrl(), secretValues));
+        responseBody.setRawRequestBody(maskSecretText(responseBody.getRawRequestBody(), secretValues));
+        if (responseBody.getRawRequestHeaders() != null) {
+            Map<String, String> maskedHeaders = new LinkedHashMap<>(responseBody.getRawRequestHeaders());
+            maskedHeaders.replaceAll((key, value) -> maskSecretText(value, secretValues));
+            responseBody.setRawRequestHeaders(maskedHeaders);
+        }
+    }
+
+    private String maskSecretText(String text, Set<String> secretValues) {
+        if (StringUtils.isEmpty(text)) {
+            return text;
+        }
+        String masked = text;
+        for (String secretValue : secretValues) {
+            if (StringUtils.hasText(secretValue) && secretValue.length() >= 3) {
+                masked = masked.replace(secretValue, ENV_VAR_SECRET_MASK);
+            }
+        }
+        return masked;
+    }
+
+    /**
+     * 按插件参数绑定的环境变量（env_var_ref）回填调测入参。
+     * 仅当参数为空或为脱敏占位符（固定掩码 ******）时回填，用户手填的值优先；加密变量在后端解密后再回填，明文不下发前端。
+     * 绑定关系覆盖工具的 input_schema 以及 request_info.basic_info.input_schema（host/baseURL 的 Path 参数）。
+     * 占位符 {@code ${_env.plugin_url_params.NAME}} 的解析仅限 schema 中声明了 env_var_ref 的绑定字段，
+     * 且引用的变量名必须与该字段绑定的变量一致，防止任意入参套取（加密）环境变量明文。
+     * 只取项目默认环境的变量（与前端口径一致）；未能解析的变量名记录到结果中，由调用方给出明确提示：
+     * 脱敏占位符无法解析、或必填参数为空且变量缺失时均计入缺失并拦截；非必填参数为空时允许继续。
+     *
+     * @param projectId 项目 id
+     * @param workspaceId 工作空间 id
+     * @param pluginId 插件 id
+     * @param toolId 工具 id（toolObsKey 中 # 之后的部分）
+     * @param parameter 前端提交的参数 JSON 字符串
+     * @return 回填结果（参数 JSON 与缺失的环境变量名）
+     */
+    private EnvVarResolveResult resolveEnvVarParams(String projectId, String workspaceId, String pluginId, String toolId,
+        String parameter) {
+        EnvVarResolveResult result = new EnvVarResolveResult(parameter);
+        if (StringUtils.isEmpty(parameter)) {
+            return result;
+        }
+        JSONObject paramJson;
+        try {
+            paramJson = JSONObject.parseObject(parameter);
+        } catch (Exception e) {
+            log.warn("[runTool] parse parameter failed when resolving env vars, skip. error={}", e.getMessage());
+            return result;
+        }
+        Map<String, EnvVarBinding> envRefMap = extractEnvVarRefs(projectId, workspaceId, pluginId, toolId);
+        // 仅在绑定字段内收集运行时占位符 ${_env.plugin_url_params.NAME}，且引用名须与绑定变量一致
+        Map<String, Set<String>> placeholderFields = new HashMap<>();
+        Set<String> neededNames = new HashSet<>();
+        envRefMap.values().forEach(binding -> neededNames.add(binding.getVarName()));
+        collectEnvPlaceholders(paramJson, envRefMap, neededNames, placeholderFields);
+        if (envRefMap.isEmpty() && neededNames.isEmpty()) {
+            return result;
+        }
+        Map<String, LoadedEnvVar> envValues = loadDefaultEnvVarValues(projectId, workspaceId, neededNames);
+        log.info("[runTool] resolve env var params, boundFields={}, placeholderFields={}, matchedEnvVars={}",
+            envRefMap.keySet(), placeholderFields.keySet(), envValues.keySet());
+        boolean changed = replaceEnvPlaceholders(paramJson, placeholderFields, envValues, result.getMissingVars(),
+            result.getSecretValues());
+        for (Map.Entry<String, EnvVarBinding> entry : envRefMap.entrySet()) {
+            String fieldName = entry.getKey();
+            EnvVarBinding binding = entry.getValue();
+            Object current = paramJson.get(fieldName);
+            String currentStr = current == null ? "" : String.valueOf(current);
+            // 用户手填了有效值则优先，不回填；固定掩码 ****** 视为脱敏占位符，需要回填
+            boolean masked = isMaskedPlaceholder(currentStr);
+            if (StringUtils.hasText(currentStr) && !masked) {
+                continue;
+            }
+            LoadedEnvVar loaded = envValues.get(binding.getVarName());
+            if (loaded != null) {
+                paramJson.put(fieldName, loaded.getValue());
+                changed = true;
+                if (loaded.isSecret()) {
+                    // 记录回填的加密变量明文，供调测回显统一脱敏
+                    result.getSecretValues().add(loaded.getValue());
+                }
+            } else if (masked || binding.isRequired()) {
+                // 脱敏占位符无法解析不能原样下发；必填参数为空且变量缺失时同样拦截，避免下游报难定位错误
+                result.getMissingVars().add(binding.getVarName());
+            }
+            // 非必填参数为空且变量缺失：允许为空，继续执行
+        }
+        if (changed) {
+            result.setParameter(paramJson.toJSONString());
+        }
+        return result;
+    }
+
+    /**
+     * 环境变量回填结果：回填后的参数 JSON 字符串、默认环境中不存在的环境变量名（用于提示）、
+     * 以及本次实际回填的加密变量明文集合（用于调测回显脱敏，不下发额外信息）。
+     */
+    private static class EnvVarResolveResult {
+        private String parameter;
+
+        private final Set<String> missingVars = new LinkedHashSet<>();
+
+        private final Set<String> secretValues = new LinkedHashSet<>();
+
+        EnvVarResolveResult(String parameter) {
+            this.parameter = parameter;
+        }
+
+        String getParameter() {
+            return parameter;
+        }
+
+        void setParameter(String parameter) {
+            this.parameter = parameter;
+        }
+
+        Set<String> getMissingVars() {
+            return missingVars;
+        }
+
+        Set<String> getSecretValues() {
+            return secretValues;
+        }
+    }
+
+    /**
+     * 默认环境中加载的环境变量值及是否加密。
+     */
+    private static class LoadedEnvVar {
+        private final String value;
+
+        private final boolean secret;
+
+        LoadedEnvVar(String value, boolean secret) {
+            this.value = value;
+            this.secret = secret;
+        }
+
+        String getValue() {
+            return value;
+        }
+
+        boolean isSecret() {
+            return secret;
+        }
+    }
+
+    /**
+     * 参数的环境变量绑定关系：绑定的环境变量名与该参数是否必填（取 schema 顶层 required 数组）。
+     */
+    private static class EnvVarBinding {
+        private final String varName;
+
+        private final boolean required;
+
+        EnvVarBinding(String varName, boolean required) {
+            this.varName = varName;
+            this.required = required;
+        }
+
+        String getVarName() {
+            return varName;
+        }
+
+        boolean isRequired() {
+            return required;
+        }
+    }
+
+    /**
+     * 收集绑定字段值中引用自身绑定环境变量的占位符 {@code ${_env.plugin_url_params.NAME}}。
+     * 仅处理 schema 中声明了 env_var_ref 的字段，且占位符引用名必须与该字段绑定的变量一致，
+     * 未绑定字段中的占位符保持原样下发，防止借调试入参套取（加密）环境变量明文。
+     */
+    private void collectEnvPlaceholders(JSONObject paramJson, Map<String, EnvVarBinding> envRefMap,
+        Set<String> neededNames, Map<String, Set<String>> placeholderFields) {
+        for (Map.Entry<String, EnvVarBinding> binding : envRefMap.entrySet()) {
+            String fieldName = binding.getKey();
+            Object value = paramJson.get(fieldName);
+            if (!(value instanceof String)) {
+                continue;
+            }
+            Matcher matcher = ENV_PLACEHOLDER_PATTERN.matcher((String) value);
+            while (matcher.find()) {
+                String name = matcher.group(1);
+                // 占位符引用的变量名必须与该字段绑定的变量一致，其它变量名的占位符不解析
+                if (!name.equals(binding.getValue().getVarName())) {
+                    continue;
+                }
+                neededNames.add(name);
+                placeholderFields.computeIfAbsent(fieldName, key -> new LinkedHashSet<>()).add(name);
+            }
+        }
+    }
+
+    /**
+     * 替换参数值中的环境变量占位符，返回是否有替换发生；无法解析的变量名记录到 missingVars，
+     * 回填的加密变量明文记录到 resolvedSecretValues 供回显脱敏。
+     */
+    private boolean replaceEnvPlaceholders(JSONObject paramJson, Map<String, Set<String>> placeholderFields,
+        Map<String, LoadedEnvVar> envValues, Set<String> missingVars, Set<String> resolvedSecretValues) {
+        boolean changed = false;
+        for (Map.Entry<String, Set<String>> entry : placeholderFields.entrySet()) {
+            Object value = paramJson.get(entry.getKey());
+            if (!(value instanceof String)) {
+                continue;
+            }
+            String replaced = (String) value;
+            for (String name : entry.getValue()) {
+                LoadedEnvVar loaded = envValues.get(name);
+                if (loaded == null) {
+                    missingVars.add(name);
+                    continue;
+                }
+                String newValue = replaced.replace("${_env.plugin_url_params." + name + "}", loaded.getValue());
+                if (!newValue.equals(replaced)) {
+                    replaced = newValue;
+                    changed = true;
+                    if (loaded.isSecret()) {
+                        resolvedSecretValues.add(loaded.getValue());
+                    }
+                }
+            }
+            paramJson.put(entry.getKey(), replaced);
+        }
+        return changed;
+    }
+
+    /**
+     * 判断是否为加密环境变量的脱敏占位符。
+     * 仅与前端回填的固定掩码 {@link #ENV_VAR_SECRET_MASK} 严格相等才视为占位符，
+     * 绑定字段的合法星号字面量（如 ***、****）不会被误判为需要回填。
+     */
+    private boolean isMaskedPlaceholder(String value) {
+        return ENV_VAR_SECRET_MASK.equals(value);
+    }
+
+    /**
+     * 提取插件参数名到环境变量绑定关系（绑定变量名 + 是否必填）的映射。
+     * 优先使用插件完整构建结果（同时覆盖工具 input_schema 与 host/baseURL 的 Path 参数 schema），
+     * 构建失败时回退到 t_tool 原始字段。
+     */
+    private Map<String, EnvVarBinding> extractEnvVarRefs(String projectId, String workspaceId, String pluginId,
+        String toolId) {
+        Map<String, EnvVarBinding> refMap = new HashMap<>();
+        try {
+            ToolEntity built = pluginBase.buildToolByPlugin(projectId, workspaceId, pluginId, toolId);
+            if (built != null) {
+                collectEnvVarRefs(built.getInputSchema(), refMap);
+                if (built.getRequestInfo() != null) {
+                    collectEnvVarRefs(built.getRequestInfo().getInputSchema(), refMap);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[runTool] buildToolByPlugin failed when extracting env var refs, error={}", e.getMessage());
+        }
+        if (refMap.isEmpty()) {
+            ToolEntity entity = toolMapper.selectById(pluginId);
+            if (entity != null) {
+                collectEnvVarRefs(entity.getInputSchema(), refMap);
+            }
+        }
+        return refMap;
+    }
+
+    /**
+     * 从 schema 中收集参数名到环境变量绑定关系的映射。
+     * 兼容两种格式：普通 schema 对象（含 properties）与 ToolInputSchema 数组（[{tool_id, input_schema}]）。
+     * 必填判定以 schema 顶层 required 数组为权威来源，属性级 required 作为兼容。
+     */
+    private void collectEnvVarRefs(String schemaStr, Map<String, EnvVarBinding> refMap) {
+        if (StringUtils.isEmpty(schemaStr)) {
+            return;
+        }
+        String trimmed = schemaStr.trim();
+        try {
+            if (trimmed.startsWith("[")) {
+                JSONArray array = JSONArray.parseArray(trimmed);
+                for (int i = 0; i < array.size(); i++) {
+                    JSONObject item = array.getJSONObject(i);
+                    if (item != null) {
+                        collectEnvVarRefs(item.getString("input_schema"), refMap);
+                    }
+                }
+                return;
+            }
+            JSONObject schema = JSONObject.parseObject(trimmed);
+            JSONObject properties = schema.getJSONObject("properties");
+            if (properties == null) {
+                return;
+            }
+            Set<String> requiredNames = new HashSet<>();
+            JSONArray requiredArray = schema.getJSONArray("required");
+            if (requiredArray != null) {
+                for (int i = 0; i < requiredArray.size(); i++) {
+                    String requiredName = requiredArray.getString(i);
+                    if (StringUtils.hasText(requiredName)) {
+                        requiredNames.add(requiredName);
+                    }
+                }
+            }
+            for (String key : properties.keySet()) {
+                JSONObject prop = properties.getJSONObject(key);
+                if (prop == null) {
+                    continue;
+                }
+                String ref = prop.getString("env_var_ref");
+                if (StringUtils.hasText(ref)) {
+                    boolean required = requiredNames.contains(key) || Boolean.TRUE.equals(prop.getBoolean("required"));
+                    refMap.put(key, new EnvVarBinding(ref, required));
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[runTool] parse schema failed when collecting env var refs, skip. error={}", e.getMessage());
+        }
+    }
+
+    /**
+     * 从项目默认环境加载指定名称的环境变量值（缓存优先，缺失时查 DB），加密变量解密后返回，并标记是否加密。
+     * 与前端环境变量查询口径一致：仅取默认环境，不做跨环境兜底，变量缺失时由调用方给出提示。
+     *
+     * @param names 需要解析的环境变量名集合
+     * @return 环境变量名到值（含是否加密标记）的映射，加载失败返回空 Map
+     */
+    private Map<String, LoadedEnvVar> loadDefaultEnvVarValues(String projectId, String workspaceId,
+        Collection<String> names) {
+        Map<String, LoadedEnvVar> result = new HashMap<>();
+        if (StringUtils.isEmpty(projectId) || names == null || names.isEmpty()) {
+            return result;
+        }
+        try {
+            List<EnvironmentManagerEntity> defaultEnvs = environmentManagerMapper.findByProjectIdAndIsDefaultTrue(projectId);
+            if (org.springframework.util.CollectionUtils.isEmpty(defaultEnvs)) {
+                log.warn("[runTool] no default environment found for project: {}", projectId);
+                return result;
+            }
+            String envId = defaultEnvs.get(0).getId();
+            String envJson = null;
+            if (StringUtils.hasText(workspaceId)) {
+                String cached = environmentCacheUtil.getEnvironmentCache(envId, workspaceId);
+                if (StringUtils.hasText(cached) && !"{}".equals(cached)) {
+                    envJson = cached;
+                }
+            }
+            if (envJson == null && StringUtils.hasText(workspaceId)) {
+                EnvironmentVariableEntity byWorkspace =
+                    environmentVariableMapper.findByProjectIdAndWorkspaceIdAndEnvId(projectId, workspaceId, envId);
+                if (byWorkspace != null && StringUtils.hasText(byWorkspace.getEnvVariable())) {
+                    envJson = byWorkspace.getEnvVariable();
+                }
+            }
+            if (StringUtils.hasText(envJson) && !"{}".equals(envJson)) {
+                parseAndFillEnvValues(envJson, names, result);
+            }
+            Set<String> missing = new HashSet<>(names);
+            missing.removeAll(result.keySet());
+            if (!missing.isEmpty()) {
+                log.warn("[runTool] env vars not found in default environment for project {}: {}", projectId, missing);
+            }
+        } catch (Exception e) {
+            log.error("[runTool] load default env var values failed", e);
+        }
+        return result;
+    }
+
+    /**
+     * 解析环境变量 JSON 并填充未命中的目标变量名，加密变量解密后写入（解密失败回退原文，兼容明文存储）。
+     */
+    private void parseAndFillEnvValues(String envJson, Collection<String> names, Map<String, LoadedEnvVar> result) {
+        List<EnvironmentVariable> envVars = McpJsonUtils.toList(envJson, EnvironmentVariable.class);
+        if (org.springframework.util.CollectionUtils.isEmpty(envVars)) {
+            return;
+        }
+        for (EnvironmentVariable var : envVars) {
+            if (var.getName() == null || !names.contains(var.getName()) || result.containsKey(var.getName())
+                || var.getValue() == null || var.getValue().getContent() == null) {
+                continue;
+            }
+            boolean secret = Boolean.TRUE.equals(var.getValue().isSecret());
+            String value = var.getValue().getContent().trim();
+            if (secret) {
+                try {
+                    value = CryptoUtils.decrypt(value);
+                } catch (Exception e) {
+                    // 解密失败时回退原始内容（本地 NoOp 加密或历史数据可能以明文存储）
+                    log.warn("[runTool] decrypt secret env var failed: {}, use raw content", var.getName());
+                }
+            }
+            result.put(var.getName(), new LoadedEnvVar(value, secret));
+        }
     }
 
     public ResponseEntity<RunToolResponseBody> runToolForValidateToolCredential(String workspaceId, String projectId,

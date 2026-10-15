@@ -21,6 +21,7 @@ import com.openjiuwen.studio.agent.manager.entity.WorkflowEntity;
 import com.openjiuwen.studio.agent.manager.entity.md.ModelServiceBase;
 import com.openjiuwen.studio.agent.manager.mapper.AgentMapper;
 import com.openjiuwen.studio.agent.manager.mapper.EnvironmentManagerMapper;
+import com.openjiuwen.studio.agent.manager.mapper.EnvironmentVariableMapper;
 import com.openjiuwen.studio.agent.manager.mapper.ReleaseChannelMapper;
 import com.openjiuwen.studio.agent.manager.mapper.ToolMapper;
 import com.openjiuwen.studio.agent.manager.mapper.WorkflowMapper;
@@ -33,6 +34,8 @@ import com.openjiuwen.studio.agent.manager.rce.client.AgentRuntimeClient;
 
 import com.openjiuwen.studio.agent.manager.service.AgentRuntimeService;
 import com.openjiuwen.studio.agent.manager.service.debugging.ControllerDebuggingMgmtService;
+import com.openjiuwen.studio.agent.manager.service.environment.EnvironmentCacheUtil;
+import com.openjiuwen.studio.agent.manager.service.plugin.IPluginBase;
 import feign.FeignException;
 import feign.Request;
 import org.junit.jupiter.api.BeforeEach;
@@ -105,6 +108,15 @@ class AgentServiceProxyServiceTest {
     private EnvironmentManagerMapper environmentManagerMapper;
 
     @Mock
+    private EnvironmentVariableMapper environmentVariableMapper;
+
+    @Mock
+    private EnvironmentCacheUtil environmentCacheUtil;
+
+    @Mock
+    private IPluginBase pluginBase;
+
+    @Mock
     private ReleaseChannelMapper releaseChannelMapper;
 
     @Mock
@@ -122,7 +134,8 @@ class AgentServiceProxyServiceTest {
     void setUp() {
         proxyService = new AgentServiceProxyService(runtimeClient, builderClient, redisClient, agentMapper, workflowMapper,
             modelServiceMapper, okHttpClientUtils, routerStrategyMapper, freeModelServiceMapper, toolMapper,
-            environmentManagerMapper, releaseChannelMapper, agentRuntimeService, controllerDebuggingMgmtService, mgObsService);
+            environmentManagerMapper, environmentVariableMapper, environmentCacheUtil, pluginBase,
+            releaseChannelMapper, agentRuntimeService, controllerDebuggingMgmtService, mgObsService);
         ReflectionTestUtils.setField(proxyService, "runtimeEndpoint", "http://runtime:8080");
         ReflectionTestUtils.setField(proxyService, "envType", "hc");
         ReflectionTestUtils.setField(proxyService, "opSvcProjectId", "op-svc-project");
