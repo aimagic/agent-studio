@@ -413,7 +413,8 @@ public class RelationManagementService implements IRelationManagementService {
         final List<PluginEntity> pluginLists = pluginService.getPlugin(projectId, workspaceId, pluginIds);
         Set<String> dbPluginAndToolIdSet = new HashSet<>();
         for (PluginEntity pluginEntity : pluginLists) {
-            if (StringUtils.isNotBlank(pluginEntity.getRequestInfo())) {
+            if (StringUtils.isNotBlank(pluginEntity.getRequestInfo())
+                    || "custom".equals(pluginEntity.getCallMode())) {
                 dbPluginAndToolIdSet.add(pluginEntity.getPluginId());
             } else {
                 // 未知格式
@@ -454,7 +455,8 @@ public class RelationManagementService implements IRelationManagementService {
         // 关联agent和tools
         List<MappingEntity> agentToolSet = new ArrayList<>();
         for (PluginEntity pluginEntity : pluginLists) {
-            if (StringUtils.isNotBlank(pluginEntity.getRequestInfo())) {
+            if (StringUtils.isNotBlank(pluginEntity.getRequestInfo())
+                    || "custom".equals(pluginEntity.getCallMode())) {
                 if (pluginService.isNewTool(pluginEntity)) {
                     JSONObject jsonObject = JSON.parseObject(pluginEntity.getRequestInfo());
                     List<ToolInfo> toolsInfo = jsonObject.getList("tool_info", ToolInfo.class);
