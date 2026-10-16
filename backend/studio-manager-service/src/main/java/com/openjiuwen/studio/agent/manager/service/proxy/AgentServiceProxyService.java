@@ -3,7 +3,6 @@
  */
 package com.openjiuwen.studio.agent.manager.service.proxy;
 
-import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.obs.services.model.TemporarySignatureResponse;
@@ -132,23 +131,13 @@ public class AgentServiceProxyService {
      * 加密环境变量的固定脱敏占位符（六位星号），与前端回填值及环境变量查询接口的脱敏口径严格一致。
      * 仅精确匹配该值才视为需要后端回填，避免把绑定字段的合法星号字面量（如 ***）误判为占位符。
      */
-    private static final String ENV_VAR_SECRET_MASK = "******";
+    private static final String ENV_VAR_SECRET_MASK = SensitiveTextMasker.MASK;
 
     /**
      * 运行时环境变量占位符：{@code ${_env.plugin_url_params.NAME}}，与工作流/运行态约定一致。
      */
     private static final Pattern ENV_PLACEHOLDER_PATTERN =
         Pattern.compile("\\$\\{_env\\.plugin_url_params\\.([a-zA-Z_$][a-zA-Z0-9_$]*)\\}");
-
-    /**
-     * JSON 数字字面量，用于识别「裸数字」密钥，避免在 JSON 回显中把数值字面量替换成掩码导致非法 JSON。
-     */
-    private static final Pattern JSON_NUMBER_PATTERN = Pattern.compile("-?\\d+(\\.\\d+)?([eE][+-]?\\d+)?");
-
-    /**
-     * 百分号编码中的十六进制片段，用于生成小写十六进制变体，覆盖部分编码器的输出格式。
-     */
-    private static final Pattern PERCENT_HEX_PATTERN = Pattern.compile("%([0-9A-F]{2})");
 
     private final AgentRuntimeClient runtimeClient;
 
@@ -520,8 +509,15 @@ public class AgentServiceProxyService {
                     String.join(", ", resolveResult.getMissingVars()))));
         }
         body.setParameter(resolveResult.getParameter());
-        RunToolResponseBody responseBody = iPlugin.runTool(projectId, body);
-        // 加密变量明文不回显：对调测回显统一脱敏（不影响已发出的真实请求），与请求头脱敏回显惯例一致
+        // 加密变量明文不回显、不落日志：登记本次解析出的明文，供下游（插件适配层/URL 校验）打印日志前脱敏
+        SensitiveLogContext.register(resolveResult.getSecretValues());
+        RunToolResponseBody responseBody;
+        try {
+            responseBody = iPlugin.runTool(projectId, body);
+        } finally {
+            SensitiveLogContext.clear();
+        }
+        // 对调测回显统一脱敏（不影响已发出的真实请求），与请求头脱敏回显惯例一致
         maskResolvedSecrets(responseBody, resolveResult.getSecretValues());
         return ResponseModel.success(responseBody);
     }
@@ -532,110 +528,22 @@ public class AgentServiceProxyService {
      * 说明：下游异常信息（如 UnknownHostException 带出的绑定主机名）会写入 errorMessage 并回显给用户，
      * 响应体也可能回显请求参数，因此这两处同样需要统一脱敏；
      * 请求体/响应体按 JSON 文本处理，避免把其中裸数字/布尔字面量替换成掩码导致回显变成非法 JSON。
+     * 脱敏逻辑统一由 {@link SensitiveTextMasker} 提供（与日志脱敏共用）。
      */
     private void maskResolvedSecrets(RunToolResponseBody responseBody, Set<String> secretValues) {
         if (responseBody == null || secretValues.isEmpty()) {
             return;
         }
-        responseBody.setRawRequestUrl(maskSecretText(responseBody.getRawRequestUrl(), secretValues, false));
-        responseBody.setRawRequestBody(maskSecretText(responseBody.getRawRequestBody(), secretValues, true));
-        responseBody.setErrorMessage(maskSecretText(responseBody.getErrorMessage(), secretValues, false));
-        responseBody.setRawResponse(maskSecretText(responseBody.getRawResponse(), secretValues, true));
+        responseBody.setRawRequestUrl(SensitiveTextMasker.mask(responseBody.getRawRequestUrl(), secretValues, false));
+        responseBody.setRawRequestBody(
+            SensitiveTextMasker.mask(responseBody.getRawRequestBody(), secretValues, true));
+        responseBody.setErrorMessage(SensitiveTextMasker.mask(responseBody.getErrorMessage(), secretValues, false));
+        responseBody.setRawResponse(SensitiveTextMasker.mask(responseBody.getRawResponse(), secretValues, true));
         if (responseBody.getRawRequestHeaders() != null) {
             Map<String, String> maskedHeaders = new LinkedHashMap<>(responseBody.getRawRequestHeaders());
-            maskedHeaders.replaceAll((key, value) -> maskSecretText(value, secretValues, false));
+            maskedHeaders.replaceAll((key, value) -> SensitiveTextMasker.mask(value, secretValues, false));
             responseBody.setRawRequestHeaders(maskedHeaders);
         }
-    }
-
-    /**
-     * 将文本中出现的加密变量明文替换为固定掩码，覆盖变量值的多种编码形态：
-     * 原始明文、JSON 转义形态（含引号/换行等）与 URL 百分号编码形态（+ 与 %20、大写与小写十六进制），
-     * 避免用户通过 URL 解码等方式从回显中还原出明文。
-     *
-     * @param jsonContext 文本是否为 JSON（请求体/响应体）：为 true 时不对裸数字/布尔字面量做替换，
-     *                    避免回显变成非法 JSON 而影响前端解析与自动解析。
-     */
-    private String maskSecretText(String text, Set<String> secretValues, boolean jsonContext) {
-        if (StringUtils.isEmpty(text)) {
-            return text;
-        }
-        String masked = text;
-        // 先长后短，避免短值先命中后导致长值被截断无法匹配
-        List<String> ordered = new ArrayList<>(secretValues);
-        ordered.sort((left, right) -> Integer.compare(right.length(), left.length()));
-        for (String secretValue : ordered) {
-            if (StringUtils.isEmpty(secretValue)) {
-                continue;
-            }
-            for (String form : collectSecretForms(secretValue)) {
-                masked = maskStandaloneToken(masked, form, jsonContext);
-            }
-        }
-        return masked;
-    }
-
-    /**
-     * 收集密钥值在回显中可能出现的编码形态：原始明文、JSON 转义形态、URL 编码形态（+ 与 %20，大写与小写十六进制）。
-     */
-    private Set<String> collectSecretForms(String secretValue) {
-        Set<String> forms = new LinkedHashSet<>();
-        forms.add(secretValue);
-        forms.add(toJsonEscaped(secretValue));
-        String urlEncoded = URLEncoder.encode(secretValue, StandardCharsets.UTF_8);
-        String urlEncodedSpace = urlEncoded.replace("+", "%20");
-        forms.add(urlEncoded);
-        forms.add(urlEncodedSpace);
-        forms.add(toLowerPercentHex(urlEncoded));
-        forms.add(toLowerPercentHex(urlEncodedSpace));
-        forms.remove("");
-        return forms;
-    }
-
-    /**
-     * 将百分号编码中的十六进制转为小写，覆盖输出小写十六进制的编码器。
-     */
-    private String toLowerPercentHex(String encoded) {
-        return PERCENT_HEX_PATTERN.matcher(encoded).replaceAll(match -> "%" + match.group(1).toLowerCase());
-    }
-
-    /**
-     * 按 token 边界替换密钥值：仅替换两侧均非字母/数字/下划线的独立出现，避免把夹在长 token 内的相同字符整体破坏。
-     * jsonContext 为 true 时，数字/布尔字面量不能裸替换成掩码（会把 raw_response/raw_request_body 变成非法 JSON）：
-     * 字符串字面量整体替换；裸字面量（schema 类型为 integer/number/boolean 时解密值被归一为 JSON 数字/布尔）
-     * 替换为「带引号的掩码」，既完成脱敏又保持 JSON 合法。
-     */
-    private String maskStandaloneToken(String text, String secretValue, boolean jsonContext) {
-        if (StringUtils.isEmpty(secretValue)) {
-            return text;
-        }
-        if (jsonContext && isJsonScalarLiteral(secretValue)) {
-            String masked = text.replace("\"" + secretValue + "\"", "\"" + ENV_VAR_SECRET_MASK + "\"");
-            // 两侧排除字母/数字/下划线/点/引号：避免命中夹在长 token（含小数、字符串字面量）内的相同字符
-            Pattern barePattern = Pattern.compile(
-                "(?<![A-Za-z0-9_.\"])" + Pattern.quote(secretValue) + "(?![A-Za-z0-9_.\"])");
-            return barePattern.matcher(masked).replaceAll("\"" + ENV_VAR_SECRET_MASK + "\"");
-        }
-        Pattern pattern = Pattern.compile("(?<![A-Za-z0-9_])" + Pattern.quote(secretValue) + "(?![A-Za-z0-9_])");
-        return pattern.matcher(text).replaceAll(ENV_VAR_SECRET_MASK);
-    }
-
-    /**
-     * 判断值是否为 JSON 数字/布尔字面量（不含引号形式），此类值在 JSON 中裸替换会破坏 JSON 合法性。
-     */
-    private boolean isJsonScalarLiteral(String value) {
-        return "true".equals(value) || "false".equals(value) || JSON_NUMBER_PATTERN.matcher(value).matches();
-    }
-
-    /**
-     * 取变量值在 JSON 字符串中的转义形态（去掉首尾引号），用于覆盖回显里的转义字面量。
-     */
-    private String toJsonEscaped(String value) {
-        String json = JSON.toJSONString(value);
-        if (json != null && json.length() >= 2 && json.startsWith("\"") && json.endsWith("\"")) {
-            return json.substring(1, json.length() - 1);
-        }
-        return value;
     }
 
     /**
@@ -1076,7 +984,8 @@ public class AgentServiceProxyService {
      * 从项目默认环境加载指定名称的环境变量值（缓存优先，未命中回退 DB），加密变量解密后返回并标记是否加密。
      * 与前端环境变量查询口径一致：仅取默认环境，不做跨环境兜底。
      * 缓存可能陈旧或缺少目标变量，因此缓存未命中全部变量时仍会回退 DB 补查；
-     * 读取/解析异常导致无法判定变量是否存在时标记为加载失败，由调用方给出区别于"变量不存在"的提示。
+     * 读取/解析异常导致无法判定变量是否存在时标记为加载失败，由调用方给出区别于"变量不存在"的提示；
+     * 未设置默认环境不算加载失败（视同相关变量均不存在），由调用方按字段必填性决定拦截或放行。
      *
      * @param names 需要解析的环境变量名集合
      * @return 加载结果（变量值映射 + 是否加载失败）
@@ -1095,8 +1004,10 @@ public class AgentServiceProxyService {
             return loaded;
         }
         if (org.springframework.util.CollectionUtils.isEmpty(defaultEnvs)) {
+            // 未设置默认环境视为「相关变量都不可解析」，而不是环境变量加载失败：
+            // 交由调用方按字段必填性处理——必填参数或脱敏占位符计为缺失并拦截，非必填参数允许为空继续执行，
+            // 避免用户已手动填写必填参数、仅留空可选参数时被整体阻断。
             log.warn("[runTool] no default environment found for project: {}", projectId);
-            loaded.markFailed();
             return loaded;
         }
         String envId = defaultEnvs.get(0).getId();

@@ -8,6 +8,8 @@ import com.openjiuwen.studio.agent.common.exception.AgentStudioException;
 import com.openjiuwen.studio.agent.common.redis.RedisClient;
 import com.openjiuwen.studio.agent.common.utils.OkHttpClientUtils;
 import com.openjiuwen.studio.agent.common.utils.RequestContextUtils;
+import com.openjiuwen.studio.agent.common.utils.SensitiveLogContext;
+import com.openjiuwen.studio.agent.common.utils.SensitiveTextMasker;
 import com.openjiuwen.studio.agent.manager.constant.CommonConstant;
 import com.openjiuwen.studio.agent.manager.dto.AgentRunReq;
 import com.openjiuwen.studio.agent.manager.dto.WorkflowRunReq;
@@ -1114,10 +1116,8 @@ class AgentServiceProxyServiceTest {
     @Test
     void testMaskSecretText_JsonBareNumberSecret() {
         Set<String> secrets = new LinkedHashSet<>(Arrays.asList("123456", "123456.0"));
-        assertEquals("{\"port\":\"******\"}",
-            ReflectionTestUtils.invokeMethod(proxyService, "maskSecretText", "{\"port\":123456}", secrets, true));
-        assertEquals("{\"port\":\"******\"}",
-            ReflectionTestUtils.invokeMethod(proxyService, "maskSecretText", "{\"port\":123456.0}", secrets, true));
+        assertEquals("{\"port\":\"******\"}", SensitiveTextMasker.mask("{\"port\":123456}", secrets, true));
+        assertEquals("{\"port\":\"******\"}", SensitiveTextMasker.mask("{\"port\":123456.0}", secrets, true));
     }
 
     /**
@@ -1126,10 +1126,8 @@ class AgentServiceProxyServiceTest {
     @Test
     void testMaskSecretText_JsonBareBooleanSecret() {
         Set<String> secrets = new LinkedHashSet<>(Collections.singletonList("true"));
-        assertEquals("{\"flag\":\"******\"}",
-            ReflectionTestUtils.invokeMethod(proxyService, "maskSecretText", "{\"flag\":true}", secrets, true));
-        assertEquals("{\"msg\":\"it is true\"}",
-            ReflectionTestUtils.invokeMethod(proxyService, "maskSecretText", "{\"msg\":\"it is true\"}", secrets, true));
+        assertEquals("{\"flag\":\"******\"}", SensitiveTextMasker.mask("{\"flag\":true}", secrets, true));
+        assertEquals("{\"msg\":\"it is true\"}", SensitiveTextMasker.mask("{\"msg\":\"it is true\"}", secrets, true));
     }
 
     /**
@@ -1138,10 +1136,8 @@ class AgentServiceProxyServiceTest {
     @Test
     void testMaskSecretText_JsonQuotedSecretAndNonSecretPreserved() {
         Set<String> secrets = new LinkedHashSet<>(Collections.singletonList("123456"));
-        assertEquals("{\"port\":\"******\"}",
-            ReflectionTestUtils.invokeMethod(proxyService, "maskSecretText", "{\"port\":\"123456\"}", secrets, true));
-        assertEquals("{\"port\":1234567}",
-            ReflectionTestUtils.invokeMethod(proxyService, "maskSecretText", "{\"port\":1234567}", secrets, true));
+        assertEquals("{\"port\":\"******\"}", SensitiveTextMasker.mask("{\"port\":\"123456\"}", secrets, true));
+        assertEquals("{\"port\":1234567}", SensitiveTextMasker.mask("{\"port\":1234567}", secrets, true));
     }
 
     /**
@@ -1150,8 +1146,21 @@ class AgentServiceProxyServiceTest {
     @Test
     void testMaskSecretText_NonJsonBareSecret() {
         Set<String> secrets = new LinkedHashSet<>(Collections.singletonList("123456"));
-        assertEquals("host?port=******",
-            ReflectionTestUtils.invokeMethod(proxyService, "maskSecretText", "host?port=123456", secrets, false));
+        assertEquals("host?port=******", SensitiveTextMasker.mask("host?port=123456", secrets, false));
+    }
+
+    /**
+     * 日志脱敏上下文：登记敏感值后 mask 替换为掩码，clear 后不再替换（避免线程复用跨请求泄漏）。
+     */
+    @Test
+    void testSensitiveLogContext_RegisterAndClear() {
+        try {
+            SensitiveLogContext.register(Collections.singletonList("S3cretValue"));
+            assertEquals("https://host/******", SensitiveLogContext.mask("https://host/S3cretValue"));
+        } finally {
+            SensitiveLogContext.clear();
+        }
+        assertEquals("https://host/S3cretValue", SensitiveLogContext.mask("https://host/S3cretValue"));
     }
 
     /**

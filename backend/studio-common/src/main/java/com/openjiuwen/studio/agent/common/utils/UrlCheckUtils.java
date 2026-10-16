@@ -157,7 +157,7 @@ public class UrlCheckUtils {
     }
 
     public void checkUrl(String projectId, String url) {
-        log.info("start to checkUrl {}", url);
+        log.info("start to checkUrl {}", SensitiveLogContext.mask(url));
         // 未开启检查（默认开启），返回
         if (!enableUrlCheck || StringUtils.isEmpty(url)) {
             log.info("not check url");
@@ -176,20 +176,20 @@ public class UrlCheckUtils {
         try {
             parsedUri = new URI(trimmed);
         } catch (URISyntaxException e) {
-            log.error("Fail to parse url [{}]", url, e);
+            log.error("Fail to parse url [{}]", SensitiveLogContext.mask(url), e);
             throw new AgentStudioException(StudioError.INVALID_URL);
         }
         String host = parsedUri.getHost();
 
         // 1. 检查黑名单
         if (toolUrlBlackList.contains(host)) {
-            log.error("URL is blocked by blacklist [{}]", url);
+            log.error("URL is blocked by blacklist [{}]", SensitiveLogContext.mask(url));
             throw new AgentStudioException(StudioError.INVALID_URL);
         }
 
         // 2. 检查白名单（白名单优先级高于其他规则）
         if (toolUrlWhiteList.contains(host)) {
-            log.info("URL is in whitelist [{}]", url);
+            log.info("URL is in whitelist [{}]", SensitiveLogContext.mask(url));
             return;
         }
 
@@ -199,7 +199,7 @@ public class UrlCheckUtils {
             addresses = InetAddress.getAllByName(host);
         } catch (UnknownHostException e) {
             // 如果无法解析域名，放通处理
-            log.warn("can not get host [{}], url check interrupt", url);
+            log.warn("can not get host [{}], url check interrupt", SensitiveLogContext.mask(url));
             return;
         }
         for (InetAddress addr : addresses) {

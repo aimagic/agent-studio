@@ -127,7 +127,12 @@ export class PluginDebugModalComponent {
     //插件路径参数
     let pluginPathArgs = pluginSchemaStr2Path(this.pluginBodyParams?.request_info?.basic_info?.input_schema)
     pluginPathArgs = pluginPathArgs.map((item) => initializeReqItem(item))
-    const requestArgToDynamicForm = [...this.requestArgs,...pluginPathArgs];
+    // requestArgs 为 @Input（与父组件共享引用），这里深拷贝一份再回填环境变量，
+    // 避免直接修改 item.value/controlValue 污染父组件状态（影响父组件展示、保存或再次打开弹窗的初始值）
+    const requestArgToDynamicForm = [...this.requestArgs, ...pluginPathArgs].map((item) => ({
+      ...item,
+      value: { ...(item?.value || {}) },
+    }));
     // 回填绑定的环境变量值：非加密变量直接填充，加密变量前端拿不到明文，交由后端按默认环境解析
     this.applyBoundEnvVarValues(requestArgToDynamicForm).then((list) => {
       this.requestArgToDynamicForm = list;
