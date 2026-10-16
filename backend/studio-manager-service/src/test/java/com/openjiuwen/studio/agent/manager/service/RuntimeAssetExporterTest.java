@@ -70,6 +70,7 @@ class RuntimeAssetExporterTest {
     private AgentMapper agentMapper;
     private WorkflowMapper workflowMapper;
     private SkillMapper skillMapper;
+    private ShareResourceManagerService shareResourceManagerService;
     private RuntimeAssetExporter exporter;
 
     private static final String PROJECT_ID = "proj-001";
@@ -87,6 +88,7 @@ class RuntimeAssetExporterTest {
         agentMapper = mock(AgentMapper.class);
         workflowMapper = mock(WorkflowMapper.class);
         skillMapper = mock(SkillMapper.class);
+        shareResourceManagerService = mock(ShareResourceManagerService.class);
         exporter = new RuntimeAssetExporter();
         ReflectionTestUtils.setField(exporter, "mappingMapper", mappingMapper);
         ReflectionTestUtils.setField(exporter, "mgObsService", mgObsService);
@@ -95,6 +97,7 @@ class RuntimeAssetExporterTest {
         ReflectionTestUtils.setField(exporter, "agentMapper", agentMapper);
         ReflectionTestUtils.setField(exporter, "workflowMapper", workflowMapper);
         ReflectionTestUtils.setField(exporter, "skillMapper", skillMapper);
+        ReflectionTestUtils.setField(exporter, "shareResourceManagerService", shareResourceManagerService);
         // @PostConstruct 不会在 new 时触发，手动初始化默认配置 + Semaphore（与 application-manager.yml 默认值一致）
         ReflectionTestUtils.setField(exporter, "maxAssets", 100);
         ReflectionTestUtils.setField(exporter, "maxConcurrent", 5);
@@ -759,14 +762,17 @@ class RuntimeAssetExporterTest {
     @Test
     void testCrossWorkspaceChildIr_alignedNotRejected() throws Exception {
         mockDefaultAgent();
-        // 巡检 #6：跨 workspace 共享子 IR 不再被拒绝，而是按父 IR ir_path 对齐版本导出
-        // （IR 在 OBS 全局共享，子 IR 跨 workspace 共享是合法场景；isOwnedChildIr 仅 warn 不跳过）
+        // 巡检 #12：跨 workspace 共享子 IR 须经 t_share_resource 共享授权才放行（归属或共享），
+        // 不再"仅 warn 不跳过"无条件放行。other-wf 不归属当前 workspace，但已共享授权 → 放行入包。
         String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
         String crossWorkspaceChildIr = "workflow/ir/other-wf/other-wf_v1.json";
         when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithWorkflowsJson(crossWorkspaceChildIr));
-        // other-wf 不归属当前 workspace → isOwnedChildIr 返回 false，但新逻辑仅 warn 不跳过
+        // other-wf 不归属当前 workspace → isOwnedOrSharedChildIr 归属不通过，转校验共享授权
         when(workflowMapper.selectByWorkflowIds(eq(PROJECT_ID), eq(WORKSPACE_ID), anyList()))
             .thenReturn(new ArrayList<>());
+        // 经 t_share_resource 共享授权给当前 workspace → 放行（归属或共享，fail-closed 仅拒非共享）
+        when(shareResourceManagerService.checkWorkspaceAuthByResourceOrNot(eq(WORKSPACE_ID), eq("other-wf")))
+            .thenReturn(true);
         // 子 IR 内容（合法路径通过 isValidAssetKey，仍被读取 + 入包）
         when(mgObsService.getObject(crossWorkspaceChildIr)).thenReturn("{\"configs\":{}}");
         try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
@@ -778,6 +784,63 @@ class RuntimeAssetExporterTest {
             // 跨 workspace 共享子 IR 仍进版本对齐 → 入包（不再被拒绝）
             assertTrue(names.contains(crossWorkspaceChildIr), "cross-workspace shared child IR should be in zip (aligned, not rejected)");
             verify(mgObsService, atLeast(1)).getObject(crossWorkspaceChildIr);
+        }
+    }
+
+    @Test
+    void testCrossWorkspaceChildIr_notOwnedNotShared_rejected() throws Exception {
+        mockDefaultAgent();
+        // 巡检 #12：子 IR 不归属当前 workspace 且未共享授权 → fail-closed（不入包、不读 OBS）
+        String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
+        String unsharedChildIr = "workflow/ir/other-wf-x/other-wf-x_v1.json";
+        when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithWorkflowsJson(unsharedChildIr));
+        // other-wf-x 不归属当前 workspace
+        when(workflowMapper.selectByWorkflowIds(eq(PROJECT_ID), eq(WORKSPACE_ID), anyList()))
+            .thenReturn(new ArrayList<>());
+        // 且未共享授权给当前 workspace → fail-closed 拒绝
+        when(shareResourceManagerService.checkWorkspaceAuthByResourceOrNot(eq(WORKSPACE_ID), eq("other-wf-x")))
+            .thenReturn(false);
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = assertDoesNotThrow(
+                () -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            Set<String> names = zipEntryNames(zip);
+            // 不归属且未共享的子 IR 不入包（fail-closed，防越权读取他人 IR）
+            assertFalse(names.contains(unsharedChildIr), "unowned & unshared child IR must NOT be in zip");
+            // 关键（巡检 #12）：不读 OBS（修复前仅 warn 不跳过，会读 OBS + 入包）
+            verify(mgObsService, never()).getObject(unsharedChildIr);
+        }
+    }
+
+    @Test
+    void testNullVersionChild_resolvedVersion_depsCollected() throws Exception {
+        mockDefaultAgent();
+        // 巡检 #13：子资源 resourceVersion=null（跟随 latest）补齐具体发布版本后递归收集依赖，
+        // 不再 continue 致其 t_mapping 引用的 model/KB 依赖整体丢失（运行包不完整）
+        List<MappingEntity> mappings = new ArrayList<>();
+        mappings.add(mapping("workflow", "sub-wf-null", null)); // null version 子 workflow
+        when(mappingMapper.selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any())).thenReturn(mappings);
+        // resolvePublishVersion 对 null version 子资源补齐：publishUtils.getPublish → 具体版本
+        AgentMetadata subMeta = AgentMetadata.builder().versionId("sub-resolved-ver").agentId("sub-wf-null").build();
+        when(publishUtils.getPublish(eq("sub-wf-null"), eq(Constants.LATEST_PUBLISH_VERSION), any()))
+            .thenReturn(subMeta);
+        // 补齐版本后按 "sub-resolved-ver" 查子依赖：含一个 model 依赖（此前 null-version continue 会丢失）
+        when(mappingMapper.selectByAppIdAndAppVersion(eq("sub-wf-null"), eq("sub-resolved-ver"), any(), any()))
+            .thenReturn(List.of(mapping("model", "model-dep", null)));
+        // 子 workflow 本体 IR 文件（补齐版本后入包）
+        when(mgObsService.getObject("workflow/ir/sub-wf-null/sub-wf-null_sub-resolved-ver.json"))
+            .thenReturn("{\"configs\":{}}");
+        // model-dep 的 model-service 文件（证明依赖被收集，未丢失）
+        when(mgObsService.getObject("model-service/ir/model-dep.json")).thenReturn("{\"data\":{}}");
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            assertDoesNotThrow(() -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            // 关键（巡检 #13）：null-version 子资源补齐后，其 model 依赖被收集（不丢）
+            verify(mgObsService, atLeast(1)).getObject("model-service/ir/model-dep.json");
         }
     }
 

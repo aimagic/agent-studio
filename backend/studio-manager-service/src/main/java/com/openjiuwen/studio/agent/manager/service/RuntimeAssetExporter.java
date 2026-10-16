@@ -95,6 +95,9 @@ public class RuntimeAssetExporter {
     @Autowired
     private PublishUtils publishUtils;
 
+    @Autowired
+    private ShareResourceManagerService shareResourceManagerService;
+
     /** t_mapping 递归深度上限（防止异常循环引用导致栈溢出） */
     private static final int MAX_MAPPING_DEPTH = 20;
 
@@ -342,17 +345,23 @@ public class RuntimeAssetExporter {
             if (!visited.add(key)) {
                 continue;
             }
-            // 巡检 #8（@336）：子资源 resourceVersion 为 null（跟随 latest）时不递归收集依赖。
-            // selectByAppIdAndAppVersion 对 null appVersion 不追加版本过滤，会返回该资源所有版本
-            // （草稿 + 全部历史快照）的 mapping，造成依赖过度收集，且与根资源已解析的具体版本不一致，
-            // 可能把历史/草稿版本依赖打入运行包。null 版本子资源（非根，根已在 doExportRuntimeAssetZip
-            // 经 resolvePublishVersion 解析为具体版本）跳过递归，不进 acc，避免版本不一致污染。
+            // 巡检 #8（@336）+ 巡检 #13（依赖丢失）：子资源 resourceVersion 为 null（跟随 latest）时，
+            // 之前直接 continue 既不入 acc 也不递归，致其 t_mapping 引用的 model/KB/strategy/skill 依赖
+            // 整体丢失（运行包不完整）。现补齐具体发布版本后递归收集依赖；补齐失败（未发布/异常）才保留
+            // 本体入 acc、跳过递归（不阻断导出，本体正确版本由版本对齐阶段从父 IR ir_path 补齐）。
             if (RES_TYPE_WORKFLOW.equals(m.getResourceType()) || RES_TYPE_AGENT.equals(m.getResourceType())
                 || RES_TYPE_CONTROLLER.equals(m.getResourceType())) {
-                if (StringUtils.isBlank(m.getResourceVersion())) {
-                    log.warn("runtime_asset_export_skip_null_version_mapping|resource_id={}|type={}|reason=null_version_not_resolved",
-                        m.getResourceId(), m.getResourceType());
-                    continue;
+                String resVer = m.getResourceVersion();
+                if (StringUtils.isBlank(resVer)) {
+                    try {
+                        resVer = resolvePublishVersion(m.getResourceType(), m.getResourceId(), null);
+                        m.setResourceVersion(resVer); // 补齐具体发布版本，使本体 buildKey 正确 + 依赖可按版本递归
+                    } catch (Exception e) {
+                        log.warn("runtime_asset_export_skip_null_version_mapping|resource_id={}|type={}|reason=null_version_resolve_failed|{}",
+                            m.getResourceId(), m.getResourceType(), e.getMessage());
+                        acc.add(m); // 保留本体（版本对齐阶段从父 IR ir_path 补正确版本），跳过依赖递归
+                        continue;
+                    }
                 }
                 acc.add(m);
                 List<MappingEntity> childMappings =
@@ -498,21 +507,20 @@ public class RuntimeAssetExporter {
                 String type = irPath.startsWith("workflow/") ? TYPE_WORKFLOW_IR : TYPE_AGENT_IR;
                 String rid = parseResourceIdFromIrKey(irPath);
                 // bug007 #1：子 IR ir_path 合法性（防路径遍历/跨租户 OBS 读取）是主防线，必须通过。
-                // 巡检 #6：归属校验（isOwnedChildIr）放宽为仅 warn 不跳过 —— IR 在 OBS 是全局共享存储
-                // （agent/ir/{rid}/... 无 workspaceId，见 buildAgentIrKey），跨 workspace 共享子 IR 本就是
-                // 合法场景（本 PR"不调 filterShareResource、运行态按父 IR ir_path 加载共享子资源"）。
-                // isOwnedChildIr 按 (projectId,workspaceId,rid) 查库会漏掉跨 workspace 共享子 IR，导致其版本
-                // 不对齐、运行态加载失败。故归属不通过仅 warn 记录，仍进版本对齐；路径非法才 continue。
-                // 安全保证：ir_path 须合法前缀（agent/ir/、workflow/ir/），rid 是 UUID 不可枚举，无法构造他人路径。
+                // 巡检 #12（🔴 越权）：子 IR 须归属当前 workspace 或经 t_share_resource 共享授权给当前
+                // workspace 才放行，否则 fail-closed（continue，不读 OBS、不入包）。此前仅 warn 不跳过，
+                // 任意 agent/ir/、workflow/ir/ 合法前缀路径只要 rid 可枚举/泄露即被跨工作空间读取打包进 ZIP。
+                // isOwnedOrSharedChildIr：归属通过→放行；归属不通过但 checkWorkspaceAuthByResourceOrNot
+                // 共享授权→放行（跨 workspace 共享子 IR 是合法场景，复用 retrieveAgent 同模式）；两者皆否→拒绝。
                 if (!isValidAssetKey(irPath, type)) {
                     log.warn("runtime_asset_export_child_ir_skipped|ir_path={}|resource_id={}|reason=invalid_key",
                         irPath, rid);
                     continue;
                 }
-                if (!isOwnedChildIr(rid, type)) {
-                    log.warn("runtime_asset_export_child_ir_cross_workspace|ir_path={}|resource_id={}|reason=not_owned_by_workspace",
+                if (!isOwnedOrSharedChildIr(rid, type)) {
+                    log.warn("runtime_asset_export_child_ir_skipped|ir_path={}|resource_id={}|reason=not_owned_not_shared",
                         irPath, rid);
-                    // 跨 workspace 共享子 IR：不跳过，仍按父 IR ir_path 对齐版本（运行态按此加载）
+                    continue;
                 }
                 ManifestAsset existing = (rid != null) ? irByResourceId.get(rid) : null;
                 if (existing != null) {
@@ -1064,12 +1072,15 @@ public class RuntimeAssetExporter {
     }
 
     /**
-     * 校验子 IR ir_path 的 resourceId 是否归属当前 workspace（bug007 #1，防跨租户读取他人 IR）。
+     * 校验子 IR ir_path 的 resourceId 是否归属当前 workspace 或经 t_share_resource 共享授权给当前
+     * workspace（bug007 #1 防跨租户读取 + 巡检 #12 🔴 越权 fail-closed）。
      * <p>复用 {@link #validateResourceOwnership} 语义：workflow → WorkflowMapper，agent/controller → AgentMapper。
-     * rid 为 null（非标准 ir key）或归属不通过 → 拒绝（不入包、不读 OBS）。
-     * @return true 归属当前 workspace；false 不归属或无法判定（调用方跳过该子 IR）
+     * 归属通过→放行；归属不通过→复用 {@link ShareResourceManagerService#checkWorkspaceAuthByResourceOrNot}
+     * 校验共享授权（跨 workspace 共享子 IR 是合法场景，与 retrieveAgent 同模式）；两者皆否→拒绝。
+     * rid 为 null（非标准 ir key）/ 上下文为空 / 校验异常 → 拒绝（fail-closed，不入包、不读 OBS）。
+     * @return true 归属当前 workspace 或经共享授权；false 不归属且未共享或无法判定（调用方 skip 该子 IR）
      */
-    private boolean isOwnedChildIr(String rid, String type) {
+    private boolean isOwnedOrSharedChildIr(String rid, String type) {
         if (StringUtils.isBlank(rid)) {
             return false; // 非标准 ir key，无法校验归属 → 拒绝
         }
@@ -1084,11 +1095,16 @@ public class RuntimeAssetExporter {
             if (RES_TYPE_WORKFLOW.equals(resType)) {
                 List<com.openjiuwen.studio.agent.manager.entity.WorkflowEntity> workflows =
                     workflowMapper.selectByWorkflowIds(projectId, workspaceId, List.of(rid));
-                return workflows != null && !workflows.isEmpty();
+                if (workflows != null && !workflows.isEmpty()) {
+                    return true; // 归属当前 workspace
+                }
+            } else if (agentMapper.selectByProjectIdAndWorkspaceId(projectId, workspaceId, rid) != null) {
+                return true; // 归属当前 workspace（agent / controller）
             }
-            return agentMapper.selectByProjectIdAndWorkspaceId(projectId, workspaceId, rid) != null;
+            // 归属不通过：校验是否经 t_share_resource 共享授权给当前 workspace（跨 workspace 共享子 IR）
+            return shareResourceManagerService.checkWorkspaceAuthByResourceOrNot(workspaceId, rid);
         } catch (Exception e) {
-            log.warn("isOwnedChildIr ownership check failed, rid={}. {}. skip child IR.", rid, e.getMessage());
+            log.warn("isOwnedOrSharedChildIr ownership/share check failed, rid={}. {}. skip child IR.", rid, e.getMessage());
             return false;
         }
     }
