@@ -8,6 +8,7 @@ This guide covers the various development and extension capabilities of the agen
 - [SSO Remote Auth Configuration](#sso-remote-auth-configuration)
 - [Storage Configuration and Extension](#storage-configuration-and-extension)
 - [Database Password Provider Extension](#database-password-provider-extension)
+- [Custom Plugin Development](#custom-plugin-development)
 
 ---
 
@@ -561,3 +562,11 @@ spec:
 ### Rollback and Disable
 
 Set `DATASOURCE_PASSWORD_PROVIDER_TYPE` (Python side) or `datasource_password_provider_type` (Java side) to `DEFAULT`, or clear the environment variable, and restart the service to roll back to the default local decryption mode.
+
+---
+
+## Custom Plugin Development
+
+When existing HTTP API plugins cannot meet your needs (e.g., direct database access, file processing, canvas interaction, local computation, and other non-HTTP scenarios), the platform supports developing custom Python plugins with Schema-driven forms and custom execution logic.
+
+See the [Custom Plugin Development Guide](./custom-plugin-development-guide.md) for details on plugin structure, Python interface contract, SQL specification, integration methods, and self-check checklist.
