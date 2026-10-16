@@ -19,7 +19,7 @@ import lombok.Data;
 public class RuntimeAssetExportParams {
 
     @NotBlank
-    @Pattern(regexp = "agent|controller|workflow",
+    @Pattern(regexp = "^(agent|controller|workflow)$",
         message = "resource_type 只支持 agent / controller / workflow")
     @JsonProperty("resource_type")
     @Schema(description = "导出类型：agent(单智能体) / controller(多智能体) / workflow(工作流)",
