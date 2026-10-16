@@ -1118,9 +1118,11 @@ class AgentServiceProxyServiceTest {
         Set<String> secrets = new LinkedHashSet<>(Arrays.asList("123456", "123456.0"));
         assertEquals("{\"port\":\"******\"}", SensitiveTextMasker.mask("{\"port\":123456}", secrets, true));
         assertEquals("{\"port\":\"******\"}", SensitiveTextMasker.mask("{\"port\":123456.0}", secrets, true));
-        // 数字出现在 JSON 字符串内部时不替换，保持 JSON 合法
-        assertEquals("{\"msg\":\"count 123456 items\"}",
+        // 数字出现在 JSON 字符串内部时替换为裸掩码，字符串内容仍合法
+        assertEquals("{\"msg\":\"count ****** items\"}",
             SensitiveTextMasker.mask("{\"msg\":\"count 123456 items\"}", secrets, true));
+        // 无符号密钥不应把 -123456 这类带符号数字拆坏（保持 JSON 合法）
+        assertEquals("{\"a\":-123456}", SensitiveTextMasker.mask("{\"a\":-123456}", secrets, true));
     }
 
     /**
@@ -1130,9 +1132,9 @@ class AgentServiceProxyServiceTest {
     void testMaskSecretText_JsonBareBooleanSecret() {
         Set<String> secrets = new LinkedHashSet<>(Collections.singletonList("true"));
         assertEquals("{\"flag\":\"******\"}", SensitiveTextMasker.mask("{\"flag\":true}", secrets, true));
-        assertEquals("{\"msg\":\"it is true\"}", SensitiveTextMasker.mask("{\"msg\":\"it is true\"}", secrets, true));
-        // 布尔词出现在 JSON 字符串中间时不替换，保持 JSON 合法
-        assertEquals("{\"msg\":\"a true flag\"}", SensitiveTextMasker.mask("{\"msg\":\"a true flag\"}", secrets, true));
+        assertEquals("{\"msg\":\"it is ******\"}", SensitiveTextMasker.mask("{\"msg\":\"it is true\"}", secrets, true));
+        // 布尔词出现在 JSON 字符串中间时同样替换，且不破坏 JSON
+        assertEquals("{\"msg\":\"a ****** flag\"}", SensitiveTextMasker.mask("{\"msg\":\"a true flag\"}", secrets, true));
     }
 
     /**

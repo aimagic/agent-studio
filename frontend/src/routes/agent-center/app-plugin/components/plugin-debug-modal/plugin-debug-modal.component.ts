@@ -410,9 +410,9 @@ export class PluginDebugModalComponent {
         params[item.name] = `${ENV_VAR_PLACEHOLDER_PREFIX}${item.env_var_ref}}`;
         return;
       }
-      // 变量缺失的非 string 绑定字段：动态表单会把空默认值强转为 0/false，被后端误判为用户已填；
+      // 变量缺失的绑定字段：动态表单会把空默认值强转为 0/false，或保留脱敏显示值 ******；
       // 未手动修改时不提交该字段，让后端按"空值"走缺失拦截（必填报错）/放行（非必填）逻辑
-      if (this.isMissingBoundVar(item.name) && this.isUntouchedCoercedDefault(item, params[item.name])) {
+      if (this.isMissingBoundVar(item.name) && this.isUntouchedMissingValue(item, params[item.name])) {
         delete params[item.name];
       }
     });
@@ -425,13 +425,17 @@ export class PluginDebugModalComponent {
   }
 
   /**
-   * 判断非加密绑定字段是否仍为「未手动修改」的动态表单默认态。
-   * 动态表单会把空默认值强制转换（integer/number → 0，boolean → false），用户未编辑（pristine）时
-   * 这些值不代表用户输入；用户手输的 0/false（控件已 dirty）原样提交。
+   * 判断变量缺失的绑定字段是否仍为「未手动修改」的动态表单默认态。
+   * 动态表单会把空默认值强制转换（integer/number → 0，boolean → false），或保留脱敏显示值 ******；
+   * 用户未编辑（pristine）时这些值不代表用户输入；用户手输的值（含手输的 ******，控件已 dirty）原样提交。
    */
-  private isUntouchedCoercedDefault(item: any, submitted: any): boolean {
+  private isUntouchedMissingValue(item: any, submitted: any): boolean {
     if (this.dynamicFormIns?.isControlPristine(item?.name) !== true) {
       return false;
+    }
+    // 脱敏显示掩码：未手动修改时不应作为用户值提交（后端不再把 ****** 当作回填信号）
+    if (submitted === ENV_VAR_SECRET_MASK) {
+      return true;
     }
     // 插件 schema 显式声明了默认值时，表单提交的就是该默认值（如显式默认 0/false），不应作为"空默认被强转"剔除；
     // 这里用 schema 原始默认值 item.default 判断，避免 value.default 被 parseInt/parseFloat/布尔转换后的产物造成误判
@@ -458,8 +462,8 @@ export class PluginDebugModalComponent {
    */
   private isUntouchedSecretField(item: any, submitted: any): boolean {
     if (submitted === ENV_VAR_SECRET_MASK) {
-      // 掩码需结合 pristine 判定：用户手动输入的 ****** 原样提交（后端按掩码约定处理），
-      // 避免把用户输入误替换为运行时占位符，保证手动输入优先
+      // 掩码需结合 pristine 判定：用户手动输入的 ****** 原样提交（手动输入优先）；
+      // 未手动修改时才替换为运行时占位符，交由后端按默认环境解析
       return this.dynamicFormIns?.isControlPristine(item.name) === true;
     }
     if (item?.type === 'integer' || item?.type === 'number') {

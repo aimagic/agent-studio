@@ -128,13 +128,8 @@ public class AgentServiceProxyService {
     private static final String REQUEST_ID = MdcKeys.REQUEST_ID;
 
     /**
-     * 加密环境变量的固定脱敏占位符（六位星号），与前端回填值及环境变量查询接口的脱敏口径严格一致。
-     * 仅精确匹配该值才视为需要后端回填，避免把绑定字段的合法星号字面量（如 ***）误判为占位符。
-     */
-    private static final String ENV_VAR_SECRET_MASK = SensitiveTextMasker.MASK;
-
-    /**
-     * 运行时环境变量占位符：{@code ${_env.plugin_url_params.NAME}}，与工作流/运行态约定一致。
+     * 运行时环境变量占位符：{@code ${_env.plugin_url_params.NAME}}，是后端唯一的“按默认环境回填”信号；
+     * 用户手填的值（含字面量 ******）一律不回填，保证“手动输入优先”。
      */
     private static final Pattern ENV_PLACEHOLDER_PATTERN =
         Pattern.compile("\\$\\{_env\\.plugin_url_params\\.([a-zA-Z_$][a-zA-Z0-9_$]*)\\}");
@@ -548,7 +543,8 @@ public class AgentServiceProxyService {
 
     /**
      * 按插件参数绑定的环境变量（env_var_ref）回填调测入参。
-     * 仅当参数为空或为脱敏占位符（固定掩码 ******）时回填，用户手填的值优先；加密变量在后端解密后再回填，明文不下发前端。
+     * 仅当参数为空或含运行时占位符 {@code ${_env.plugin_url_params.NAME}} 时回填，用户手填的值（含字面量 ******）优先；
+     * 加密变量在后端解密后再回填，明文不下发前端。
      * 绑定参数已全部被用户手填时跳过环境变量加载，默认环境缺失或读取异常不阻断调测（手动输入优先）。
      * 绑定关系覆盖工具的 input_schema 以及 request_info.basic_info.input_schema（host/baseURL 的 Path 参数），
      * 数组格式按当前调测工具过滤，避免合并同插件其它工具的绑定。
@@ -556,7 +552,7 @@ public class AgentServiceProxyService {
      * 且引用的变量名必须与该字段绑定的变量一致，防止任意入参套取（加密）环境变量明文。
      * 只取项目默认环境的变量（与前端口径一致，值不做 trim）；回填值按 schema 声明类型归一（integer/number/boolean）。
      * 未能解析的变量名记录到结果中，由调用方给出明确提示：
-     * 脱敏占位符无法解析、或必填参数为空且变量缺失时均计入缺失并拦截；非必填参数为空时允许继续。
+     * 运行时占位符无法解析、或必填参数为空且变量缺失时均计入缺失并拦截；非必填参数为空时允许继续。
      *
      * @param projectId 项目 id
      * @param workspaceId 工作空间 id
@@ -587,13 +583,14 @@ public class AgentServiceProxyService {
         Map<String, Set<String>> placeholderFields = new HashMap<>();
         Set<String> neededNames = new HashSet<>();
         collectEnvPlaceholders(paramJson, envRefMap, neededNames, placeholderFields);
-        // 仅收集「真正需要后端回填」的字段对应的变量名（空值、脱敏掩码或含运行时占位符）：
-        // 既避免加载无关变量，也避免其缺失/读取异常被误判为加载失败而阻断调测（手动输入优先）
+        // 仅收集「真正需要后端回填」的字段对应的变量名（空值或含运行时占位符）：
+        // 用户已填写的值（含手填的 ****** 字面量）一律不回填，既保证”手动输入优先“，
+        // 又避免无关变量缺失/读取异常被误判为加载失败而阻断调测
         boolean needsEnvResolution = !placeholderFields.isEmpty();
         for (Map.Entry<String, EnvVarBinding> entry : envRefMap.entrySet()) {
             Object current = paramJson.get(entry.getKey());
             String currentStr = current == null ? "" : String.valueOf(current);
-            if (StringUtils.hasText(currentStr) && !isMaskedPlaceholder(currentStr)) {
+            if (StringUtils.hasText(currentStr)) {
                 continue;
             }
             needsEnvResolution = true;
@@ -614,9 +611,8 @@ public class AgentServiceProxyService {
             EnvVarBinding binding = entry.getValue();
             Object current = paramJson.get(fieldName);
             String currentStr = current == null ? "" : String.valueOf(current);
-            // 用户手填了有效值则优先，不回填；固定掩码 ****** 视为脱敏占位符，需要回填
-            boolean masked = isMaskedPlaceholder(currentStr);
-            if (StringUtils.hasText(currentStr) && !masked) {
+            // 用户已填写有效值则优先，不回填（含手填的 ****** 字面量：不再当作回填信号，避免覆盖用户输入）
+            if (StringUtils.hasText(currentStr)) {
                 continue;
             }
             LoadedEnvVar loaded = envValues.get(binding.getVarName());
@@ -629,13 +625,13 @@ public class AgentServiceProxyService {
                     // 记录回填的加密变量明文（含归一后的形态，如 number 类型的 123456.0），供调测回显统一脱敏
                     recordSecretForms(result.getSecretValues(), loaded.getValue(), coercedValue);
                 }
-            } else if (masked || binding.isRequired()) {
-                // 脱敏占位符无法解析不能原样下发；必填参数为空且变量缺失时同样拦截，避免下游报难定位错误
+            } else if (binding.isRequired()) {
+                // 必填参数为空且变量缺失时拦截，避免下游报难定位错误
                 result.getMissingVars().add(binding.getVarName());
             }
             // 非必填参数为空且变量缺失：允许为空，继续执行
         }
-        // 环境变量加载失败只有在确实导致必填参数/脱敏占位符无法解析时才算致命：
+        // 环境变量加载失败只有在确实导致必填参数/运行时占位符无法解析时才算致命：
         // 仅可选绑定参数留空（约定允许为空继续执行）时，不应因加载异常整单阻断调测
         result.setLoadFailed(envLoadFailed && !result.getMissingVars().isEmpty());
         if (changed) {
@@ -898,15 +894,6 @@ public class AgentServiceProxyService {
     }
 
     /**
-     * 判断是否为加密环境变量的脱敏占位符。
-     * 仅与前端回填的固定掩码 {@link #ENV_VAR_SECRET_MASK} 严格相等才视为占位符，
-     * 绑定字段的合法星号字面量（如 ***、****）不会被误判为需要回填。
-     */
-    private boolean isMaskedPlaceholder(String value) {
-        return ENV_VAR_SECRET_MASK.equals(value);
-    }
-
-    /**
      * 提取插件参数名到环境变量绑定关系（绑定变量名 + 是否必填 + schema 类型）的映射。
      * 优先使用插件完整构建结果（同时覆盖工具 input_schema 与 host/baseURL 的 Path 参数 schema），
      * 仅在构建失败时才降级直查 t_tool 原始字段，且数组格式按当前调测工具过滤，
@@ -1004,7 +991,8 @@ public class AgentServiceProxyService {
      * 从项目默认环境加载指定名称的环境变量值（缓存优先，未命中回退 DB），加密变量解密后返回并标记是否加密。
      * 与前端环境变量查询口径一致：仅取默认环境，不做跨环境兜底。
      * 缓存可能陈旧或缺少目标变量，因此缓存未命中全部变量时仍会回退 DB 补查；
-     * 读取/解析异常导致无法判定变量是否存在时标记为加载失败，由调用方给出区别于"变量不存在"的提示；
+     * DB 回退查询异常、或缺失变量在缓存中解密失败时，无法判定变量是否真的不存在，标记为加载失败；
+     * 缓存读取异常不致命（DB 为权威来源）；
      * 未设置默认环境不算加载失败（视同相关变量均不存在），由调用方按字段必填性决定拦截或放行。
      *
      * @param names 需要解析的环境变量名集合
@@ -1025,13 +1013,13 @@ public class AgentServiceProxyService {
         }
         if (org.springframework.util.CollectionUtils.isEmpty(defaultEnvs)) {
             // 未设置默认环境视为「相关变量都不可解析」，而不是环境变量加载失败：
-            // 交由调用方按字段必填性处理——必填参数或脱敏占位符计为缺失并拦截，非必填参数允许为空继续执行，
+            // 交由调用方按字段必填性处理——必填参数计为缺失并拦截，非必填参数允许为空继续执行，
             // 避免用户已手动填写必填参数、仅留空可选参数时被整体阻断。
             log.warn("[runTool] no default environment found for project: {}", projectId);
             return loaded;
         }
         String envId = defaultEnvs.get(0).getId();
-        boolean readError = false;
+        // 缓存只是快路径、且可能陈旧，读取异常不致命（DB 为权威来源），仅记录日志
         if (StringUtils.hasText(workspaceId)) {
             try {
                 String cached = environmentCacheUtil.getEnvironmentCache(envId, workspaceId);
@@ -1040,10 +1028,10 @@ public class AgentServiceProxyService {
                 }
             } catch (Exception e) {
                 log.error("[runTool] read environment cache failed, envId: {}", envId, e);
-                readError = true;
             }
         }
-        // 缓存可能陈旧或缺少目标变量，未命中全部变量时回退 DB 补查
+        // 缓存可能陈旧或缺少目标变量，未命中全部变量时回退 DB 补查；DB 回退成功即视为已确认变量是否存在
+        boolean dbResolved = false;
         if (!loaded.getValues().keySet().containsAll(names) && StringUtils.hasText(workspaceId)) {
             try {
                 EnvironmentVariableEntity byWorkspace =
@@ -1053,18 +1041,19 @@ public class AgentServiceProxyService {
                     && !"{}".equals(byWorkspace.getEnvVariable().trim())) {
                     parseAndFillEnvValues(byWorkspace.getEnvVariable(), names, loaded);
                 }
+                dbResolved = true;
             } catch (Exception e) {
                 log.error("[runTool] query environment variables from db failed, envId: {}", envId, e);
-                readError = true;
             }
         }
         Set<String> missing = new HashSet<>(names);
         missing.removeAll(loaded.getValues().keySet());
         if (!missing.isEmpty()) {
             log.warn("[runTool] env vars not found in default environment for project {}: {}", projectId, missing);
-            // 读取异常、或这些缺失变量在缓存中解密失败时，无法判定变量是否真的不存在，按加载失败处理，避免误报"变量不存在"；
-            // DB 回退成功解析的变量已从 missing 中排除，缓存解密失败的标记不会误留
-            if (readError || loaded.hasDecryptErrorFor(missing)) {
+            // 仅当权威来源（DB 回退）未能成功查询、或缺失变量在缓存中解密失败时，才无法判定变量是否真的不存在，
+            // 按加载失败处理；DB 已成功查询时缺失即"变量确实不存在"，不误报为加载失败
+            boolean unconfirmed = StringUtils.hasText(workspaceId) && !dbResolved;
+            if (unconfirmed || loaded.hasDecryptErrorFor(missing)) {
                 loaded.markFailed();
             }
         }

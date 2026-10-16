@@ -999,8 +999,10 @@ public class PluginAdapterImpl implements IPlugin {
         } catch (MalformedURLException e) {
             throw new AgentStudioException(StudioError.INVALID_URL);
         } catch (Exception e) {
-            // 捕获其他异常，防止程序崩溃
-            log.error("Error while checking swagger URL: {}", SensitiveLogContext.mask(swaggerUrl), e);
+            // 捕获其他异常，防止程序崩溃；异常消息可能带上原始 url/host，脱敏后再记录，避免明文落日志
+            log.error("Error while checking swagger URL: {}, type: {}, message: {}",
+                SensitiveLogContext.mask(swaggerUrl), e.getClass().getSimpleName(),
+                SensitiveLogContext.mask(e.getMessage()));
             throw new AgentStudioException(StudioError.INVALID_URL);
         }
         log.info("End: check url from black list.");
@@ -1031,8 +1033,9 @@ public class PluginAdapterImpl implements IPlugin {
                 try {
                     IPAddressString ipAddress = new IPAddressString(ips);
                     if (ipAddress.contains(hostAddress) || host.contains(ips)) {
+                        // host 可能来自加密环境变量，打印前统一脱敏
                         log.warn("checkHostValid failed, ipAddress:{}, hostAddress: {}, host: {}, ips:{}", ipAddress,
-                                hostAddress, host, ips);
+                                SensitiveLogContext.mask(String.valueOf(hostAddress)), SensitiveLogContext.mask(host), ips);
                         throw new AgentStudioException(StudioError.INVALID_URL);
                     }
                 } catch (IllegalArgumentException e) {
@@ -1042,7 +1045,7 @@ public class PluginAdapterImpl implements IPlugin {
             }
         } catch (IllegalArgumentException e) {
             // host 不是合法的IP地址，可能是域名，不进行网段判断
-            log.warn("Host is not a valid IP address, skip subnet check: {}", host);
+            log.warn("Host is not a valid IP address, skip subnet check: {}", SensitiveLogContext.mask(host));
         }
     }
 

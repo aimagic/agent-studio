@@ -88,29 +88,26 @@ public final class SensitiveTextMasker {
 
     /**
      * 按 token 边界替换敏感值：仅替换两侧均非字母/数字/下划线的独立出现，避免把夹在长 token 内的相同字符整体破坏。
-     * jsonContext 为 true 且敏感值为数字/布尔字面量时：字符串字面量整体替换，裸字面量替换为「带引号的掩码」，
-     * 既完成脱敏又保持 JSON 合法。
+     * jsonContext 为 true 且敏感值为数字/布尔字面量时，交由 {@link #maskJsonScalar} 处理，保证替换后仍是合法 JSON。
      */
     private static String maskStandaloneToken(String text, String secretValue, boolean jsonContext) {
         if (StringUtils.isEmpty(secretValue)) {
             return text;
         }
         if (jsonContext && isJsonScalarLiteral(secretValue)) {
-            // 先整体替换精确的字符串字面量（如 "123456"），再替换 JSON 字符串之外的裸数字/布尔字面量
-            String masked = text.replace("\"" + secretValue + "\"", "\"" + MASK + "\"");
-            return maskBareJsonScalar(masked, secretValue);
+            return maskJsonScalar(text, secretValue);
         }
         Pattern pattern = Pattern.compile("(?<![A-Za-z0-9_])" + Pattern.quote(secretValue) + "(?![A-Za-z0-9_])");
         return pattern.matcher(text).replaceAll(MASK);
     }
 
     /**
-     * 在 JSON 文本中替换处于字符串之外的「裸」数字/布尔字面量。
-     * 通过扫描跟踪是否位于 JSON 字符串内部：仅替换字符串外的独立 token，字符串内部的相同字符
-     * （如 {@code {"msg":"a true flag"}}、{@code {"msg":"count 123456 items"}}）保持原样，
-     * 避免把合法的 JSON 字符串内容替换成带引号掩码而破坏 JSON 合法性。替换结果为「带引号的掩码」。
+     * 在 JSON 文本中替换数字/布尔形态的敏感值，替换后仍是合法 JSON，覆盖两种位置：
+     * - 位于 JSON 字符串内部（如 {@code {"msg":"count 123456 items"}}）：替换为「裸掩码」，字符串内容仍合法；
+     * - 位于字符串之外（schema 类型 integer/number/boolean 归一后的裸数字/布尔字面量）：替换为「带引号的掩码」。
+     * 两种情况都覆盖，避免数字/布尔型密钥经回显字符串或裸字面量泄露明文。
      */
-    private static String maskBareJsonScalar(String text, String secretValue) {
+    private static String maskJsonScalar(String text, String secretValue) {
         StringBuilder result = new StringBuilder(text.length());
         int secretLength = secretValue.length();
         boolean inString = false;
@@ -119,6 +116,13 @@ public final class SensitiveTextMasker {
         while (index < text.length()) {
             char current = text.charAt(index);
             if (inString) {
+                // 字符串内部命中：替换为裸掩码（不追加引号），输出仍是合法 JSON
+                if (!escaped && text.regionMatches(index, secretValue, 0, secretLength)
+                    && isJsonScalarBoundary(text, index - 1) && isJsonScalarBoundary(text, index + secretLength)) {
+                    result.append(MASK);
+                    index += secretLength;
+                    continue;
+                }
                 result.append(current);
                 if (escaped) {
                     escaped = false;
@@ -136,7 +140,10 @@ public final class SensitiveTextMasker {
                 index++;
                 continue;
             }
-            if (text.regionMatches(index, secretValue, 0, secretLength)
+            // 字符串外命中（裸数字/布尔字面量）：替换为带引号掩码。
+            // 额外排除紧邻正负号的情况，避免把 -123456 这类带符号数字拆成 -"******" 破坏 JSON 合法性
+            boolean afterSign = index > 0 && (text.charAt(index - 1) == '-' || text.charAt(index - 1) == '+');
+            if (!afterSign && text.regionMatches(index, secretValue, 0, secretLength)
                 && isJsonScalarBoundary(text, index - 1) && isJsonScalarBoundary(text, index + secretLength)) {
                 result.append('"').append(MASK).append('"');
                 index += secretLength;
