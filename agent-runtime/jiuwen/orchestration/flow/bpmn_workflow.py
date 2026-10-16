@@ -2281,9 +2281,10 @@ class BpmnWorkflow(BaseWorkflow):
             )
             raise JiuWenBaseException(
                 error_code=StatusCode.WORKFLOW_IR_VALIDATION_ERROR.code,
-                message=StatusCode.WORKFLOW_IR_VALIDATION_ERROR.errmsg.format(
-                    reason=str(type(e).__name__)
-                ),
+                message=StatusCode.WORKFLOW_IR_VALIDATION_ERROR.errmsg.format(reason=str(e)),
+                node_id=getattr(e, "node_id", None),
+                node_name=getattr(e, "node_name", None),
+                node_type=getattr(e, "node_type", None),
             ) from e
 
         self.runtime_context.update(dict(node_variable=self.workflow.data))
