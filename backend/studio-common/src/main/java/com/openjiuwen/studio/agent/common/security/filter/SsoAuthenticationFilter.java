@@ -120,7 +120,7 @@ public class SsoAuthenticationFilter extends OncePerRequestFilter {
 
                 if (authProperties.getSystemUser().isSystemUser(userInfo.getUserId())) {
                     request.setAttribute(Constants.SYSTEM_USER_SKIP_ATTR, Boolean.TRUE);
-                    log.info("System user skip enabled: SSO userId={} matches auth_system_user_ids",
+                    log.debug("System user skip enabled: SSO userId={} matches auth_system_user_ids",
                         userInfo.getUserId());
                 }
             } else {
