@@ -507,7 +507,7 @@ public class AgentServiceProxyService {
             log.warn("[runTool] env var load failed, block debug. projectId={}", projectId);
             return ResponseModel.success(new RunToolResponseBody().setSuccess(false)
                 .setRawRequestBody(body.getParameter())
-                .setErrorMessage("环境变量加载失败，无法自动回填绑定参数，请检查环境管理中的默认环境与变量配置后重试"));
+                .setErrorMessage(i18nUtil.getMessage(StudioError.DEBUG_ENV_VAR_LOAD_FAILED)));
         }
         if (!resolveResult.getMissingVars().isEmpty()) {
             // 绑定的环境变量在默认环境中不存在（如切换默认环境后）时直接失败并给出明确提示，
@@ -516,8 +516,7 @@ public class AgentServiceProxyService {
             log.warn("[runTool] env vars missing in default environment: {}", resolveResult.getMissingVars());
             return ResponseModel.success(new RunToolResponseBody().setSuccess(false)
                 .setRawRequestBody(body.getParameter())
-                .setErrorMessage(String.format(
-                    "参数绑定的环境变量 [%s] 在当前默认环境中不存在，请在环境管理中补充该变量，或手动输入参数值后重试",
+                .setErrorMessage(i18nUtil.getMessage(StudioError.DEBUG_ENV_VAR_MISSING,
                     String.join(", ", resolveResult.getMissingVars()))));
         }
         body.setParameter(resolveResult.getParameter());
@@ -602,15 +601,20 @@ public class AgentServiceProxyService {
 
     /**
      * 按 token 边界替换密钥值：仅替换两侧均非字母/数字/下划线的独立出现，避免把夹在长 token 内的相同字符整体破坏。
-     * jsonContext 为 true 时，纯数字/布尔形态的密钥只替换带引号的字符串字面量（如 "1"），
-     * 保留 JSON 中的裸数字/布尔字面量，避免 raw_response/raw_request_body 变成非法 JSON。
+     * jsonContext 为 true 时，数字/布尔字面量不能裸替换成掩码（会把 raw_response/raw_request_body 变成非法 JSON）：
+     * 字符串字面量整体替换；裸字面量（schema 类型为 integer/number/boolean 时解密值被归一为 JSON 数字/布尔）
+     * 替换为「带引号的掩码」，既完成脱敏又保持 JSON 合法。
      */
     private String maskStandaloneToken(String text, String secretValue, boolean jsonContext) {
         if (StringUtils.isEmpty(secretValue)) {
             return text;
         }
         if (jsonContext && isJsonScalarLiteral(secretValue)) {
-            return text.replace("\"" + secretValue + "\"", "\"" + ENV_VAR_SECRET_MASK + "\"");
+            String masked = text.replace("\"" + secretValue + "\"", "\"" + ENV_VAR_SECRET_MASK + "\"");
+            // 两侧排除字母/数字/下划线/点/引号：避免命中夹在长 token（含小数、字符串字面量）内的相同字符
+            Pattern barePattern = Pattern.compile(
+                "(?<![A-Za-z0-9_.\"])" + Pattern.quote(secretValue) + "(?![A-Za-z0-9_.\"])");
+            return barePattern.matcher(masked).replaceAll("\"" + ENV_VAR_SECRET_MASK + "\"");
         }
         Pattern pattern = Pattern.compile("(?<![A-Za-z0-9_])" + Pattern.quote(secretValue) + "(?![A-Za-z0-9_])");
         return pattern.matcher(text).replaceAll(ENV_VAR_SECRET_MASK);
@@ -660,7 +664,11 @@ public class AgentServiceProxyService {
         JSONObject paramJson = new JSONObject();
         if (StringUtils.hasText(parameter)) {
             try {
-                paramJson = JSONObject.parseObject(parameter);
+                // 参数为合法 JSON 字面量 null 时 parseObject 返回 null，保持空对象避免后续空指针
+                JSONObject parsed = JSONObject.parseObject(parameter);
+                if (parsed != null) {
+                    paramJson = parsed;
+                }
             } catch (Exception e) {
                 log.warn("[runTool] parse parameter failed when resolving env vars, skip. error={}", e.getMessage());
                 return result;
@@ -706,11 +714,12 @@ public class AgentServiceProxyService {
             LoadedEnvVar loaded = envValues.get(binding.getVarName());
             if (loaded != null) {
                 // 按 schema 声明类型归一回填值，避免下游接口收到字符串形式的数字/布尔值
-                paramJson.put(fieldName, coerceBySchemaType(loaded.getValue(), binding.getType()));
+                Object coercedValue = coerceBySchemaType(loaded.getValue(), binding.getType());
+                paramJson.put(fieldName, coercedValue);
                 changed = true;
                 if (loaded.isSecret()) {
-                    // 记录回填的加密变量明文，供调测回显统一脱敏
-                    result.getSecretValues().add(loaded.getValue());
+                    // 记录回填的加密变量明文（含归一后的形态，如 number 类型的 123456.0），供调测回显统一脱敏
+                    recordSecretForms(result.getSecretValues(), loaded.getValue(), coercedValue);
                 }
             } else if (masked || binding.isRequired()) {
                 // 脱敏占位符无法解析不能原样下发；必填参数为空且变量缺失时同样拦截，避免下游报难定位错误
@@ -869,6 +878,18 @@ public class AgentServiceProxyService {
     }
 
     /**
+     * 记录加密变量在调测回显中可能出现的明文形态：原始解密值，以及按 schema 类型归一后的字符串形态。
+     * number 类型归一后是 123456.0、boolean 类型归一后是 true/false，与原始值不同，
+     * 补充记录归一形态后，回显脱敏才能覆盖 body 中出现的裸数字/布尔，避免加密明文经由回显泄漏。
+     */
+    private void recordSecretForms(Set<String> secretValues, String rawValue, Object coercedValue) {
+        secretValues.add(rawValue);
+        if (coercedValue != null) {
+            secretValues.add(String.valueOf(coercedValue));
+        }
+    }
+
+    /**
      * 收集绑定字段值中引用自身绑定环境变量的占位符 {@code ${_env.plugin_url_params.NAME}}。
      * 仅处理 schema 中声明了 env_var_ref 的字段，且占位符引用名必须与该字段绑定的变量一致，
      * 未绑定字段中的占位符保持原样下发，防止借调试入参套取（加密）环境变量明文。
@@ -932,7 +953,15 @@ public class AgentServiceProxyService {
             }
             if (wholePlaceholder) {
                 EnvVarBinding binding = envRefMap.get(entry.getKey());
-                paramJson.put(entry.getKey(), coerceBySchemaType(replaced, binding == null ? null : binding.getType()));
+                Object coercedValue = coerceBySchemaType(replaced, binding == null ? null : binding.getType());
+                paramJson.put(entry.getKey(), coercedValue);
+                // 归一后可能是裸数字/布尔，补充记录归一形态，确保回显脱敏覆盖
+                for (String name : entry.getValue()) {
+                    LoadedEnvVar loaded = envValues.get(name);
+                    if (loaded != null && loaded.isSecret()) {
+                        recordSecretForms(resolvedSecretValues, loaded.getValue(), coercedValue);
+                    }
+                }
             } else {
                 paramJson.put(entry.getKey(), replaced);
             }

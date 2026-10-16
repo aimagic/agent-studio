@@ -50,8 +50,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -1102,6 +1105,53 @@ class AgentServiceProxyServiceTest {
         assertEquals("http://runtime:8080/v1/workflows/chat/code-1/conversations/conv-1?workspace_id=ws-1",
             urlCaptor.getValue());
         verify(environmentManagerMapper, never()).findByProjectIdAndIsDefaultTrue(anyString());
+    }
+
+    /**
+     * 加密变量为纯数字、schema 类型为 integer/number 时解密值被归一为 JSON 裸数字，
+     * 回显脱敏需替换为「带引号掩码」：既脱敏又保持 JSON 合法，避免明文经回显泄漏。
+     */
+    @Test
+    void testMaskSecretText_JsonBareNumberSecret() {
+        Set<String> secrets = new LinkedHashSet<>(Arrays.asList("123456", "123456.0"));
+        assertEquals("{\"port\":\"******\"}",
+            ReflectionTestUtils.invokeMethod(proxyService, "maskSecretText", "{\"port\":123456}", secrets, true));
+        assertEquals("{\"port\":\"******\"}",
+            ReflectionTestUtils.invokeMethod(proxyService, "maskSecretText", "{\"port\":123456.0}", secrets, true));
+    }
+
+    /**
+     * 加密变量为布尔字面量时：裸布尔替换为带引号掩码，且字符串内的布尔词不被误替换（保持 JSON 合法）。
+     */
+    @Test
+    void testMaskSecretText_JsonBareBooleanSecret() {
+        Set<String> secrets = new LinkedHashSet<>(Collections.singletonList("true"));
+        assertEquals("{\"flag\":\"******\"}",
+            ReflectionTestUtils.invokeMethod(proxyService, "maskSecretText", "{\"flag\":true}", secrets, true));
+        assertEquals("{\"msg\":\"it is true\"}",
+            ReflectionTestUtils.invokeMethod(proxyService, "maskSecretText", "{\"msg\":\"it is true\"}", secrets, true));
+    }
+
+    /**
+     * 字符串字面量密钥整体替换；相邻的更长数字不应被误替换。
+     */
+    @Test
+    void testMaskSecretText_JsonQuotedSecretAndNonSecretPreserved() {
+        Set<String> secrets = new LinkedHashSet<>(Collections.singletonList("123456"));
+        assertEquals("{\"port\":\"******\"}",
+            ReflectionTestUtils.invokeMethod(proxyService, "maskSecretText", "{\"port\":\"123456\"}", secrets, true));
+        assertEquals("{\"port\":1234567}",
+            ReflectionTestUtils.invokeMethod(proxyService, "maskSecretText", "{\"port\":1234567}", secrets, true));
+    }
+
+    /**
+     * 非 JSON 回显（URL/Header/错误信息）中裸密钥仍替换为掩码。
+     */
+    @Test
+    void testMaskSecretText_NonJsonBareSecret() {
+        Set<String> secrets = new LinkedHashSet<>(Collections.singletonList("123456"));
+        assertEquals("host?port=******",
+            ReflectionTestUtils.invokeMethod(proxyService, "maskSecretText", "host?port=123456", secrets, false));
     }
 
     /**
