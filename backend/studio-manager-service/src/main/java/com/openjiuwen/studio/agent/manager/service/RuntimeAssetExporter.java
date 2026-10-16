@@ -101,8 +101,11 @@ public class RuntimeAssetExporter {
     /** JSON 树递归深度上限（extractAuthIds 遍历用户构建的 IR，防深嵌套栈溢出，对齐 MAX_MAPPING_DEPTH 防护思路） */
     private static final int MAX_JSON_DEPTH = 50;
 
+    /** assets 数量上限默认值（SDD 9.1）：@Value 缺省值 + 非法配置（<=0）回退值，单一来源 */
+    private static final int DEFAULT_MAX_ASSETS = 100;
+
     /** assets 数量上限（SDD 9.1：超限报错提示，防大型智能体导出超时） */
-    @org.springframework.beans.factory.annotation.Value("${export.runtime-asset.max-assets:100}")
+    @org.springframework.beans.factory.annotation.Value("${export.runtime-asset.max-assets:" + DEFAULT_MAX_ASSETS + "}")
     private int maxAssets;
 
     /** 并发导出上限（SDD 4.5：Semaphore 信号量，快速失败） */
@@ -128,6 +131,12 @@ public class RuntimeAssetExporter {
     private void initSemaphore() {
         // 兜底：maxConcurrent 配 0 或负数时 Semaphore 永远拿不到许可，会导致导出永久 busy。
         this.exportSemaphore = new java.util.concurrent.Semaphore(Math.max(1, maxConcurrent));
+        // 兜底（巡检 #11）：maxAssets 配 0 或负数时，根 IR 入包即触发 EXPORT_LENGTH_TOO_LARGE，致运行时资产导出
+        // 完全不可用。非正值视为误配，回退默认上限。注意不能像 maxConcurrent 仅 clamp 到 1：最小导出需
+        // 根 IR + metadata ≥ 2 个 asset，maxAssets=1 时 metadata（第 2 个，failOnLimit=true）入包仍抛异常。
+        if (maxAssets <= 0) {
+            maxAssets = DEFAULT_MAX_ASSETS;
+        }
     }
 
     /** 资产类型常量（manifest 中 type 字段取值） */
@@ -700,6 +709,11 @@ public class RuntimeAssetExporter {
         if (!collectedKeys.contains(modelServiceKey)) {
             addAsset(assets, collectedKeys, modelServiceKey, TYPE_MODEL_SERVICE);
         }
+        // 防御式 gate（巡检 #10）：addAsset 已对非法 key 记 warn 跳过不入包，此处复核确保不以非法 key 读 OBS
+        // （modelServiceId 来自 IR/service_id_list，可被构造；OBS key 扁平暂无跨租户，但防无效/越界读取放大）。
+        if (!isValidAssetKey(modelServiceKey, TYPE_MODEL_SERVICE)) {
+            return;
+        }
         // 读 model-service 文件取 providerId/projectId
         String msJson;
         try {
@@ -804,6 +818,10 @@ public class RuntimeAssetExporter {
         if (!collectedKeys.contains(kbRefKey)) {
             addAsset(assets, collectedKeys, kbRefKey, TYPE_KB_REFERENCE);
         }
+        // 防御式 gate（巡检 #10）：非法 kbId 构造的 key 不读 OBS（addAsset 已记 warn 跳过不入包）。
+        if (!isValidAssetKey(kbRefKey, TYPE_KB_REFERENCE)) {
+            return;
+        }
         // 读 KB 引用文件取 connectionId
         String kbJson;
         try {
@@ -843,6 +861,11 @@ public class RuntimeAssetExporter {
     private void collectKbReferencedModels(List<ManifestAsset> assets, Set<String> collectedKeys,
         String connectionId, String rootProjectId, Map<String, String> obsCache) {
         String connKey = String.format("kb-connection/ir/connection/%s.json", connectionId);
+        // 防御式 gate（巡检 #10）：connKey 由 collectKbAssets 的 addAsset 校验并入包；复核合法性，
+        // 非法 connectionId（来自 KB 引用文件，可被构造）构造的 key 不读 OBS（防无效/越界读取）。
+        if (!isValidAssetKey(connKey, TYPE_KB_CONNECTION)) {
+            return;
+        }
         String connJson;
         try {
             connJson = getCachedObject(connKey, obsCache);

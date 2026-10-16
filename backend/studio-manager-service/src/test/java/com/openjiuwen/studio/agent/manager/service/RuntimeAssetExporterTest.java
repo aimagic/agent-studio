@@ -667,6 +667,75 @@ class RuntimeAssetExporterTest {
         }
     }
 
+    // ===== 巡检 #10：model-service/KB 非法 key 不读 OBS（addAsset 校验结果 gate 后续 getCachedObject）=====
+
+    @Test
+    void testInvalidModelServiceKey_traversal_notReadFromObs() throws Exception {
+        mockDefaultAgent();
+        // t_mapping 含一个 model 资源，serviceId 含 ../ 遍历 → model-service key 非法
+        List<MappingEntity> mappings = new ArrayList<>();
+        mappings.add(mapping("model", "../other-tenant/evil", null));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any())).thenReturn(mappings);
+        String maliciousMsKey = "model-service/ir/../other-tenant/evil.json";
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            // 非法 model-service key 不入包也不读 OBS，导出不被破坏（根 IR + metadata 正常入包）
+            byte[] zip = assertDoesNotThrow(
+                () -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            Set<String> names = zipEntryNames(zip);
+            assertFalse(names.contains(maliciousMsKey), "traversal model-service key must NOT be in zip");
+            // 关键（巡检 #10）：非法 key 不读 OBS（修复前 getCachedObject 无条件以非法 key 读 OBS）
+            verify(mgObsService, never()).getObject(maliciousMsKey);
+        }
+    }
+
+    @Test
+    void testInvalidKbReferenceKey_traversal_notReadFromObs() throws Exception {
+        mockDefaultAgent();
+        // t_mapping 含一个 repo（KB 引用），kbId 含 ../ 遍历 → kb-reference key 非法
+        List<MappingEntity> mappings = new ArrayList<>();
+        mappings.add(mapping("repo", "../other-tenant/evil-kb", null));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any())).thenReturn(mappings);
+        String maliciousKbKey = "kb-connection/ir/knowledge-base/../other-tenant/evil-kb.json";
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = assertDoesNotThrow(
+                () -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            Set<String> names = zipEntryNames(zip);
+            assertFalse(names.contains(maliciousKbKey), "traversal kb-reference key must NOT be in zip");
+            // 关键（巡检 #10）：非法 kbId 构造的 key 不读 OBS
+            verify(mgObsService, never()).getObject(maliciousKbKey);
+        }
+    }
+
+    @Test
+    void testInvalidKbConnectionKey_traversal_notReadFromObs() throws Exception {
+        mockDefaultAgent();
+        // t_mapping 含一个 repo，kbId 合法（kb-reference 可读），但其 connectionId 含 ../ → conn key 非法
+        List<MappingEntity> mappings = new ArrayList<>();
+        mappings.add(mapping("repo", "valid-kb", null));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any())).thenReturn(mappings);
+        // kb-reference 文件内容含恶意 connectionId（来自可被构造的 KB 引用文件）
+        when(mgObsService.getObject("kb-connection/ir/knowledge-base/valid-kb.json"))
+            .thenReturn("{\"connectionId\":\"../other-tenant/evil-conn\"}");
+        String maliciousConnKey = "kb-connection/ir/connection/../other-tenant/evil-conn.json";
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = assertDoesNotThrow(
+                () -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            Set<String> names = zipEntryNames(zip);
+            assertFalse(names.contains(maliciousConnKey), "traversal kb-connection key must NOT be in zip");
+            // 关键（巡检 #10）：非法 connectionId 构造的 conn key 不读 OBS
+            verify(mgObsService, never()).getObject(maliciousConnKey);
+        }
+    }
+
     // ===== bug007 #1：子资源归属校验（跨用户 skill + 跨 workspace 子 IR）=====
 
     @Test
@@ -853,6 +922,28 @@ class RuntimeAssetExporterTest {
             AgentStudioException ex = assertThrows(AgentStudioException.class,
                 () -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
             assertEquals(StudioError.EXPORT_LENGTH_TOO_LARGE, ex.getErrorCode());
+        }
+    }
+
+    // ===== 巡检 #11：maxAssets<=0（误配）回退默认上限，导出可用 =====
+
+    @Test
+    void testMaxAssets_zeroOrNegative_clampedToDefault_exportUsable() throws Exception {
+        // maxAssets 误配 0 → initSemaphore 兜底回退默认上限（巡检 #11），不再根 IR 入包即抛 EXPORT_LENGTH_TOO_LARGE
+        ReflectionTestUtils.setField(exporter, "maxAssets", 0);
+        ReflectionTestUtils.invokeMethod(exporter, "initSemaphore");
+        // 回退后 maxAssets 为正值（默认 100），导出可用
+        int clamped = (int) ReflectionTestUtils.getField(exporter, "maxAssets");
+        assertTrue(clamped > 0, "maxAssets<=0 should be clamped to a positive default, got " + clamped);
+        mockDefaultAgent();
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            // 关键（巡检 #11）：误配 0 不再使导出完全不可用
+            byte[] zip = assertDoesNotThrow(
+                () -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            assertNotNull(zip, "export should produce a zip when maxAssets misconfigured to 0");
         }
     }
 
