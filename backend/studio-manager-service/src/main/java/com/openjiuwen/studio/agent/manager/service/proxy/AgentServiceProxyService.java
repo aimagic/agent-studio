@@ -140,6 +140,16 @@ public class AgentServiceProxyService {
     private static final Pattern ENV_PLACEHOLDER_PATTERN =
         Pattern.compile("\\$\\{_env\\.plugin_url_params\\.([a-zA-Z_$][a-zA-Z0-9_$]*)\\}");
 
+    /**
+     * JSON 数字字面量，用于识别「裸数字」密钥，避免在 JSON 回显中把数值字面量替换成掩码导致非法 JSON。
+     */
+    private static final Pattern JSON_NUMBER_PATTERN = Pattern.compile("-?\\d+(\\.\\d+)?([eE][+-]?\\d+)?");
+
+    /**
+     * 百分号编码中的十六进制片段，用于生成小写十六进制变体，覆盖部分编码器的输出格式。
+     */
+    private static final Pattern PERCENT_HEX_PATTERN = Pattern.compile("%([0-9A-F]{2})");
+
     private final AgentRuntimeClient runtimeClient;
 
     private final AgentBuilderClient builderClient;
@@ -521,29 +531,33 @@ public class AgentServiceProxyService {
      * 将调测回显（请求 URL/请求头/请求体/响应体/错误信息）中本次解析出的加密变量明文替换为固定掩码。
      * 仅影响展示，不影响已发出的真实请求。
      * 说明：下游异常信息（如 UnknownHostException 带出的绑定主机名）会写入 errorMessage 并回显给用户，
-     * 响应体也可能回显请求参数，因此这两处同样需要统一脱敏。
+     * 响应体也可能回显请求参数，因此这两处同样需要统一脱敏；
+     * 请求体/响应体按 JSON 文本处理，避免把其中裸数字/布尔字面量替换成掩码导致回显变成非法 JSON。
      */
     private void maskResolvedSecrets(RunToolResponseBody responseBody, Set<String> secretValues) {
         if (responseBody == null || secretValues.isEmpty()) {
             return;
         }
-        responseBody.setRawRequestUrl(maskSecretText(responseBody.getRawRequestUrl(), secretValues));
-        responseBody.setRawRequestBody(maskSecretText(responseBody.getRawRequestBody(), secretValues));
-        responseBody.setErrorMessage(maskSecretText(responseBody.getErrorMessage(), secretValues));
-        responseBody.setRawResponse(maskSecretText(responseBody.getRawResponse(), secretValues));
+        responseBody.setRawRequestUrl(maskSecretText(responseBody.getRawRequestUrl(), secretValues, false));
+        responseBody.setRawRequestBody(maskSecretText(responseBody.getRawRequestBody(), secretValues, true));
+        responseBody.setErrorMessage(maskSecretText(responseBody.getErrorMessage(), secretValues, false));
+        responseBody.setRawResponse(maskSecretText(responseBody.getRawResponse(), secretValues, true));
         if (responseBody.getRawRequestHeaders() != null) {
             Map<String, String> maskedHeaders = new LinkedHashMap<>(responseBody.getRawRequestHeaders());
-            maskedHeaders.replaceAll((key, value) -> maskSecretText(value, secretValues));
+            maskedHeaders.replaceAll((key, value) -> maskSecretText(value, secretValues, false));
             responseBody.setRawRequestHeaders(maskedHeaders);
         }
     }
 
     /**
-     * 将文本中出现的加密变量明文替换为固定掩码。
-     * 覆盖长短不一的密钥值（不按长度跳过），并同时替换其在 JSON 中的转义形态，
-     * 避免含引号/换行等特殊字符的密钥以转义字面量形式残留在回显中。
+     * 将文本中出现的加密变量明文替换为固定掩码，覆盖变量值的多种编码形态：
+     * 原始明文、JSON 转义形态（含引号/换行等）与 URL 百分号编码形态（+ 与 %20、大写与小写十六进制），
+     * 避免用户通过 URL 解码等方式从回显中还原出明文。
+     *
+     * @param jsonContext 文本是否为 JSON（请求体/响应体）：为 true 时不对裸数字/布尔字面量做替换，
+     *                    避免回显变成非法 JSON 而影响前端解析与自动解析。
      */
-    private String maskSecretText(String text, Set<String> secretValues) {
+    private String maskSecretText(String text, Set<String> secretValues, boolean jsonContext) {
         if (StringUtils.isEmpty(text)) {
             return text;
         }
@@ -555,23 +569,58 @@ public class AgentServiceProxyService {
             if (StringUtils.isEmpty(secretValue)) {
                 continue;
             }
-            masked = maskStandaloneToken(masked, secretValue);
-            String escaped = toJsonEscaped(secretValue);
-            if (!escaped.equals(secretValue)) {
-                masked = maskStandaloneToken(masked, escaped);
+            for (String form : collectSecretForms(secretValue)) {
+                masked = maskStandaloneToken(masked, form, jsonContext);
             }
         }
         return masked;
     }
 
     /**
-     * 按 token 边界替换密钥值：仅替换两侧均非字母/数字/下划线的独立出现。
-     * 短密钥（如 "1"、"a"）不会把回显 URL/响应体/错误信息中夹在长 token 内的相同字符整体破坏，
-     * 同时独立出现的短密钥（如 JSON 值 "1"）仍会被脱敏，兼顾安全约定与回显可读性。
+     * 收集密钥值在回显中可能出现的编码形态：原始明文、JSON 转义形态、URL 编码形态（+ 与 %20，大写与小写十六进制）。
      */
-    private String maskStandaloneToken(String text, String secretValue) {
+    private Set<String> collectSecretForms(String secretValue) {
+        Set<String> forms = new LinkedHashSet<>();
+        forms.add(secretValue);
+        forms.add(toJsonEscaped(secretValue));
+        String urlEncoded = URLEncoder.encode(secretValue, StandardCharsets.UTF_8);
+        String urlEncodedSpace = urlEncoded.replace("+", "%20");
+        forms.add(urlEncoded);
+        forms.add(urlEncodedSpace);
+        forms.add(toLowerPercentHex(urlEncoded));
+        forms.add(toLowerPercentHex(urlEncodedSpace));
+        forms.remove("");
+        return forms;
+    }
+
+    /**
+     * 将百分号编码中的十六进制转为小写，覆盖输出小写十六进制的编码器。
+     */
+    private String toLowerPercentHex(String encoded) {
+        return PERCENT_HEX_PATTERN.matcher(encoded).replaceAll(match -> "%" + match.group(1).toLowerCase());
+    }
+
+    /**
+     * 按 token 边界替换密钥值：仅替换两侧均非字母/数字/下划线的独立出现，避免把夹在长 token 内的相同字符整体破坏。
+     * jsonContext 为 true 时，纯数字/布尔形态的密钥只替换带引号的字符串字面量（如 "1"），
+     * 保留 JSON 中的裸数字/布尔字面量，避免 raw_response/raw_request_body 变成非法 JSON。
+     */
+    private String maskStandaloneToken(String text, String secretValue, boolean jsonContext) {
+        if (StringUtils.isEmpty(secretValue)) {
+            return text;
+        }
+        if (jsonContext && isJsonScalarLiteral(secretValue)) {
+            return text.replace("\"" + secretValue + "\"", "\"" + ENV_VAR_SECRET_MASK + "\"");
+        }
         Pattern pattern = Pattern.compile("(?<![A-Za-z0-9_])" + Pattern.quote(secretValue) + "(?![A-Za-z0-9_])");
         return pattern.matcher(text).replaceAll(ENV_VAR_SECRET_MASK);
+    }
+
+    /**
+     * 判断值是否为 JSON 数字/布尔字面量（不含引号形式），此类值在 JSON 中裸替换会破坏 JSON 合法性。
+     */
+    private boolean isJsonScalarLiteral(String value) {
+        return "true".equals(value) || "false".equals(value) || JSON_NUMBER_PATTERN.matcher(value).matches();
     }
 
     /**
@@ -621,13 +670,9 @@ public class AgentServiceProxyService {
         // 仅在绑定字段内收集运行时占位符 ${_env.plugin_url_params.NAME}，且引用名须与绑定变量一致
         Map<String, Set<String>> placeholderFields = new HashMap<>();
         Set<String> neededNames = new HashSet<>();
-        envRefMap.values().forEach(binding -> neededNames.add(binding.getVarName()));
         collectEnvPlaceholders(paramJson, envRefMap, neededNames, placeholderFields);
-        if (envRefMap.isEmpty() && neededNames.isEmpty()) {
-            return result;
-        }
-        // 判断是否有绑定字段需要后端回填（空值、脱敏掩码或含运行时占位符）；
-        // 绑定参数已全部被用户手填时无需加载环境变量，默认环境缺失或读取异常不再阻断调测（手动输入优先）
+        // 仅收集「真正需要后端回填」的字段对应的变量名（空值、脱敏掩码或含运行时占位符）：
+        // 既避免加载无关变量，也避免其缺失/读取异常被误判为加载失败而阻断调测（手动输入优先）
         boolean needsEnvResolution = !placeholderFields.isEmpty();
         for (Map.Entry<String, EnvVarBinding> entry : envRefMap.entrySet()) {
             Object current = paramJson.get(entry.getKey());
@@ -636,7 +681,7 @@ public class AgentServiceProxyService {
                 continue;
             }
             needsEnvResolution = true;
-            break;
+            neededNames.add(entry.getValue().getVarName());
         }
         if (!needsEnvResolution) {
             return result;
@@ -1031,7 +1076,7 @@ public class AgentServiceProxyService {
             try {
                 String cached = environmentCacheUtil.getEnvironmentCache(envId, workspaceId);
                 if (StringUtils.hasText(cached) && !"{}".equals(cached)) {
-                    parseAndFillEnvValues(cached, names, loaded.getValues());
+                    parseAndFillEnvValues(cached, names, loaded);
                 }
             } catch (Exception e) {
                 log.error("[runTool] read environment cache failed, envId: {}", envId, e);
@@ -1044,7 +1089,7 @@ public class AgentServiceProxyService {
                 EnvironmentVariableEntity byWorkspace =
                     environmentVariableMapper.findByProjectIdAndWorkspaceIdAndEnvId(projectId, workspaceId, envId);
                 if (byWorkspace != null && StringUtils.hasText(byWorkspace.getEnvVariable())) {
-                    parseAndFillEnvValues(byWorkspace.getEnvVariable(), names, loaded.getValues());
+                    parseAndFillEnvValues(byWorkspace.getEnvVariable(), names, loaded);
                 }
             } catch (Exception e) {
                 log.error("[runTool] query environment variables from db failed, envId: {}", envId, e);
@@ -1064,30 +1109,32 @@ public class AgentServiceProxyService {
     }
 
     /**
-     * 解析环境变量 JSON 并填充未命中的目标变量名，加密变量解密后写入（解密失败回退原文，兼容明文存储）。
+     * 解析环境变量 JSON 并填充未命中的目标变量名，加密变量解密后写入。
+     * 解密失败说明变量值与当前密钥不匹配：不能把密文当作明文下发，标记加载失败由上层给出明确报错。
+     * 变量值不做 trim，与前端 getEnvVariablesDetail 直接使用 content 的口径一致，保留首尾空格敏感的取值。
      */
-    private void parseAndFillEnvValues(String envJson, Collection<String> names, Map<String, LoadedEnvVar> result) {
+    private void parseAndFillEnvValues(String envJson, Collection<String> names, LoadedEnvVars loaded) {
         List<EnvironmentVariable> envVars = McpJsonUtils.toList(envJson, EnvironmentVariable.class);
         if (org.springframework.util.CollectionUtils.isEmpty(envVars)) {
             return;
         }
         for (EnvironmentVariable var : envVars) {
-            if (var.getName() == null || !names.contains(var.getName()) || result.containsKey(var.getName())
+            if (var.getName() == null || !names.contains(var.getName()) || loaded.getValues().containsKey(var.getName())
                 || var.getValue() == null || var.getValue().getContent() == null) {
                 continue;
             }
             boolean secret = Boolean.TRUE.equals(var.getValue().isSecret());
-            // 不做 trim，与前端 getEnvVariablesDetail 直接使用 content 的口径一致，保留首尾空格敏感的变量值
             String value = var.getValue().getContent();
             if (secret) {
                 try {
                     value = CryptoUtils.decrypt(value);
                 } catch (Exception e) {
-                    // 解密失败时回退原始内容（本地 NoOp 加密或历史数据可能以明文存储）
-                    log.warn("[runTool] decrypt secret env var failed: {}, use raw content", var.getName());
+                    log.warn("[runTool] decrypt secret env var failed: {}, mark load failed", var.getName());
+                    loaded.markFailed();
+                    continue;
                 }
             }
-            result.put(var.getName(), new LoadedEnvVar(value, secret));
+            loaded.getValues().put(var.getName(), new LoadedEnvVar(value, secret));
         }
     }
 

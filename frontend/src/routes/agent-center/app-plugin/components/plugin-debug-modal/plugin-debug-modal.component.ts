@@ -109,6 +109,9 @@ export class PluginDebugModalComponent {
 
   /** 调测参数是否已就绪（环境变量回填完成）；未就绪前禁止调测，避免提交空参数或未回填参数 */
   public isParamsReady = false;
+
+  /** 环境变量加载是否失败（接口异常）：用于提示，并保证强转默认值不被误当作手填值提交 */
+  public envVarLoadFailed = false;
   constructor(
     private i18n: I18NextEagerPipe,
     private commonLogic: agentCommonLogic,
@@ -145,6 +148,7 @@ export class PluginDebugModalComponent {
     }
     this.envVarMissingList = [];
     this.hasDefaultEnv = true;
+    this.envVarLoadFailed = false;
     this.defaultEnvName = '';
     try {
       const envRes = await this.envManagementService.getEnvironmentList({
@@ -156,6 +160,9 @@ export class PluginDebugModalComponent {
       const defaultEnv = envInfo.find((env: any) => env.isDefault) || envInfo[0];
       if (!defaultEnv?.id) {
         this.hasDefaultEnv = false;
+        // 无默认环境时全部绑定字段均不可解析：登记后提交时会剔除被动态表单强转的 0/false，
+        // 避免其被后端误判为用户手填值而跳过回填与缺失拦截
+        this.collectBoundFieldNames(list);
         return list;
       }
       this.defaultEnvName = defaultEnv.name || defaultEnv.id;
@@ -195,9 +202,21 @@ export class PluginDebugModalComponent {
         item.controlValue = matched.content;
       });
     } catch (e) {
-      // 环境变量加载失败不阻塞调试
+      // 环境变量加载失败：绑定字段视为不可解析（避免强转出的 0/false 被当作手填值静默下发），并给出提示
+      this.envVarLoadFailed = true;
+      this.collectBoundFieldNames(list);
     }
     return list;
+  }
+
+  /** 将全部绑定字段登记为「当前环境不可解析」，供提交时剔除被动态表单强转的默认值 */
+  private collectBoundFieldNames(list: any[]): void {
+    this.envVarMissingList = [];
+    list.forEach((item: any) => {
+      if (item?.env_var_ref) {
+        this.envVarMissingList.push({ paramName: item.name, varName: item.env_var_ref });
+      }
+    });
   }
 
   /** 按钮禁用：rawResponse为空 或者 errorMessage为空 */
@@ -404,6 +423,12 @@ export class PluginDebugModalComponent {
    */
   private isUntouchedCoercedDefault(item: any, submitted: any): boolean {
     if (this.dynamicFormIns?.isControlPristine(item?.name) !== true) {
+      return false;
+    }
+    // 插件 schema 显式声明了默认值时，表单提交的就是该默认值（如显式默认 0/false），不应作为"空默认被强转"剔除；
+    // 这里用 schema 原始默认值 item.default 判断，避免 value.default 被 parseInt/parseFloat/布尔转换后的产物造成误判
+    const rawDefault = item?.default;
+    if (rawDefault !== undefined && rawDefault !== null && rawDefault !== '') {
       return false;
     }
     if (item?.type === 'integer' || item?.type === 'number') {
