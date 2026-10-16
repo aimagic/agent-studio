@@ -96,14 +96,67 @@ public final class SensitiveTextMasker {
             return text;
         }
         if (jsonContext && isJsonScalarLiteral(secretValue)) {
+            // 先整体替换精确的字符串字面量（如 "123456"），再替换 JSON 字符串之外的裸数字/布尔字面量
             String masked = text.replace("\"" + secretValue + "\"", "\"" + MASK + "\"");
-            // 两侧排除字母/数字/下划线/点/引号：避免命中夹在长 token（含小数、字符串字面量）内的相同字符
-            Pattern barePattern = Pattern.compile(
-                "(?<![A-Za-z0-9_.\"])" + Pattern.quote(secretValue) + "(?![A-Za-z0-9_.\"])");
-            return barePattern.matcher(masked).replaceAll("\"" + MASK + "\"");
+            return maskBareJsonScalar(masked, secretValue);
         }
         Pattern pattern = Pattern.compile("(?<![A-Za-z0-9_])" + Pattern.quote(secretValue) + "(?![A-Za-z0-9_])");
         return pattern.matcher(text).replaceAll(MASK);
+    }
+
+    /**
+     * 在 JSON 文本中替换处于字符串之外的「裸」数字/布尔字面量。
+     * 通过扫描跟踪是否位于 JSON 字符串内部：仅替换字符串外的独立 token，字符串内部的相同字符
+     * （如 {@code {"msg":"a true flag"}}、{@code {"msg":"count 123456 items"}}）保持原样，
+     * 避免把合法的 JSON 字符串内容替换成带引号掩码而破坏 JSON 合法性。替换结果为「带引号的掩码」。
+     */
+    private static String maskBareJsonScalar(String text, String secretValue) {
+        StringBuilder result = new StringBuilder(text.length());
+        int secretLength = secretValue.length();
+        boolean inString = false;
+        boolean escaped = false;
+        int index = 0;
+        while (index < text.length()) {
+            char current = text.charAt(index);
+            if (inString) {
+                result.append(current);
+                if (escaped) {
+                    escaped = false;
+                } else if (current == '\\') {
+                    escaped = true;
+                } else if (current == '"') {
+                    inString = false;
+                }
+                index++;
+                continue;
+            }
+            if (current == '"') {
+                inString = true;
+                result.append(current);
+                index++;
+                continue;
+            }
+            if (text.regionMatches(index, secretValue, 0, secretLength)
+                && isJsonScalarBoundary(text, index - 1) && isJsonScalarBoundary(text, index + secretLength)) {
+                result.append('"').append(MASK).append('"');
+                index += secretLength;
+                continue;
+            }
+            result.append(current);
+            index++;
+        }
+        return result.toString();
+    }
+
+    /**
+     * 判断 JSON 文本中指定位置是否为 token 边界（越界，或非字母/数字/下划线/点）。
+     */
+    private static boolean isJsonScalarBoundary(String text, int index) {
+        if (index < 0 || index >= text.length()) {
+            return true;
+        }
+        char c = text.charAt(index);
+        return !(Character.isLetterOrDigit(c) || c == '_' || c == '.');
     }
 
     /**

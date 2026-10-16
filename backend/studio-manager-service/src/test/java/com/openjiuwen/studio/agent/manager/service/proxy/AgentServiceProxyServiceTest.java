@@ -1118,6 +1118,9 @@ class AgentServiceProxyServiceTest {
         Set<String> secrets = new LinkedHashSet<>(Arrays.asList("123456", "123456.0"));
         assertEquals("{\"port\":\"******\"}", SensitiveTextMasker.mask("{\"port\":123456}", secrets, true));
         assertEquals("{\"port\":\"******\"}", SensitiveTextMasker.mask("{\"port\":123456.0}", secrets, true));
+        // 数字出现在 JSON 字符串内部时不替换，保持 JSON 合法
+        assertEquals("{\"msg\":\"count 123456 items\"}",
+            SensitiveTextMasker.mask("{\"msg\":\"count 123456 items\"}", secrets, true));
     }
 
     /**
@@ -1128,6 +1131,8 @@ class AgentServiceProxyServiceTest {
         Set<String> secrets = new LinkedHashSet<>(Collections.singletonList("true"));
         assertEquals("{\"flag\":\"******\"}", SensitiveTextMasker.mask("{\"flag\":true}", secrets, true));
         assertEquals("{\"msg\":\"it is true\"}", SensitiveTextMasker.mask("{\"msg\":\"it is true\"}", secrets, true));
+        // 布尔词出现在 JSON 字符串中间时不替换，保持 JSON 合法
+        assertEquals("{\"msg\":\"a true flag\"}", SensitiveTextMasker.mask("{\"msg\":\"a true flag\"}", secrets, true));
     }
 
     /**

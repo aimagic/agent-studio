@@ -604,7 +604,7 @@ public class AgentServiceProxyService {
         }
         LoadedEnvVars loadedEnvVars = loadDefaultEnvVarValues(projectId, workspaceId, neededNames);
         Map<String, LoadedEnvVar> envValues = loadedEnvVars.getValues();
-        result.setLoadFailed(loadedEnvVars.isFailed());
+        boolean envLoadFailed = loadedEnvVars.isFailed();
         log.info("[runTool] resolve env var params, boundFields={}, placeholderFields={}, matchedEnvVars={}",
             envRefMap.keySet(), placeholderFields.keySet(), envValues.keySet());
         boolean changed = replaceEnvPlaceholders(paramJson, placeholderFields, envRefMap, envValues,
@@ -635,6 +635,9 @@ public class AgentServiceProxyService {
             }
             // 非必填参数为空且变量缺失：允许为空，继续执行
         }
+        // 环境变量加载失败只有在确实导致必填参数/脱敏占位符无法解析时才算致命：
+        // 仅可选绑定参数留空（约定允许为空继续执行）时，不应因加载异常整单阻断调测
+        result.setLoadFailed(envLoadFailed && !result.getMissingVars().isEmpty());
         if (changed) {
             result.setParameter(paramJson.toJSONString());
         }
@@ -1084,8 +1087,9 @@ public class AgentServiceProxyService {
             return;
         }
         for (EnvironmentVariable var : envVars) {
+            // 内容为空视为不可解析（与前端 applyBoundEnvVarValues 口径一致）：不写入，交由上层按缺失处理
             if (var.getName() == null || !names.contains(var.getName()) || loaded.getValues().containsKey(var.getName())
-                || var.getValue() == null || var.getValue().getContent() == null) {
+                || var.getValue() == null || StringUtils.isEmpty(var.getValue().getContent())) {
                 continue;
             }
             boolean secret = Boolean.TRUE.equals(var.getValue().isSecret());
