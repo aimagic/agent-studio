@@ -17,7 +17,9 @@ import com.openjiuwen.studio.agent.manager.entity.ReleaseVersion;
 import com.openjiuwen.studio.agent.manager.mapper.AgentMapper;
 import com.openjiuwen.studio.agent.manager.mapper.MappingMapper;
 import com.openjiuwen.studio.agent.manager.mapper.ReleaseVersionMapper;
+import com.openjiuwen.studio.agent.manager.mapper.SkillMapper;
 import com.openjiuwen.studio.agent.manager.mapper.WorkflowMapper;
+import com.openjiuwen.studio.agent.manager.bo.SkillDetails;
 import com.openjiuwen.studio.agent.manager.obs.MgObsService;
 import com.openjiuwen.studio.agent.manager.workflow.resource.model.RuntimeAssetManifest;
 import com.openjiuwen.studio.agent.manager.workflow.resource.model.RuntimeAssetManifest.ManifestAsset;
@@ -80,6 +82,9 @@ public class RuntimeAssetExporter {
 
     @Autowired
     private WorkflowMapper workflowMapper;
+
+    @Autowired
+    private SkillMapper skillMapper;
 
     @Autowired
     private MgObsService mgObsService;
@@ -472,12 +477,22 @@ public class RuntimeAssetExporter {
             for (String irPath : childIrPaths) {
                 String type = irPath.startsWith("workflow/") ? TYPE_WORKFLOW_IR : TYPE_AGENT_IR;
                 String rid = parseResourceIdFromIrKey(irPath);
-                // bug007 #1：子 IR ir_path 必须归属当前 workspace（防 IR 可构造路径跨租户读取他人 IR）。
-                // bug007 #2：先校验合法性 + 归属，通过再 remove 旧 asset；不通过则保留 t_mapping 合法版本，不静默缺失。
-                if (!isValidAssetKey(irPath, type) || !isOwnedChildIr(rid, type)) {
-                    log.warn("runtime_asset_export_child_ir_skipped|ir_path={}|resource_id={}|reason=invalid_or_unowned",
+                // bug007 #1：子 IR ir_path 合法性（防路径遍历/跨租户 OBS 读取）是主防线，必须通过。
+                // 巡检 #6：归属校验（isOwnedChildIr）放宽为仅 warn 不跳过 —— IR 在 OBS 是全局共享存储
+                // （agent/ir/{rid}/... 无 workspaceId，见 buildAgentIrKey），跨 workspace 共享子 IR 本就是
+                // 合法场景（本 PR"不调 filterShareResource、运行态按父 IR ir_path 加载共享子资源"）。
+                // isOwnedChildIr 按 (projectId,workspaceId,rid) 查库会漏掉跨 workspace 共享子 IR，导致其版本
+                // 不对齐、运行态加载失败。故归属不通过仅 warn 记录，仍进版本对齐；路径非法才 continue。
+                // 安全保证：ir_path 须合法前缀（agent/ir/、workflow/ir/），rid 是 UUID 不可枚举，无法构造他人路径。
+                if (!isValidAssetKey(irPath, type)) {
+                    log.warn("runtime_asset_export_child_ir_skipped|ir_path={}|resource_id={}|reason=invalid_key",
                         irPath, rid);
                     continue;
+                }
+                if (!isOwnedChildIr(rid, type)) {
+                    log.warn("runtime_asset_export_child_ir_cross_workspace|ir_path={}|resource_id={}|reason=not_owned_by_workspace",
+                        irPath, rid);
+                    // 跨 workspace 共享子 IR：不跳过，仍按父 IR ir_path 对齐版本（运行态按此加载）
                 }
                 ManifestAsset existing = (rid != null) ? irByResourceId.get(rid) : null;
                 if (existing != null) {
@@ -747,7 +762,7 @@ public class RuntimeAssetExporter {
                 if (authKeys != null) {
                     for (String authKey : authKeys) {
                         if (StringUtils.isNotBlank(authKey)) {
-                            addAsset(assets, collectedKeys, authKey, TYPE_MODEL_AUTH);
+                            addAsset(assets, collectedKeys, authKey, TYPE_MODEL_AUTH, false);
                         }
                     }
                 }
@@ -757,7 +772,7 @@ public class RuntimeAssetExporter {
             return;
         }
         String authKey = String.format("model-auth/auth/%s/%s/%s.json", authProjectId, providerId, authId);
-        addAsset(assets, collectedKeys, authKey, TYPE_MODEL_AUTH);
+        addAsset(assets, collectedKeys, authKey, TYPE_MODEL_AUTH, false);
     }
 
     /**
@@ -903,18 +918,22 @@ public class RuntimeAssetExporter {
         return value;
     }
 
+    private ManifestAsset addAsset(List<ManifestAsset> assets, Set<String> collectedKeys, String key, String type) {
+        return addAsset(assets, collectedKeys, key, type, true);
+    }
+
     /**
-     * 添加资产到清单（去重）。critical（根 IR/metadata 缺失终止）由 buildZipWithManifest
-     * 通过 isCriticalAsset 判断，此处不标记。
-     */
-    /**
-     * 添加资产到清单（去重 + 路径合法性校验）。critical（根 IR/metadata 缺失终止）由 buildZipWithManifest
-     * 通过 isCriticalAsset 判断，此处不标记。
+     * 添加资产到清单（去重 + 路径合法性校验）。
      * <p>路径校验（bug005 #2）：IR 内容（skill_path / ir_path / reference.path）可被构造（如导入的智能体包），
      * 未校验直接作为 OBS key 读取 + ZIP entry 名写入 → 跨租户 OBS 读取泄露 / Zip Slip 解压越界。
      * {@link #isValidAssetKey} 拒绝绝对路径、.. 路径段、反斜杠、控制字符；非法 key 记 warn 跳过（不入包、不读 OBS）。
+     * <p>超限处理（巡检 #6）：failOnLimit=true（critical 资产：根 IR/metadata/IR/model-service 等）超限仍抛异常
+     * （防恶意/异常 IR 在上限前触发大量 OBS 读取 DoS）；failOnLimit=false（非 critical 资产：model-auth 笛卡尔积
+     * 产生的可能不存在的 key）超限仅记 warn 跳过，不整体失败 —— model-auth 缺失标 missing 继续，符合
+     * isCriticalAsset 语义，避免合法笛卡尔积（如 10×10）误判 EXPORT_LENGTH_TOO_LARGE 整体失败。
      */
-    private ManifestAsset addAsset(List<ManifestAsset> assets, Set<String> collectedKeys, String key, String type) {
+    private ManifestAsset addAsset(List<ManifestAsset> assets, Set<String> collectedKeys, String key, String type,
+        boolean failOnLimit) {
         if (!isValidAssetKey(key, type)) {
             if (StringUtils.isNotBlank(key)) {
                 log.warn("runtime_asset_export_invalid_key_skipped|key={}|type={}", key, type);
@@ -924,12 +943,18 @@ public class RuntimeAssetExporter {
         if (!collectedKeys.add(key)) {
             return null; // 已收集（去重）
         }
-        // bug007 #3：上限前置校验。原 max-assets 校验在全部收集完成后才触发（collectIrDerivedAssets
-        // 工作队列 + collectModelAuthFromIrs 笛卡尔积可在上限生效前累积大量资产 + OBS getObject）。
-        // addAsset 是所有资产入清单的单一收口点，在此提前校验，防恶意/异常 IR 在上限前触发大量 OBS 读取（DoS）。
+        // bug007 #3 + 巡检 #6：上限前置校验。addAsset 是所有资产入清单的单一收口点，在此提前校验，
+        // 防恶意/异常 IR 在上限前触发大量 OBS 读取（DoS）。critical 资产超限抛异常；非 critical 资产
+        // （model-auth 笛卡尔积）超限记 warn 跳过，避免合法导出因笛卡尔积数量误判整体失败。
         if (assets.size() >= maxAssets) {
-            throw new AgentStudioException(StudioError.EXPORT_LENGTH_TOO_LARGE,
-                "assets count " + assets.size() + " exceeds max " + maxAssets);
+            if (failOnLimit) {
+                throw new AgentStudioException(StudioError.EXPORT_LENGTH_TOO_LARGE,
+                    "assets count " + assets.size() + " exceeds max " + maxAssets);
+            }
+            log.warn("runtime_asset_export_limit_skip|key={}|type={}|current={}|max={}",
+                key, type, assets.size(), maxAssets);
+            collectedKeys.remove(key); // 撤回去重标记，避免占用 collectedKeys 配额却不入清单
+            return null; // 非 critical 资产超限，跳过不整体失败（缺失标 missing 继续）
         }
         ManifestAsset asset = new ManifestAsset();
         asset.setType(type);
@@ -1028,24 +1053,45 @@ public class RuntimeAssetExporter {
     }
 
     /**
-     * 校验 skill_path 是否归属当前用户（bug007 #1，防跨用户读取他人技能）。
+     * 校验 skill_path 是否归属当前 workspace（bug007 #1 防跨用户读取 + 巡检 #5 修过严）。
      * <p>skill_path 格式 {@code {userId}/skills/{skillId}/{version}/{name}.zip}
      * （[CommonConstant.Skill.SKILL_VERSION_FILE_PATH_TEMPLATE](../../constant/CommonConstant.java)）。
-     * 首段（`/` 前的 userId）必须等于当前请求用户 ID。
-     * @return true 归属当前用户；false 不归属或无法判定（调用方跳过该 skill）
+     * <p>原 bug007 #1 仅校验首段 userId == 当前请求用户，跨用户共享/团队级技能（同 workspace 不同 userId
+     * 创建）被静默丢弃，与本 PR"支持共享子资源"定位冲突（巡检 #5）。改为 workspace 级校验：从 skill_path
+     * 提取 skillId（第 2 段），{@link SkillMapper#searchBySkillIds} 查库，校验其 workspaceId == 当前 workspace。
+     * 仍防跨租户（攻击者无法导出其他 workspace 的技能），但不误杀同 workspace 内跨用户共享技能。
+     * @return true 归属当前 workspace；false 不归属或无法判定（调用方跳过该 skill，fail-closed）
      */
     private boolean isOwnedSkillPath(String skillPath) {
         if (StringUtils.isBlank(skillPath)) {
             return false;
         }
-        String pathUserId;
-        int slashIdx = skillPath.indexOf('/');
-        pathUserId = (slashIdx > 0) ? skillPath.substring(0, slashIdx) : skillPath;
-        String currentUserId = RequestContextUtils.getRequestUserId();
-        if (StringUtils.isBlank(currentUserId)) {
+        // skill_path 格式 {userId}/skills/{skillId}/{version}/{name}.zip，取第 2 段 skillId
+        String[] parts = skillPath.split("/");
+        if (parts.length < 3 || !"skills".equals(parts[1])) {
+            return false; // 非标准 skill_path 格式，无法提取 skillId → fail-closed
+        }
+        String skillId = parts[2];
+        if (StringUtils.isBlank(skillId)) {
+            return false;
+        }
+        String projectId = RequestContextUtils.getRequestProjectId();
+        String workspaceId = RequestContextUtils.getRequestWorkspaceId();
+        if (StringUtils.isBlank(projectId) || StringUtils.isBlank(workspaceId)) {
             return false; // 无法校验归属 → fail-closed
         }
-        return currentUserId.equals(pathUserId);
+        try {
+            List<SkillDetails> skills = skillMapper.searchBySkillIds(List.of(skillId));
+            if (skills == null || skills.isEmpty()) {
+                return false; // skill 不存在或不归属 → fail-closed
+            }
+            // 校验 skill 归属当前 workspace（任一匹配即放行，skillId 全局唯一通常只返回 1 条）
+            return skills.stream().anyMatch(s -> workspaceId.equals(s.getWorkspaceId()));
+        } catch (Exception e) {
+            log.warn("isOwnedSkillPath ownership check failed, skillPath={}. {}. skip skill.",
+                skillPath, e.getMessage());
+            return false; // 查库异常 → fail-closed
+        }
     }
 
     /**

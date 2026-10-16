@@ -16,7 +16,9 @@ import com.openjiuwen.studio.agent.manager.entity.WorkflowEntity;
 import com.openjiuwen.studio.agent.manager.mapper.AgentMapper;
 import com.openjiuwen.studio.agent.manager.mapper.MappingMapper;
 import com.openjiuwen.studio.agent.manager.mapper.ReleaseVersionMapper;
+import com.openjiuwen.studio.agent.manager.mapper.SkillMapper;
 import com.openjiuwen.studio.agent.manager.mapper.WorkflowMapper;
+import com.openjiuwen.studio.agent.manager.bo.SkillDetails;
 import com.openjiuwen.studio.agent.manager.obs.MgObsService;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -67,6 +69,7 @@ class RuntimeAssetExporterTest {
     private PublishUtils publishUtils;
     private AgentMapper agentMapper;
     private WorkflowMapper workflowMapper;
+    private SkillMapper skillMapper;
     private RuntimeAssetExporter exporter;
 
     private static final String PROJECT_ID = "proj-001";
@@ -83,6 +86,7 @@ class RuntimeAssetExporterTest {
         publishUtils = mock(PublishUtils.class);
         agentMapper = mock(AgentMapper.class);
         workflowMapper = mock(WorkflowMapper.class);
+        skillMapper = mock(SkillMapper.class);
         exporter = new RuntimeAssetExporter();
         ReflectionTestUtils.setField(exporter, "mappingMapper", mappingMapper);
         ReflectionTestUtils.setField(exporter, "mgObsService", mgObsService);
@@ -90,6 +94,7 @@ class RuntimeAssetExporterTest {
         ReflectionTestUtils.setField(exporter, "publishUtils", publishUtils);
         ReflectionTestUtils.setField(exporter, "agentMapper", agentMapper);
         ReflectionTestUtils.setField(exporter, "workflowMapper", workflowMapper);
+        ReflectionTestUtils.setField(exporter, "skillMapper", skillMapper);
         // @PostConstruct 不会在 new 时触发，手动初始化默认配置 + Semaphore（与 application-manager.yml 默认值一致）
         ReflectionTestUtils.setField(exporter, "maxAssets", 100);
         ReflectionTestUtils.setField(exporter, "maxConcurrent", 5);
@@ -447,7 +452,7 @@ class RuntimeAssetExporterTest {
     @Test
     void testSkillBinary_readStreamNotTextChannel() throws Exception {
         mockDefaultAgent();
-        // bug007 #1：skill_path userId 必须匹配 getRequestUserId（mock 返回 testUser）
+        // 巡检 #5：skill_path 归属校验改为 workspace 级（SkillMapper.searchBySkillIds 查 workspaceId）
         String skillPath = "testUser/skills/sk-1/v1/skill.zip";
         String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
         // 根 IR 内嵌 skill_info.skill_path
@@ -455,6 +460,10 @@ class RuntimeAssetExporterTest {
         // 技能 ZIP 二进制：含非法 UTF-8 字节（经文本通道会损坏/抛异常）
         byte[] skillBytes = new byte[] {(byte) 0x80, (byte) 0xFF, 0x01, 0x02, (byte) 0xC0, (byte) 0xC1, 0x7F, 0x00};
         when(mgObsService.readObsFileStream(skillPath)).thenReturn(new ByteArrayInputStream(skillBytes));
+        // skill 归属当前 workspace（isOwnedSkillPath 查 SkillMapper.searchBySkillIds）
+        SkillDetails skillDetail = new SkillDetails();
+        skillDetail.setWorkspaceId(WORKSPACE_ID);
+        when(skillMapper.searchBySkillIds(List.of("sk-1"))).thenReturn(List.of(skillDetail));
         try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
@@ -547,6 +556,10 @@ class RuntimeAssetExporterTest {
         // skill 走二进制流（不 mock 则标 missing 不入包，无法断言）
         when(mgObsService.readObsFileStream(skillPath))
             .thenReturn(new ByteArrayInputStream(new byte[] {0x41, 0x42, 0x43}));
+        // 巡检 #5：skill 归属校验改 workspace 级（SkillMapper.searchBySkillIds 查 workspaceId）
+        SkillDetails skillDetail = new SkillDetails();
+        skillDetail.setWorkspaceId(WORKSPACE_ID);
+        when(skillMapper.searchBySkillIds(List.of("sk-grd"))).thenReturn(List.of(skillDetail));
         try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
@@ -634,24 +647,122 @@ class RuntimeAssetExporterTest {
     }
 
     @Test
-    void testUnownedChildIr_rejected() throws Exception {
+    void testCrossWorkspaceChildIr_alignedNotRejected() throws Exception {
         mockDefaultAgent();
-        // 子 IR ir_path 的 resourceId 不归属当前 workspace → 拒绝（防跨 workspace 读取他人 IR）
+        // 巡检 #6：跨 workspace 共享子 IR 不再被拒绝，而是按父 IR ir_path 对齐版本导出
+        // （IR 在 OBS 全局共享，子 IR 跨 workspace 共享是合法场景；isOwnedChildIr 仅 warn 不跳过）
         String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
-        String unownedChildIr = "workflow/ir/other-wf/other-wf_v1.json";
-        when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithWorkflowsJson(unownedChildIr));
-        // override：other-wf 不归属当前 workspace → null
+        String crossWorkspaceChildIr = "workflow/ir/other-wf/other-wf_v1.json";
+        when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithWorkflowsJson(crossWorkspaceChildIr));
+        // other-wf 不归属当前 workspace → isOwnedChildIr 返回 false，但新逻辑仅 warn 不跳过
         when(workflowMapper.selectByWorkflowIds(eq(PROJECT_ID), eq(WORKSPACE_ID), anyList()))
             .thenReturn(new ArrayList<>());
+        // 子 IR 内容（合法路径通过 isValidAssetKey，仍被读取 + 入包）
+        when(mgObsService.getObject(crossWorkspaceChildIr)).thenReturn("{\"configs\":{}}");
         try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
             byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             Set<String> names = zipEntryNames(zip);
-            assertFalse(names.contains(unownedChildIr), "unowned child IR must NOT be in zip");
-            verify(mgObsService, never()).getObject(unownedChildIr);
+            // 跨 workspace 共享子 IR 仍进版本对齐 → 入包（不再被拒绝）
+            assertTrue(names.contains(crossWorkspaceChildIr), "cross-workspace shared child IR should be in zip (aligned, not rejected)");
+            verify(mgObsService, atLeast(1)).getObject(crossWorkspaceChildIr);
         }
+    }
+
+    // ===== 巡检 #5：skill 归属改 workspace 级（跨用户共享 skill 放行 / 跨 workspace skill 拒绝）=====
+
+    @Test
+    void testSkill_crossUserSharedInSameWorkspace_allowed() throws Exception {
+        mockDefaultAgent();
+        // 同 workspace、不同 userId 创建的 skill（跨用户共享）→ workspace 级校验放行
+        String skillPath = "otherUser/skills/sk-shared/v1/skill.zip";
+        String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
+        when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithSkillJson(skillPath));
+        when(mgObsService.readObsFileStream(skillPath))
+            .thenReturn(new ByteArrayInputStream(new byte[] {0x41}));
+        // skill 归属当前 workspace（searchBySkillIds 返回 workspaceId 匹配）→ 放行
+        SkillDetails skillDetail = new SkillDetails();
+        skillDetail.setWorkspaceId(WORKSPACE_ID);
+        when(skillMapper.searchBySkillIds(List.of("sk-shared"))).thenReturn(List.of(skillDetail));
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            Set<String> names = zipEntryNames(zip);
+            // 跨用户共享 skill（同 workspace）→ 放行入包（不再因 userId 不同被丢弃）
+            assertTrue(names.contains(skillPath), "cross-user shared skill in same workspace should be in zip");
+        }
+    }
+
+    @Test
+    void testSkill_crossWorkspace_rejected() throws Exception {
+        mockDefaultAgent();
+        // 跨 workspace 的 skill（workspaceId 不匹配）→ fail-closed 跳过
+        String skillPath = "otherUser/skills/sk-other-ws/v1/skill.zip";
+        String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
+        when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithSkillJson(skillPath));
+        // skill 属于其他 workspace → isOwnedSkillPath 返回 false → 跳过
+        SkillDetails skillDetail = new SkillDetails();
+        skillDetail.setWorkspaceId("other-workspace");
+        when(skillMapper.searchBySkillIds(List.of("sk-other-ws"))).thenReturn(List.of(skillDetail));
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            Set<String> names = zipEntryNames(zip);
+            // 跨 workspace skill → fail-closed 拒绝（不入包、不读 OBS 字节流）
+            assertFalse(names.contains(skillPath), "cross-workspace skill must NOT be in zip");
+            verify(mgObsService, never()).readObsFileStream(skillPath);
+        }
+    }
+
+    // ===== 巡检 #6：model-auth 笛卡尔积超 max-assets 不整体失败（非 critical 超限跳过）=====
+
+    @Test
+    void testModelAuthCartesian_exceedsMax_notOverallFailure() throws Exception {
+        mockDefaultAgent();
+        // 把 max-assets 设为很小（如 5），让 model-auth 笛卡尔积快速超限
+        ReflectionTestUtils.setField(exporter, "maxAssets", 5);
+        String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
+        // 根 IR 内嵌多个 authId + 引用 model-service
+        when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithAuthIdsJson("auth-1", "auth-2", "auth-3"));
+        // model-service 配置
+        String msKey = "model-service/ir/ms-1.json";
+        when(mgObsService.getObject(msKey)).thenReturn(modelServiceJson("prov-1", PROJECT_ID, null));
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            // model-auth 笛卡尔积超 max-assets（5）→ 非 critical 资产跳过，不抛 EXPORT_LENGTH_TOO_LARGE
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            assertNotNull(zip, "export should succeed even if model-auth cartesian product exceeds max-assets");
+            Set<String> names = zipEntryNames(zip);
+            // critical 资产（根 IR/metadata）仍在 zip 内
+            assertTrue(names.contains(rootIrKey), "root IR (critical) should still be in zip");
+        }
+    }
+
+    /** 根 IR 内嵌多个 extension.authId（用于笛卡尔积超限测试）。 */
+    private String agentIrWithAuthIdsJson(String... authIds) {
+        Map<String, Object> ir = new HashMap<>();
+        ir.put("agentId", AGENT_ID);
+        List<Map<String, Object>> models = new ArrayList<>();
+        for (String authId : authIds) {
+            Map<String, Object> ext = new HashMap<>();
+            ext.put("authId", authId);
+            Map<String, Object> model = new HashMap<>();
+            model.put("modelName", "ms-1");
+            model.put("extension", ext);
+            models.add(model);
+        }
+        Map<String, Object> configs = new HashMap<>();
+        configs.put("models", models);
+        ir.put("configs", configs);
+        return com.alibaba.fastjson2.JSON.toJSONString(ir);
     }
 
     // ===== bug007 #2：版本冲突先校验，非法 ir_path 保留 t_mapping 合法版本（不静默缺失）=====
