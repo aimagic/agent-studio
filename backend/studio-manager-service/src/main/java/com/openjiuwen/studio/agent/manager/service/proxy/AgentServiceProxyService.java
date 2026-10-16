@@ -540,7 +540,7 @@ public class AgentServiceProxyService {
 
     /**
      * 将文本中出现的加密变量明文替换为固定掩码。
-     * 覆盖长短不一的密钥值（不再按长度跳过），并同时替换其在 JSON 中的转义形态，
+     * 覆盖长短不一的密钥值（不按长度跳过），并同时替换其在 JSON 中的转义形态，
      * 避免含引号/换行等特殊字符的密钥以转义字面量形式残留在回显中。
      */
     private String maskSecretText(String text, Set<String> secretValues) {
@@ -555,13 +555,23 @@ public class AgentServiceProxyService {
             if (StringUtils.isEmpty(secretValue)) {
                 continue;
             }
-            masked = masked.replace(secretValue, ENV_VAR_SECRET_MASK);
+            masked = maskStandaloneToken(masked, secretValue);
             String escaped = toJsonEscaped(secretValue);
             if (!escaped.equals(secretValue)) {
-                masked = masked.replace(escaped, ENV_VAR_SECRET_MASK);
+                masked = maskStandaloneToken(masked, escaped);
             }
         }
         return masked;
+    }
+
+    /**
+     * 按 token 边界替换密钥值：仅替换两侧均非字母/数字/下划线的独立出现。
+     * 短密钥（如 "1"、"a"）不会把回显 URL/响应体/错误信息中夹在长 token 内的相同字符整体破坏，
+     * 同时独立出现的短密钥（如 JSON 值 "1"）仍会被脱敏，兼顾安全约定与回显可读性。
+     */
+    private String maskStandaloneToken(String text, String secretValue) {
+        Pattern pattern = Pattern.compile("(?<![A-Za-z0-9_])" + Pattern.quote(secretValue) + "(?![A-Za-z0-9_])");
+        return pattern.matcher(text).replaceAll(ENV_VAR_SECRET_MASK);
     }
 
     /**
@@ -597,15 +607,15 @@ public class AgentServiceProxyService {
     private EnvVarResolveResult resolveEnvVarParams(String projectId, String workspaceId, String pluginId, String toolId,
         String parameter) {
         EnvVarResolveResult result = new EnvVarResolveResult(parameter);
-        if (StringUtils.isEmpty(parameter)) {
-            return result;
-        }
-        JSONObject paramJson;
-        try {
-            paramJson = JSONObject.parseObject(parameter);
-        } catch (Exception e) {
-            log.warn("[runTool] parse parameter failed when resolving env vars, skip. error={}", e.getMessage());
-            return result;
+        // parameter 为空（如调试接口被直接调用）时按空对象处理，保证必填绑定参数的缺失拦截不被绕过
+        JSONObject paramJson = new JSONObject();
+        if (StringUtils.hasText(parameter)) {
+            try {
+                paramJson = JSONObject.parseObject(parameter);
+            } catch (Exception e) {
+                log.warn("[runTool] parse parameter failed when resolving env vars, skip. error={}", e.getMessage());
+                return result;
+            }
         }
         Map<String, EnvVarBinding> envRefMap = extractEnvVarRefs(projectId, workspaceId, pluginId, toolId);
         // 仅在绑定字段内收集运行时占位符 ${_env.plugin_url_params.NAME}，且引用名须与绑定变量一致

@@ -376,14 +376,43 @@ export class PluginDebugModalComponent {
     // 加密环境变量字段保留 ****** 展示（通过必填校验），提交时替换为运行时占位符，
     // 由后端按默认环境解密解析；用户手填的值原样提交。
     this.requestArgToDynamicForm.forEach((item: any) => {
-      if (!item?.env_var_ref || !item?.envVarBoundSecret) {
+      if (!item?.env_var_ref) {
         return;
       }
-      if (this.isUntouchedSecretField(item, params[item.name])) {
+      if (item.envVarBoundSecret && this.isUntouchedSecretField(item, params[item.name])) {
         params[item.name] = `${ENV_VAR_PLACEHOLDER_PREFIX}${item.env_var_ref}}`;
+        return;
+      }
+      // 变量缺失的非 string 绑定字段：动态表单会把空默认值强转为 0/false，被后端误判为用户已填；
+      // 未手动修改时不提交该字段，让后端按"空值"走缺失拦截（必填报错）/放行（非必填）逻辑
+      if (this.isMissingBoundVar(item.name) && this.isUntouchedCoercedDefault(item, params[item.name])) {
+        delete params[item.name];
       }
     });
     return params;
+  }
+
+  /** 判断参数绑定的环境变量是否在当前默认环境中缺失 */
+  private isMissingBoundVar(paramName: string): boolean {
+    return this.envVarMissingList.some((missing) => missing.paramName === paramName);
+  }
+
+  /**
+   * 判断非加密绑定字段是否仍为「未手动修改」的动态表单默认态。
+   * 动态表单会把空默认值强制转换（integer/number → 0，boolean → false），用户未编辑（pristine）时
+   * 这些值不代表用户输入；用户手输的 0/false（控件已 dirty）原样提交。
+   */
+  private isUntouchedCoercedDefault(item: any, submitted: any): boolean {
+    if (this.dynamicFormIns?.isControlPristine(item?.name) !== true) {
+      return false;
+    }
+    if (item?.type === 'integer' || item?.type === 'number') {
+      return typeof submitted === 'number' && (Number.isNaN(submitted) || submitted === 0);
+    }
+    if (item?.type === 'boolean') {
+      return submitted === false;
+    }
+    return false;
   }
 
   /**
@@ -396,7 +425,9 @@ export class PluginDebugModalComponent {
    */
   private isUntouchedSecretField(item: any, submitted: any): boolean {
     if (submitted === ENV_VAR_SECRET_MASK) {
-      return true;
+      // 掩码需结合 pristine 判定：用户手动输入的 ****** 原样提交（后端按掩码约定处理），
+      // 避免把用户输入误替换为运行时占位符，保证手动输入优先
+      return this.dynamicFormIns?.isControlPristine(item.name) === true;
     }
     if (item?.type === 'integer' || item?.type === 'number') {
       return (
