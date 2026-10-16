@@ -333,15 +333,26 @@ public class RuntimeAssetExporter {
             if (!visited.add(key)) {
                 continue;
             }
-            acc.add(m);
-            // 递归查子工作流/子智能体的 mapping
+            // 巡检 #8（@336）：子资源 resourceVersion 为 null（跟随 latest）时不递归收集依赖。
+            // selectByAppIdAndAppVersion 对 null appVersion 不追加版本过滤，会返回该资源所有版本
+            // （草稿 + 全部历史快照）的 mapping，造成依赖过度收集，且与根资源已解析的具体版本不一致，
+            // 可能把历史/草稿版本依赖打入运行包。null 版本子资源（非根，根已在 doExportRuntimeAssetZip
+            // 经 resolvePublishVersion 解析为具体版本）跳过递归，不进 acc，避免版本不一致污染。
             if (RES_TYPE_WORKFLOW.equals(m.getResourceType()) || RES_TYPE_AGENT.equals(m.getResourceType())
                 || RES_TYPE_CONTROLLER.equals(m.getResourceType())) {
+                if (StringUtils.isBlank(m.getResourceVersion())) {
+                    log.warn("runtime_asset_export_skip_null_version_mapping|resource_id={}|type={}|reason=null_version_not_resolved",
+                        m.getResourceId(), m.getResourceType());
+                    continue;
+                }
+                acc.add(m);
                 List<MappingEntity> childMappings =
                     mappingMapper.selectByAppIdAndAppVersion(m.getResourceId(), m.getResourceVersion(), null, null);
                 if (childMappings != null && !childMappings.isEmpty()) {
                     nextLevel.addAll(childMappings);
                 }
+            } else {
+                acc.add(m);
             }
         }
         if (!nextLevel.isEmpty()) {
@@ -501,8 +512,15 @@ public class RuntimeAssetExporter {
                     }
                     // 版本冲突：ir_path 为准，移除 t_mapping 版本，加入 ir_path 版本（校验已通过，安全 remove）
                     String oldVer = parseVersionFromIrKey(existing.getKey());
+                    String oldKey = existing.getKey();
                     assets.remove(existing);
-                    collectedKeys.remove(existing.getKey());
+                    collectedKeys.remove(oldKey);
+                    // 巡检 #9（@472/@489）：旧版本子 IR 从 worklist 移除并标记已处理，防止其继续被 poll
+                    // 处理产生陈旧派生（旧 skill/authId/child-ir 入包，与新 IR 版本错配）。
+                    // worklist.remove 是 O(n)，worklist 通常小（IR 数量个位数），可接受。
+                    // processedKeys.add(oldKey) 防止旧 IR 若已被 poll 但派生尚未清理时重复处理。
+                    worklist.remove(existing);
+                    processedKeys.add(oldKey);
                     ManifestAsset added = addAsset(assets, collectedKeys, irPath, type);
                     if (added != null) {
                         added.setNote("version aligned to parent IR ir_path; t_mapping version=" + oldVer);

@@ -509,6 +509,47 @@ class RuntimeAssetExporterTest {
         }
     }
 
+    // ===== 巡检 #9（@472/@489）：版本冲突时旧子 IR 从 worklist 移除，其派生资产不收集 =====
+
+    @Test
+    void testVersionConflict_staleIrRemovedFromWorklist() throws Exception {
+        mockDefaultAgent();
+        String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
+        String oldVerKey = "workflow/ir/sub-wf-001/sub-wf-001_old-ver-000.json";
+        String newVerKey = "workflow/ir/sub-wf-001/sub-wf-001_new-ver-999.json";
+        // 旧版本子 IR 引用旧 skill；新版本子 IR 引用新 skill（版本对齐后旧 IR 应移出 worklist，旧 skill 不收集）
+        String oldSkill = "testUser/skills/sk-old/v1/old.zip";
+        String newSkill = "testUser/skills/sk-new/v1/new.zip";
+        List<MappingEntity> mappings = new ArrayList<>();
+        mappings.add(mapping("workflow", "sub-wf-001", "old-ver-000"));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any())).thenReturn(mappings);
+        // 旧版本子 IR（含旧 skill_path）—— 版本对齐后被移除，不应被 poll 处理
+        when(mgObsService.getObject(oldVerKey)).thenReturn(workflowIrWithChildAndSkillJson(oldVerKey, oldSkill));
+        // 新版本子 IR（含新 skill_path）—— 入队被处理，新 skill 收集
+        when(mgObsService.getObject(newVerKey)).thenReturn(workflowIrWithChildAndSkillJson(newVerKey, newSkill));
+        when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithWorkflowsJson(newVerKey));
+        when(mgObsService.readObsFileStream(newSkill))
+            .thenReturn(new ByteArrayInputStream(new byte[] {0x41}));
+        // 两个 skill 都归属当前 workspace（区别仅在版本对齐是否收集旧 skill）
+        SkillDetails oldSkillDetail = new SkillDetails();
+        oldSkillDetail.setWorkspaceId(WORKSPACE_ID);
+        SkillDetails newSkillDetail = new SkillDetails();
+        newSkillDetail.setWorkspaceId(WORKSPACE_ID);
+        when(skillMapper.searchBySkillIds(List.of("sk-old"))).thenReturn(List.of(oldSkillDetail));
+        when(skillMapper.searchBySkillIds(List.of("sk-new"))).thenReturn(List.of(newSkillDetail));
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            Set<String> names = zipEntryNames(zip);
+            // 旧版本子 IR 的 skill 不应入包（旧 IR 从 worklist 移除，不再被处理）
+            assertFalse(names.contains(oldSkill), "stale skill from removed old-version sub-IR must NOT be in zip");
+            // 新版本子 IR 的 skill 入包
+            assertTrue(names.contains(newSkill), "new-version sub-IR skill should be in zip");
+        }
+    }
+
     // ===== bug004 #2：manifest 蛇形契约（@JsonProperty，fastjson2 会输出驼峰破坏契约）=====
 
     @Test
