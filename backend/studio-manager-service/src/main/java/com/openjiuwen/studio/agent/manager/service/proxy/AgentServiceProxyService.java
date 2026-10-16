@@ -685,10 +685,14 @@ public class AgentServiceProxyService {
 
     /**
      * 默认环境变量的加载结果：变量值映射 + 加载是否失败。
-     * 加载失败（未找到默认环境、缓存/DB 读取或解析异常）与“变量不存在”需区分处理，避免向用户返回错误的缺失提示。
+     * 加载失败（未找到默认环境、缓存/DB 读取或解析异常、解密失败且变量最终仍缺失）与“变量不存在”需区分处理，
+     * 避免向用户返回错误的缺失提示。
      */
     private static class LoadedEnvVars {
         private final Map<String, LoadedEnvVar> values = new HashMap<>();
+
+        /** 解密失败过的变量名：仅当该变量最终仍未解析出来时才算加载失败，避免缓存解密失败后 DB 回退成功仍误判 */
+        private final Set<String> decryptErrorNames = new LinkedHashSet<>();
 
         private boolean failed;
 
@@ -702,6 +706,19 @@ public class AgentServiceProxyService {
 
         void markFailed() {
             this.failed = true;
+        }
+
+        void addDecryptErrorName(String name) {
+            decryptErrorNames.add(name);
+        }
+
+        boolean hasDecryptErrorFor(Collection<String> names) {
+            for (String name : names) {
+                if (decryptErrorNames.contains(name)) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
@@ -1028,7 +1045,9 @@ public class AgentServiceProxyService {
             try {
                 EnvironmentVariableEntity byWorkspace =
                     environmentVariableMapper.findByProjectIdAndWorkspaceIdAndEnvId(projectId, workspaceId, envId);
-                if (byWorkspace != null && StringUtils.hasText(byWorkspace.getEnvVariable())) {
+                // 与缓存路径一致地排除空环境串 "{}"，避免其被按 List 反序列化抛异常误判为加载失败
+                if (byWorkspace != null && StringUtils.hasText(byWorkspace.getEnvVariable())
+                    && !"{}".equals(byWorkspace.getEnvVariable().trim())) {
                     parseAndFillEnvValues(byWorkspace.getEnvVariable(), names, loaded);
                 }
             } catch (Exception e) {
@@ -1040,8 +1059,9 @@ public class AgentServiceProxyService {
         missing.removeAll(loaded.getValues().keySet());
         if (!missing.isEmpty()) {
             log.warn("[runTool] env vars not found in default environment for project {}: {}", projectId, missing);
-            // 存在读取/解析异常时无法判定变量是否真的不存在，按加载失败处理，避免误报"变量不存在"
-            if (readError) {
+            // 读取异常、或这些缺失变量在缓存中解密失败时，无法判定变量是否真的不存在，按加载失败处理，避免误报"变量不存在"；
+            // DB 回退成功解析的变量已从 missing 中排除，缓存解密失败的标记不会误留
+            if (readError || loaded.hasDecryptErrorFor(missing)) {
                 loaded.markFailed();
             }
         }
@@ -1050,10 +1070,15 @@ public class AgentServiceProxyService {
 
     /**
      * 解析环境变量 JSON 并填充未命中的目标变量名，加密变量解密后写入。
-     * 解密失败说明变量值与当前密钥不匹配：不能把密文当作明文下发，标记加载失败由上层给出明确报错。
+     * 解密失败说明变量值与当前密钥不匹配：不能把密文当作明文下发，记为解密异常，
+     * 由上层在变量最终仍缺失时判定为加载失败（DB 回退成功解析则不算失败）。
      * 变量值不做 trim，与前端 getEnvVariablesDetail 直接使用 content 的口径一致，保留首尾空格敏感的取值。
      */
     private void parseAndFillEnvValues(String envJson, Collection<String> names, LoadedEnvVars loaded) {
+        // 空环境（"{}"）不含任何变量，直接跳过，避免 McpJsonUtils.toList 按 List 反序列化抛异常被误判为加载失败
+        if (StringUtils.isEmpty(envJson) || "{}".equals(envJson.trim())) {
+            return;
+        }
         List<EnvironmentVariable> envVars = McpJsonUtils.toList(envJson, EnvironmentVariable.class);
         if (org.springframework.util.CollectionUtils.isEmpty(envVars)) {
             return;
@@ -1069,8 +1094,8 @@ public class AgentServiceProxyService {
                 try {
                     value = CryptoUtils.decrypt(value);
                 } catch (Exception e) {
-                    log.warn("[runTool] decrypt secret env var failed: {}, mark load failed", var.getName());
-                    loaded.markFailed();
+                    log.warn("[runTool] decrypt secret env var failed, record as unavailable: {}", var.getName());
+                    loaded.addDecryptErrorName(var.getName());
                     continue;
                 }
             }

@@ -120,7 +120,10 @@ public class UrlCheckUtils {
         try {
             parsedUri = new URI(trimmed);
         } catch (URISyntaxException e) {
-            log.error("Invalid URL syntax [{}]", url, e);
+            // URISyntaxException.getMessage() 会携带未脱敏的原始 URL，不能作为日志参数（会绕过脱敏），
+            // 只记录脱敏后的 url 与异常原因/位置
+            log.error("Invalid URL syntax [{}], reason: {} at index {}", SensitiveLogContext.mask(url), e.getReason(),
+                e.getIndex());
             throw new AgentStudioException(StudioError.INVALID_URL);
         }
         String scheme = parsedUri.getScheme();
@@ -176,7 +179,10 @@ public class UrlCheckUtils {
         try {
             parsedUri = new URI(trimmed);
         } catch (URISyntaxException e) {
-            log.error("Fail to parse url [{}]", SensitiveLogContext.mask(url), e);
+            // URISyntaxException.getMessage() 会携带未脱敏的原始 URL，不能作为日志参数（会绕过脱敏），
+            // 只记录脱敏后的 url 与异常原因/位置
+            log.error("Fail to parse url [{}], reason: {} at index {}", SensitiveLogContext.mask(url), e.getReason(),
+                e.getIndex());
             throw new AgentStudioException(StudioError.INVALID_URL);
         }
         String host = parsedUri.getHost();
@@ -333,7 +339,10 @@ public class UrlCheckUtils {
             }
             throw new AgentStudioException(StudioError.URL_WHITELIST_CHECK_ERROR);
         } catch (URISyntaxException e) {
-            log.error("Invalid URL: {}", url, e);
+            // URISyntaxException.getMessage() 会携带未脱敏的原始 URL，不能作为日志参数（会绕过脱敏），
+            // 只记录脱敏后的 url 与异常原因/位置
+            log.error("Invalid URL: {}, reason: {} at index {}", SensitiveLogContext.mask(url), e.getReason(),
+                e.getIndex());
             throw new AgentStudioException(StudioError.INVALID_URL);
         } catch (UnknownHostException e) {
             log.warn("can not get host [{}], url check interrupt", url);

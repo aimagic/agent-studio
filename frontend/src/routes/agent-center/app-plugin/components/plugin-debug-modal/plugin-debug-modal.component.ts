@@ -201,6 +201,9 @@ export class PluginDebugModalComponent {
           return;
         }
         if (!matched.content) {
+          // 变量存在但内容为空：同样视为不可解析，登记缺失清单，
+          // 避免非 string 字段被动态表单强转为 0/false 后当作手填值下发、后端跳过环境变量解析
+          this.envVarMissingList.push({ paramName: item.name, varName: item.env_var_ref });
           return;
         }
         item.value = { ...(item.value || {}), default: matched.content };
