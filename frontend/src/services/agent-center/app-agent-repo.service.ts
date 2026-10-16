@@ -246,14 +246,17 @@ export class AppAgentRepoService {
       })
       .catch((error) => {
         // 解析 Blob 错误体并提示；非 Blob 错误（网关超时/401/网络层失败等无响应体）兜底提示，避免静默失败
-        if (error?.data instanceof Blob) {
-          this.http.parseBlobError(error.data).subscribe({
+        // Angular responseType:'blob' 失败时错误体在 HttpErrorResponse.error；兼容 error.data 以防存在全局转换层。
+        const blobErr = error?.error instanceof Blob ? error.error
+          : (error?.data instanceof Blob ? error.data : null);
+        if (blobErr) {
+          this.http.parseBlobError(blobErr).subscribe({
             error: (err) => {
-              MessageComponent.showError(err?.error_msg);
+              MessageComponent.showError(err?.error_msg || err);
             },
           });
         } else {
-          MessageComponent.showError(error?.error_msg || error?.message);
+          MessageComponent.showError(error?.error?.error_msg || error?.error_msg || error?.message);
         }
         // rethrow：让调用方区分成功/失败。此前吞异常会导致组件 .then 误关弹窗、丢失用户选择
         throw error;

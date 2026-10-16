@@ -31,10 +31,17 @@ import lombok.extern.slf4j.Slf4j;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Component;
 
-import java.io.ByteArrayOutputStream;
+import java.io.FilterInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
@@ -141,13 +148,13 @@ public class RuntimeAssetExporter {
     private static final String RES_TYPE_SKILL = "skill";
 
     /**
-     * 导出运行时资产，返回 ZIP 字节流（供前端直接下载，不走 staging bucket）。
-     * 复用 doExportRuntimeAssetZip 的收集+打包逻辑，直接返回 ZIP 字节。
+     * 导出运行时资产，返回 ZIP 资源（供前端直接下载，不走 staging bucket）。
+     * 复用 doExportRuntimeAssetZip 的收集+打包逻辑；ZIP 先落临时文件，响应读取后删除，避免整包常驻内存。
      *
      * @param projectId    请求显式 projectId（与 RequestContext 校验一致性，防越权）
      * @param workspaceId  请求显式 workspaceId（与 RequestContext 校验一致性，防越权）
      */
-    public byte[] exportRuntimeAssetZip(String projectId, String workspaceId,
+    public Resource exportRuntimeAssetZip(String projectId, String workspaceId,
         String resourceType, String resourceId, String version) {
         // 越权校验：显式 projectId/workspaceId 必须与 RequestContext（拦截器从鉴权注入）一致。
         // bug005 #3：上下文为空时直接拒绝（fail-closed），不再放行——否则 validateResourceOwnership
@@ -210,7 +217,7 @@ public class RuntimeAssetExporter {
         }
     }
 
-    private byte[] doExportRuntimeAssetZip(String resourceType, String resourceId, String version) {
+    private Resource doExportRuntimeAssetZip(String resourceType, String resourceId, String version) {
         String projectId = RequestContextUtils.getRequestProjectId();
         String workspaceId = RequestContextUtils.getRequestWorkspaceId();
         String exportId = UUID.randomUUID().toString();
@@ -262,9 +269,11 @@ public class RuntimeAssetExporter {
             projectId, workspaceId, assets);
         boolean isHistoryExport = StringUtils.isNotBlank(version)
             && !Constants.LATEST_PUBLISH_VERSION.equals(version);
-        byte[] zipBytes = buildZipWithManifest(manifest, assets, rootIrKey, isHistoryExport, resolvedVersion, obsCache);
+        // 收集阶段缓存只用于避免重复 OBS 往返；打包前释放，避免全部文本资产随缓存常驻内存。
+        obsCache.clear();
+        Resource zipResource = buildZipWithManifest(manifest, assets, rootIrKey, isHistoryExport, resolvedVersion);
 
-        // 直接返回 ZIP 字节流（供前端下载，不走 staging bucket）
+        // 返回临时文件资源（供前端下载，不走 staging bucket）：写响应时流式读取，关流后删除临时文件。
         long durationMs = System.currentTimeMillis() - startMs;
         int missingCount = (int) assets.stream().filter(a -> "missing".equals(a.getStatus())).count();
         String status = missingCount == 0 ? "completed" : "completed_with_missing";
@@ -272,7 +281,7 @@ public class RuntimeAssetExporter {
             + "|asset_count={}|missing_count={}|duration_ms={}|total_size={}",
             exportId, resourceType, resourceId, status, assets.size(), missingCount, durationMs,
             manifest.getSummary().getTotalSizeBytes());
-        return zipBytes;
+        return zipResource;
     }
 
     /**
@@ -1083,16 +1092,16 @@ public class RuntimeAssetExporter {
      * <p>manifest.json 作为最后一个 entry 写入（summary 在资产循环内累计完成后回填）。
      * @param rootIrKey 根 IR 的 object key（用于区分根 IR vs 子 IR 的缺失处理）
      */
-    private byte[] buildZipWithManifest(RuntimeAssetManifest manifest, List<ManifestAsset> assets,
-        String rootIrKey, boolean isHistoryExport, String resolvedVersion, Map<String, String> obsCache) {
+    private Resource buildZipWithManifest(RuntimeAssetManifest manifest, List<ManifestAsset> assets,
+        String rootIrKey, boolean isHistoryExport, String resolvedVersion) {
         int missingCount = 0;
         long totalSize = 0;
         int irCount = 0, modelCount = 0, kbCount = 0, skillCount = 0, metadataCount = 0;
 
-        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
-             ZipOutputStream zos = new ZipOutputStream(baos)) {
+        Path zipPath = createTempZipFile();
+        try (ZipOutputStream zos = new ZipOutputStream(Files.newOutputStream(zipPath))) {
             for (ManifestAsset asset : assets) {
-                // 二进制资产（技能 ZIP）走字节流；其余文本资产走缓存 String
+                // 二进制资产（技能 ZIP）走字节流落盘；其余文本资产逐 asset 读取后直接写入
                 if (TYPE_SKILL.equals(asset.getType())) {
                     long[] sizeSha = streamBinaryAsset(zos, asset);
                     if (sizeSha == null) {
@@ -1111,7 +1120,7 @@ public class RuntimeAssetExporter {
                 // 文本资产
                 String content;
                 try {
-                    content = getCachedObject(asset.getKey(), obsCache);
+                    content = mgObsService.getObject(asset.getKey());
                 } catch (Exception e) {
                     if (isCriticalAsset(asset, rootIrKey)) {
                         throw new AgentStudioException(StudioError.EXPORT_RESOURCE_NOT_EXISTS,
@@ -1186,10 +1195,12 @@ public class RuntimeAssetExporter {
             zos.write(MANIFEST_MAPPER.writeValueAsBytes(manifest));
             zos.closeEntry();
             zos.finish();
-            return baos.toByteArray();
+            return new DeleteOnCloseFileSystemResource(zipPath);
         } catch (AgentStudioException e) {
+            deleteQuietly(zipPath);
             throw e;
         } catch (Exception e) {
+            deleteQuietly(zipPath);
             log.error("buildZipWithManifest error", e);
             throw new AgentStudioException(StudioError.WORKFLOW_EXPORT_FILE);
         }
@@ -1198,38 +1209,45 @@ public class RuntimeAssetExporter {
     /**
      * 读取二进制资产（技能 ZIP）并写入 ZIP entry（巡检 #1）。
      * <p>技能经文本通道 getObject 会 UTF-8 解码损坏二进制，故必须走 readObsFileStream 字节流。
-     * <p>内存策略：逐资产缓冲（同一时刻仅一个技能 ZIP 在内存），不将全部资产常驻——
-     * 对齐 SDD 4.5"避免 OOM"意图（原 dataList 把全部资产一次性载入，已移除）。
-     * <p>正确性：流式读取过程中若失败，已缓冲字节丢弃、不写 entry（避免 ZIP 残留半截损坏 entry
-     * 而 manifest 标 missing 的不一致）；仅在完整读取成功后写 entry。
+     * <p>内存策略：技能先流式落临时文件并计算 sha256，再从临时文件流式写入 ZIP；
+     * 不把技能 ZIP 读入内存缓冲，避免大体积技能导致内存峰值/OOM。
+     * <p>正确性：OBS 流读取失败/为空时不写 entry（避免 ZIP 残留半截损坏 entry）；仅在完整落盘后写 entry。
      * @return {size}（成功），null（失败/空，已标 missing，调用方计数）
      */
     private long[] streamBinaryAsset(ZipOutputStream zos, ManifestAsset asset) {
-        java.io.InputStream is = null;
-        try {
-            is = mgObsService.readObsFileStream(asset.getKey());
+        Path skillPath = null;
+        try (InputStream is = mgObsService.readObsFileStream(asset.getKey())) {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
-            ByteArrayOutputStream buf = new ByteArrayOutputStream();
-            byte[] buffer = new byte[8192];
-            int n;
-            while ((n = is.read(buffer)) != -1) {
-                buf.write(buffer, 0, n);
-                md.update(buffer, 0, n);
+            skillPath = Files.createTempFile("runtime-asset-skill-", ".zip");
+            long size = 0;
+            try (OutputStream out = Files.newOutputStream(skillPath)) {
+                byte[] buffer = new byte[8192];
+                int n;
+                while ((n = is.read(buffer)) != -1) {
+                    out.write(buffer, 0, n);
+                    md.update(buffer, 0, n);
+                    size += n;
+                }
             }
-            byte[] data = buf.toByteArray();
-            if (data.length == 0) {
+            if (size == 0) {
                 asset.setStatus("missing");
                 asset.setErrorReason("OBS object empty");
                 asset.setSha256(null);
                 return null;
             }
             zos.putNextEntry(new ZipEntry(asset.getKey()));
-            zos.write(data);
+            try (InputStream in = Files.newInputStream(skillPath)) {
+                byte[] buffer = new byte[8192];
+                int n;
+                while ((n = in.read(buffer)) != -1) {
+                    zos.write(buffer, 0, n);
+                }
+            }
             zos.closeEntry();
-            asset.setSize(data.length);
+            asset.setSize(size);
             asset.setSha256(hexDigest(md));
             asset.setStatus("ok");
-            return new long[] {data.length};
+            return new long[] {size};
         } catch (Exception e) {
             log.warn("runtime_asset_export_asset_missing|key={}|type={}|reason={}",
                 asset.getKey(), asset.getType(), e.getMessage());
@@ -1238,13 +1256,51 @@ public class RuntimeAssetExporter {
             asset.setSha256(null);
             return null;
         } finally {
-            if (is != null) {
-                try {
-                    is.close();
-                } catch (Exception ignore) {
-                    // 关流失败不影响导出
+            deleteQuietly(skillPath);
+        }
+    }
+
+    private Path createTempZipFile() {
+        try {
+            return Files.createTempFile("runtime-asset-export-", ".zip");
+        } catch (IOException e) {
+            log.error("create runtime asset export temp file failed", e);
+            throw new AgentStudioException(StudioError.WORKFLOW_EXPORT_FILE);
+        }
+    }
+
+    private static void deleteQuietly(Path path) {
+        if (path == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(path);
+        } catch (Exception ignore) {
+            // 临时文件清理失败不影响导出主流程
+        }
+    }
+
+    /** 响应写完后删除临时 ZIP 的 FileSystemResource（contentLength 仍走文件元数据，不消耗流）。 */
+    private static final class DeleteOnCloseFileSystemResource extends FileSystemResource {
+        private final Path path;
+
+        private DeleteOnCloseFileSystemResource(Path path) {
+            super(path);
+            this.path = path;
+        }
+
+        @Override
+        public InputStream getInputStream() throws IOException {
+            return new FilterInputStream(Files.newInputStream(path)) {
+                @Override
+                public void close() throws IOException {
+                    try {
+                        super.close();
+                    } finally {
+                        deleteQuietly(path);
+                    }
                 }
-            }
+            };
         }
     }
 

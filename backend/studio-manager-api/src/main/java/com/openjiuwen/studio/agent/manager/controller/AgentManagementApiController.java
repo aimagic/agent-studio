@@ -158,7 +158,7 @@ public class AgentManagementApiController implements AgentManagementApi {
     @Override
     public ResponseEntity<org.springframework.core.io.Resource> exportRuntimeAsset(String projectId,
         String workspaceId, RuntimeAssetExportParams body) {
-        byte[] zipBytes = agentManagementService.exportRuntimeAssetZip(
+        Resource zipResource = agentManagementService.exportRuntimeAssetZip(
             projectId, workspaceId,
             body.getResourceType(), body.getResourceId(), body.getVersion());
         String fileName = body.getResourceType() + "_" + body.getResourceId() + "_runtime_asset.zip";
@@ -167,7 +167,7 @@ public class AgentManagementApiController implements AgentManagementApi {
         return ResponseEntity.ok()
             .header("Content-Disposition", "attachment;filename=" + encoded + ";filename*=utf-8''" + encoded)
             .header("Content-Type", "application/zip")
-            .body(new org.springframework.core.io.ByteArrayResource(zipBytes));
+            .body(zipResource);
     }
 
     @Override

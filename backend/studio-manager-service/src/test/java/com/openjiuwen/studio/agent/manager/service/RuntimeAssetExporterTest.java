@@ -146,6 +146,17 @@ class RuntimeAssetExporterTest {
             .thenReturn("export/url.zip");
     }
 
+    /** 调导出并消费 ZIP 资源：读完全部字节触发临时文件删除，避免测试泄漏临时文件。 */
+    private byte[] exportZipBytes(String projectId, String workspaceId, String resourceType, String resourceId,
+        String version) {
+        try (java.io.InputStream in = exporter.exportRuntimeAssetZip(projectId, workspaceId, resourceType, resourceId,
+            version).getInputStream()) {
+            return in.readAllBytes();
+        } catch (java.io.IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     // ===== SDD 8.3: 版本解析 =====
 
     @Test
@@ -155,7 +166,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            byte[] zipBytes = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            byte[] zipBytes = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             // 断言 resolvedVersion 传给了 mapper（非 null/latest）
             verify(mappingMapper).selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any());
             assertNotNull(zipBytes);
@@ -168,7 +179,7 @@ class RuntimeAssetExporterTest {
         try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
-            assertThrows(Exception.class, () -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            assertThrows(Exception.class, () -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
         }
     }
 
@@ -190,7 +201,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            assertDoesNotThrow(() -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, VERSION));
+            assertDoesNotThrow(() -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, VERSION));
         }
     }
 
@@ -200,7 +211,7 @@ class RuntimeAssetExporterTest {
         try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
-            assertThrows(Exception.class, () -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, VERSION));
+            assertThrows(Exception.class, () -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, VERSION));
         }
     }
 
@@ -221,7 +232,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "workflow", wfId, null);
+            exportZipBytes(PROJECT_ID, WORKSPACE_ID, "workflow", wfId, null);
             // 断言读的是 workflow/ir/ 路径（收集阶段 + 打包阶段各读一次，atLeast）
             verify(mgObsService, atLeast(1)).getObject(wfIrKey);
         }
@@ -241,7 +252,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             verify(mgObsService, atLeast(1)).getObject(subWfIrKey);
         }
     }
@@ -265,7 +276,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             verify(mgObsService, atLeast(1)).getObject("model-service/ir/model-svc-001.json");
         }
     }
@@ -288,7 +299,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             // 平台模型 → authProjectId 用根应用 PROJECT_ID 而非 SYSTEM
             verify(mgObsService).getObject("model-auth/auth/" + PROJECT_ID + "/prov-001/auth-001.json");
         }
@@ -307,7 +318,7 @@ class RuntimeAssetExporterTest {
         try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
-            assertThrows(Exception.class, () -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            assertThrows(Exception.class, () -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
         }
     }
 
@@ -332,7 +343,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            assertDoesNotThrow(() -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, "old-version-111"));
+            assertDoesNotThrow(() -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, "old-version-111"));
         }
     }
 
@@ -348,7 +359,7 @@ class RuntimeAssetExporterTest {
         try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
-            assertThrows(Exception.class, () -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            assertThrows(Exception.class, () -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
         } finally {
             sem.release(5);
         }
@@ -364,7 +375,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             // 请求传篡改的 projectId，与 RequestContext 不一致 → 抛越权异常
             AgentStudioException ex = assertThrows(AgentStudioException.class,
-                () -> exporter.exportRuntimeAssetZip("evil-project", WORKSPACE_ID, "agent", AGENT_ID, null));
+                () -> exportZipBytes("evil-project", WORKSPACE_ID, "agent", AGENT_ID, null));
             // 验证抛的是越权错误码（而非其他 AgentStudioException，防误判）
             assertEquals(StudioError.USER_WORKSPACE_PERMISSION_INVALID, ex.getErrorCode());
         }
@@ -378,7 +389,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             // 请求传篡改的 workspaceId，与 RequestContext 不一致 → 抛越权异常
             AgentStudioException ex = assertThrows(AgentStudioException.class,
-                () -> exporter.exportRuntimeAssetZip(PROJECT_ID, "evil-workspace", "agent", AGENT_ID, null));
+                () -> exportZipBytes(PROJECT_ID, "evil-workspace", "agent", AGENT_ID, null));
             assertEquals(StudioError.USER_WORKSPACE_PERMISSION_INVALID, ex.getErrorCode());
         }
     }
@@ -393,7 +404,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn("");
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
             AgentStudioException ex = assertThrows(AgentStudioException.class,
-                () -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+                () -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
             assertEquals(StudioError.USER_WORKSPACE_PERMISSION_INVALID, ex.getErrorCode());
         }
     }
@@ -410,7 +421,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
             // 配 0 兜底为 1 → 能拿到许可 → 不抛 busy 异常
-            assertDoesNotThrow(() -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            assertDoesNotThrow(() -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
         }
     }
 
@@ -426,7 +437,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             AgentStudioException ex = assertThrows(AgentStudioException.class,
-                () -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+                () -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
             assertEquals(StudioError.USER_WORKSPACE_PERMISSION_INVALID, ex.getErrorCode());
         }
     }
@@ -448,7 +459,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             assertNotNull(zip);
             // 关键断言：技能不走文本通道（getObject/UTF-8 解码会损坏二进制）
             verify(mgObsService, never()).getObject(skillPath);
@@ -478,7 +489,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             Set<String> names = zipEntryNames(zip);
             // ir_path 胜出：new-ver 入包，old-ver 不入包
             assertTrue(names.contains(newVerKey), "ir_path version should be in zip");
@@ -498,7 +509,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             byte[] manifestBytes = extractZipEntry(zip, "manifest.json");
             assertNotNull(manifestBytes, "manifest.json should exist in zip");
             String manifest = new String(manifestBytes, java.nio.charset.StandardCharsets.UTF_8);
@@ -540,7 +551,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             Set<String> names = zipEntryNames(zip);
             // 版本对齐后的 new-ver 子 IR 重新进入抽取 → 其更深层 child IR 被收集（bug004 #3）
             verify(mgObsService, atLeast(1)).getObject(grandchildKey);
@@ -564,7 +575,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             Set<String> names = zipEntryNames(zip);
             // 恶意路径不入包（防 Zip Slip 解压越界）
             assertFalse(names.contains(maliciousSkill), "traversal skill_path must NOT be in zip");
@@ -591,7 +602,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             Set<String> names = zipEntryNames(zip);
             // 跨租户前缀路径不入包
             assertFalse(names.contains(crossTenantSkill), "cross-tenant skill_path must NOT be in zip");
@@ -615,7 +626,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             Set<String> names = zipEntryNames(zip);
             assertFalse(names.contains(unownedSkill), "unowned skill_path must NOT be in zip");
             verify(mgObsService, never()).readObsFileStream(unownedSkill);
@@ -636,7 +647,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             Set<String> names = zipEntryNames(zip);
             assertFalse(names.contains(unownedChildIr), "unowned child IR must NOT be in zip");
             verify(mgObsService, never()).getObject(unownedChildIr);
@@ -661,7 +672,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            byte[] zip = exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             Set<String> names = zipEntryNames(zip);
             // t_mapping 合法版本保留（未被非法 ir_path 替换/移除）
             assertTrue(names.contains(validMappingKey), "valid t_mapping version must be kept");
@@ -688,7 +699,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
             // 根 IR + metadata = 2，子 IR 第 3 个触发 EXPORT_LENGTH_TOO_LARGE
             AgentStudioException ex = assertThrows(AgentStudioException.class,
-                () -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+                () -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
             assertEquals(StudioError.EXPORT_LENGTH_TOO_LARGE, ex.getErrorCode());
         }
     }
@@ -711,7 +722,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
             // 损坏 model-service 非根资产 → 不抛 500，导出正常完成（根 IR + metadata 入包）
             byte[] zip = assertDoesNotThrow(
-                () -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+                () -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
             Set<String> names = zipEntryNames(zip);
             // 根 IR + metadata 仍入包（导出未被破坏）
             assertTrue(names.contains("agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json"),
@@ -736,7 +747,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
             byte[] zip = assertDoesNotThrow(
-                () -> exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+                () -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
             Set<String> names = zipEntryNames(zip);
             // KB 引用文件本身仍入包（收集阶段已 addAsset），但 KB 连接不收集（parse 失败跳过）
             // 关键断言：损坏 KB 非根资产 → 不抛 500，导出正常完成
@@ -766,7 +777,7 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
             mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
-            exporter.exportRuntimeAssetZip(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             // auth_id_list 中的 authId 对应的 model-auth 被收集
             verify(mgObsService, atLeast(1)).getObject("model-auth/auth/" + PROJECT_ID + "/prov-1/auth-a.json");
             verify(mgObsService, atLeast(1)).getObject("model-auth/auth/" + PROJECT_ID + "/prov-1/auth-b.json");

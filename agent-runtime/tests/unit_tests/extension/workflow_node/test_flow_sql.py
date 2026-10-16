@@ -1,10 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: UTF-8 -*-
+# pylint: disable=protected-access
 """FlowSql MANAGER_NOT_DEPLOYED 前置检查测试（bug005 #1）。
 
 运行态未部署 manager（AGENT_MANAGER_ENDPOINT 为空）时，SQL 节点应在发起 HTTP 前抛
 101755 友好提示，而非拼出空 host URL 导致连接错误。错误码 101755 的中英文 i18n
 消息由 ErrorContextBuilder 按 code 查 runtime-msg_{lang}.properties 解析。
+
+protected-access：本测试直接调用 _call_execute_api 以精确验证其内置前置检查
+（MANAGER_NOT_DEPLOYED），与 test_cache_utils.py 同一约定；invoke 会包装异常与
+输出格式，无法精确断言前置检查行为。
 """
 from unittest.mock import AsyncMock, MagicMock, patch
 

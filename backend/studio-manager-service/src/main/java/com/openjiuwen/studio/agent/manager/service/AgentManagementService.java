@@ -4031,7 +4031,7 @@ public class AgentManagementService implements IAgentManagementService {
     }
 
     @Override
-    public byte[] exportRuntimeAssetZip(String projectId, String workspaceId,
+    public Resource exportRuntimeAssetZip(String projectId, String workspaceId,
         String resourceType, String resourceId, String version) {
         return runtimeAssetExporter.exportRuntimeAssetZip(projectId, workspaceId,
             resourceType, resourceId, version);
