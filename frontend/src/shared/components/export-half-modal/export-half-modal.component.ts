@@ -364,16 +364,23 @@ export class ExportHalfModalComponent implements OnInit {
       return;
     }
     this.submitting = true;
-    if (this.nzData.confirm && typeof this.nzData.confirm === 'function') {
-      this.nzData.confirm({
+    try {
+      if (this.nzData.confirm && typeof this.nzData.confirm === 'function') {
+        this.nzData.confirm({
+          type: this.exportType,
+          rows: this.selectedRows,
+        });
+      }
+      this.confirm.emit({
         type: this.exportType,
         rows: this.selectedRows,
       });
+    } catch (e) {
+      // 回调异常时复位 submitting，避免按钮被永久禁用，用户可在抽屉内重试
+      this.submitting = false;
+      console.error('[ExportHalfModal] handleExport failed:', e);
+      return;
     }
-    this.confirm.emit({
-      type: this.exportType,
-      rows: this.selectedRows,
-    });
     this.modalRef.close();
   }
   public close() {

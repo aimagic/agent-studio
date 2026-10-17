@@ -30,7 +30,7 @@ import { PipesModule } from '../../../pipes/pipes.module';
 import { NoDataGuideComponentComponent } from '@shared/components/no-data-guide/no-data-guide.component';
 import { NzModalService } from 'ng-zorro-antd/modal';
 import { NzMessageService } from 'ng-zorro-antd/message';
-import { NzDrawerService } from 'ng-zorro-antd/drawer';
+import { NzDrawerRef, NzDrawerService } from 'ng-zorro-antd/drawer';
 import { NzTableModule } from 'ng-zorro-antd/table';
 import { NzTagModule } from 'ng-zorro-antd/tag';
 import { NzPaginationModule } from 'ng-zorro-antd/pagination';
@@ -617,7 +617,14 @@ export class PromptTemplateComponent implements OnInit, OnDestroy {
     this.openModalRef = drawerRef;
   }
 
+  /** 导出抽屉引用，用于防止连点重复打开导出抽屉 */
+  private exportDrawerRef: NzDrawerRef | null = null;
+
   public exportTemplate() {
+    // 防止连点打开多个导出抽屉
+    if (this.exportDrawerRef) {
+      return;
+    }
     this.closeCurrentModal();
     const drawerRef = this.nzDrawerService.create({
       nzWidth: '700px',
@@ -649,6 +656,10 @@ export class PromptTemplateComponent implements OnInit, OnDestroy {
       nzClosable: true,
       nzMaskClosable: true,
       nzZIndex: 10000,
+    });
+    this.exportDrawerRef = drawerRef;
+    drawerRef.afterClose.subscribe(() => {
+      this.exportDrawerRef = null;
     });
     this.cdr.detectChanges();
   }

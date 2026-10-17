@@ -34,7 +34,7 @@ import { NoDataGuideComponentComponent } from '@shared/components/no-data-guide/
 import { MultiFieldSearchComponent, ISearchTag } from '@shared/components/multi-field-search/multi-field-search.component';
 import { DebounceDecorators } from '@shared/decorators/debouncing-throttling.directive';
 import { NzModalService } from 'ng-zorro-antd/modal';
-import { NzDrawerService } from 'ng-zorro-antd/drawer';
+import { NzDrawerRef, NzDrawerService } from 'ng-zorro-antd/drawer';
 enum mapKeys {
   TYPE = 'type',
   VISIBILITY = 'visibility',
@@ -526,8 +526,15 @@ export class ComponentLibraryComponent implements OnInit, OnDestroy {
     instance.importTypeOptions = [];
   }
 
+  /** 导出抽屉引用，用于防止连点重复打开导出抽屉 */
+  private exportDrawerRef: NzDrawerRef | null = null;
+
   /** 导出工作流或插件 */
   public exportTool() {
+    // 防止连点打开多个导出抽屉
+    if (this.exportDrawerRef) {
+      return;
+    }
     const drawerRef = this.nzDrawerService.create({
       nzContent: ExportHalfModalComponent,
       nzWidth: this.halfModalWidth,
@@ -555,6 +562,10 @@ export class ComponentLibraryComponent implements OnInit, OnDestroy {
             });
         },
       },
+    });
+    this.exportDrawerRef = drawerRef;
+    drawerRef.afterClose.subscribe(() => {
+      this.exportDrawerRef = null;
     });
   }
 
