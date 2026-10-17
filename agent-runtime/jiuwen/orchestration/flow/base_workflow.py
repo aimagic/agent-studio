@@ -450,7 +450,9 @@ class SwitchNode(Node):
             elif isinstance(func, ast.Attribute):
                 yield func.attr + "("
         elif isinstance(node, ast.Lambda):
-            yield "lambda"
+            # 产出 "lambda:" 以保证 dangerous_keywords 中的 r"lambda\s*:" 能命中；
+            # 否则骨架里只有 "lambda"（无冒号），lambda 表达式会被放行
+            yield "lambda:"
         for child in ast.iter_child_nodes(node):
             yield from self._iter_identifiers(child)
 
@@ -525,6 +527,13 @@ class SwitchNode(Node):
                 return False
             # Check the object part (e.g., os in os.system)
             if not self._is_ast_safe(func.value):
+                return False
+
+        else:
+            # 被调用对象既不是 Name 也不是 Attribute（如 Lambda、Subscript、
+            # 嵌套 Call）时，递归校验 func 本身，避免 (lambda: 0)()、arr[0]()
+            # 这类表达式绕过安全检查
+            if not self._is_ast_safe(func):
                 return False
 
         return all(self._is_ast_safe(arg) for arg in node.args) and all(
