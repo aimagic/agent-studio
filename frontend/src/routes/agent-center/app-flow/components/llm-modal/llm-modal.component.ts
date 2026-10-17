@@ -1,5 +1,5 @@
 import { Component, ElementRef, EventEmitter, Input, OnDestroy, OnInit, Output, ViewChild, ChangeDetectorRef } from '@angular/core';
-import { FormBuilder, NgForm } from '@angular/forms';
+import { AbstractControl, FormBuilder, NgForm } from '@angular/forms';
 import { I18nNamespace } from '@i18n';
 import { RefSelectedRequireDirective } from '@shared/directives/common-validator.directive';
 import {
@@ -697,19 +697,29 @@ export class LLMModalComponent extends ModalBaseComponent implements OnInit, OnD
 
   onNameChange() {
     window.setTimeout(() => {
-      // 改名后重跑同组控件的校验：Angular 仅在控件自身值变化时才重跑该校验器，
-      // 改掉冲突一方时，另一方（曾冲突、自身值未变）不会自动重跑，会残留"重复"误报。
-      // 对整个表单调用 updateValueAndValidity 可让所有兄弟控件用最新的 existingValues 重新校验。
-      this.inputForm?.form?.updateValueAndValidity({ emitEvent: false });
-      this.outputForm?.form?.updateValueAndValidity({ emitEvent: false });
+      // 改名后重跑同组兄弟控件的校验：Angular 模板驱动校验器仅在控件"自身值变化"时才重跑，
+      // 消除一次冲突（改掉冲突一方）时，曾冲突、自身值未变的一方不会自动重跑，会残留"重复"误报。
+      // 关键：FormGroup.updateValueAndValidity() 只重跑 FormGroup 自身校验并向上冒泡，
+      // 不会向下遍历重跑子 FormControl 的校验器，因此必须逐个对 FormControl 调用
+      // updateValueAndValidity() 才能真正清除兄弟控件的残留误报。setTimeout 确保此前由
+      // input 事件触发的 change detection 已用最新数据刷新了各控件的 existingValues 绑定。
+      const forms: (NgForm | undefined)[] = [this.inputForm, this.outputForm];
       if (this.isVisionModel) {
-        this.inputFormVision?.form?.updateValueAndValidity({ emitEvent: false });
+        forms.push(this.inputFormVision);
       }
-      this.inputForm?.form?.markAsDirty();
-      this.outputForm?.form?.markAsDirty();
-      if (this.isVisionModel) {
-        this.inputFormVision?.form?.markAsDirty();
-      }
+      forms.forEach(form => {
+        const group = form?.form;
+        if (!group) {
+          return;
+        }
+        const controls = group.controls;
+        const controlList: AbstractControl[] =
+          controls instanceof Map ? Array.from(controls.values()) : Object.values(controls);
+        controlList.forEach((control: AbstractControl) => {
+          control.updateValueAndValidity({ emitEvent: false });
+        });
+        group.markAsDirty();
+      });
     });
   }
 
