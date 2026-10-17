@@ -692,11 +692,19 @@ export class LLMModalComponent extends ModalBaseComponent implements OnInit, OnD
     if (names && names.indexOf(param.name) > -1) {
       names.splice(names.indexOf(param.name), 1);
     }
-    return { existingValues: names };
+    return { existingValues: names ?? [] };
   }
 
   onNameChange() {
     window.setTimeout(() => {
+      // 改名后重跑同组控件的校验：Angular 仅在控件自身值变化时才重跑该校验器，
+      // 改掉冲突一方时，另一方（曾冲突、自身值未变）不会自动重跑，会残留"重复"误报。
+      // 对整个表单调用 updateValueAndValidity 可让所有兄弟控件用最新的 existingValues 重新校验。
+      this.inputForm?.form?.updateValueAndValidity({ emitEvent: false });
+      this.outputForm?.form?.updateValueAndValidity({ emitEvent: false });
+      if (this.isVisionModel) {
+        this.inputFormVision?.form?.updateValueAndValidity({ emitEvent: false });
+      }
       this.inputForm?.form?.markAsDirty();
       this.outputForm?.form?.markAsDirty();
       if (this.isVisionModel) {
