@@ -356,7 +356,7 @@ export class ExportHalfModalComponent implements OnInit {
     this.modalRef.close();
   }
 
-  private submitting = false;
+  public submitting = false;
 
   public handleExport() {
     // 防止连点导致 confirm/emit 重复触发
