@@ -619,10 +619,12 @@ export class PromptTemplateComponent implements OnInit, OnDestroy {
 
   /** 导出抽屉引用，用于防止连点重复打开导出抽屉 */
   private exportDrawerRef: NzDrawerRef | null = null;
+  /** 异步导出进行中标记，用于覆盖「抽屉关闭后、导出完成前」的防重窗口 */
+  private exporting = false;
 
   public exportTemplate() {
-    // 防止连点打开多个导出抽屉
-    if (this.exportDrawerRef) {
+    // 防止连点打开多个导出抽屉；异步导出进行中也禁止再次触发
+    if (this.exportDrawerRef || this.exporting) {
       return;
     }
     this.closeCurrentModal();
@@ -641,6 +643,7 @@ export class PromptTemplateComponent implements OnInit, OnDestroy {
           },
         ],
         confirm: ({ rows }: any) => {
+          this.exporting = true;
           this.service.exportPromptTmplV2(rows.map((row: any) => row.template_id)).subscribe({
             next: (res: any) => {
               CommonUtils.downloadFile(
@@ -649,6 +652,12 @@ export class PromptTemplateComponent implements OnInit, OnDestroy {
                 }),
                 res.headers.get('Content-Disposition')
               );
+            },
+            complete: () => {
+              this.exporting = false;
+            },
+            error: () => {
+              this.exporting = false;
             },
           });
         },

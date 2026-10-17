@@ -528,11 +528,13 @@ export class ComponentLibraryComponent implements OnInit, OnDestroy {
 
   /** 导出抽屉引用，用于防止连点重复打开导出抽屉 */
   private exportDrawerRef: NzDrawerRef | null = null;
+  /** 异步导出进行中标记，用于覆盖「抽屉关闭后、导出完成前」的防重窗口 */
+  private exporting = false;
 
   /** 导出工作流或插件 */
   public exportTool() {
-    // 防止连点打开多个导出抽屉
-    if (this.exportDrawerRef) {
+    // 防止连点打开多个导出抽屉；异步导出进行中也禁止再次触发
+    if (this.exportDrawerRef || this.exporting) {
       return;
     }
     const drawerRef = this.nzDrawerService.create({
@@ -550,6 +552,7 @@ export class ComponentLibraryComponent implements OnInit, OnDestroy {
           },
         ],
         confirm: ({ rows }) => {
+          this.exporting = true;
           this.appPluginRepoServ
             .exportPlugins({
               tool_ids: rows.map(row => row.plugin_id),
@@ -559,6 +562,12 @@ export class ComponentLibraryComponent implements OnInit, OnDestroy {
                 return;
               }
               CommonUtils.downloadFile(new Blob([res], { type: 'application/json' }), `plugin-${this.commonLogic.getFormattedDateTime()}.jsonl`, true);
+            })
+            .catch(() => {
+              // 导出异常静默处理，避免阻断后续重试
+            })
+            .finally(() => {
+              this.exporting = false;
             });
         },
       },
