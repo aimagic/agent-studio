@@ -356,7 +356,14 @@ export class ExportHalfModalComponent implements OnInit {
     this.modalRef.close();
   }
 
+  private submitting = false;
+
   public handleExport() {
+    // 防止连点导致 confirm/emit 重复触发
+    if (this.submitting) {
+      return;
+    }
+    this.submitting = true;
     if (this.nzData.confirm && typeof this.nzData.confirm === 'function') {
       this.nzData.confirm({
         type: this.exportType,
