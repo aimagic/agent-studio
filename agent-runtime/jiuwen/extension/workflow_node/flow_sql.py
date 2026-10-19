@@ -87,7 +87,9 @@ class FlowSql(WorkflowComponent):
     _INLINE_PATTERN = re.compile(r"""\{\{\{(\w+)\}\}\}""")
     _PARAM_PATTERN = re.compile(r"""['"]?\{\{(\w+)\}\}['"]?""")
 
-    _INLINE_ALLOWED_CHARS = re.compile(r"""^[a-zA-Z0-9_.,() \t-]+$""")
+    _INLINE_ALLOWED_CHARS = re.compile(
+        r"""^[a-zA-Z0-9_.,() \t*=<>'"/+%!?;:-]+$"""
+    )
     _INLINE_FORBIDDEN_KEYWORDS = re.compile(
         r"""\b(DROP|DELETE|TRUNCATE|ALTER|CREATE|INSERT|UPDATE|UNION|EXEC|EXECUTE|"""
         r"""GRANT|REVOKE|MERGE|CALL|DECLARE|CURSOR|FUNCTION|PROCEDURE|"""
@@ -99,8 +101,8 @@ class FlowSql(WorkflowComponent):
     def _validate_inline_value(cls, key: str, value: Any) -> str:
         """验证 {{{variable}}} 内联替换的值，防止 SQL 注入。
 
-        只允许字母、数字、下划线、点、逗号、括号、空格、连字符，
-        并禁止任何 DDL/DML 写操作及危险函数关键词。
+        允许常见 SQL 语法字符（字母、数字、标点、运算符等），
+        但禁止 SQL 注释、多语句执行及 DDL/DML 写操作关键词。
         """
         str_value = str(value).strip()
         if not str_value:
@@ -115,8 +117,7 @@ class FlowSql(WorkflowComponent):
                 error_code=FlowSqlStatusCode.SQL_INJECTION_BLOCKED.value[0],
                 message=FlowSqlStatusCode.SQL_INJECTION_BLOCKED.value[1].format(
                     key=key,
-                    detail="contains disallowed characters (only alphanumerics, "
-                    "underscore, dot, comma, parentheses, hyphen, space allowed)",
+                    detail="contains disallowed characters " "(only alphanumerics and common SQL operators allowed)",
                 ),
             )
         if "--" in str_value:

@@ -320,8 +320,8 @@ public class PluginAdapterImpl implements IPlugin {
 
     @Override
     public boolean isNewTool(PluginEntity pluginEntity) {
-        if (pluginEntity == null) {
-            return false; // 或抛出异常，视业务而定
+        if (pluginEntity == null || pluginEntity.getRequestInfo() == null) {
+            return false;
         }
         return pluginEntity.getRequestInfo().contains("basic_info");
     }
