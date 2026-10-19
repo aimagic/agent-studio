@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from typing import Any, AsyncIterable, AsyncIterator, Dict, Optional
 
 from jiuwen.common.exception.base import JiuWenBaseException
@@ -145,6 +146,15 @@ class FlowStreamTransform(Invokable):
         else:
             # Legacy transformer mode
             cfg = AsyncDictStreamTransformConfig.from_dict(self._transformer_conf)
+            # Clear src_path for pure placeholder variables so whole frame is returned
+            if self._direct_assign_output and self._source_field:
+                new_vars = [
+                    replace(v, src_path="")
+                    if v.name == self._source_field and v.src_path == v.name
+                    else v
+                    for v in cfg.variables
+                ]
+                cfg = replace(cfg, variables=new_vars)
             transformer = AsyncDictStreamTransformer(cfg)
             out_stream = transformer.transform(self._iter_dict_frames(origin_stream))
 

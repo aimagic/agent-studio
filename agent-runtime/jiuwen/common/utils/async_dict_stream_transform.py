@@ -391,8 +391,8 @@ class AsyncDictStreamTransformer:
     def _build_frame_from_template(self, in_frame: Dict[str, Any]) -> Dict[str, Any]:
         values: Dict[str, Any] = {}
         for vdef in self._cfg.variables:
-            # When src_path equals name (e.g. "_input"), return the whole frame
-            if vdef.src_path == vdef.name:
+            # When src_path is empty, return the whole frame
+            if not vdef.src_path:
                 v = in_frame
             else:
                 v = self._read_src(in_frame, vdef.src_path, default=vdef.default)
