@@ -244,7 +244,7 @@ When `auth_system_user_ids` is configured, if the userId returned by SSO matches
 > - The configured userId will gain **unrestricted access to all existing workspaces**, bypassing all role and permission checks, equivalent to a global administrator
 > - Tokens must be held only by pipeline/automation systems, **not issued to frontend users**. Store in CI/CD secret management or K8s Secret
 > - **Never** set `auth_system_user_ids` to `unknown` (the default value when SSO does not return a userId), otherwise all requests without a userId will gain skip-permission access
-> - System users still need a valid SSO Token (token expiration returns 401), and still pass workspaceId format validation and workspace existence checks
+> - System users still need a valid SSO Token (token expiration returns 401; when SSO is unavailable, falls back to 300-second cache, same as regular users), and still pass workspaceId format validation and workspace existence checks
 > - System user operations are recorded by `@OperationLog` and `@DistributedLock`, traceable via logs
 
 ### Rollback and Disable

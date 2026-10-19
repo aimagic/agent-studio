@@ -244,7 +244,7 @@ byte[] genIV(String cipherName)
 > - 配置的 userId 将获得**所有已存在工作区**的无限制访问能力，跳过全部角色与权限校验，等同于全局管理员
 > - Token 仅限流水线/自动化系统持有，**不下发前端用户**，建议存储于 CI/CD 密钥管理或 K8s Secret
 > - **严禁**将 `auth_system_user_ids` 设为 `unknown`（SSO 未返回 userId 时的默认值），否则所有未返回 userId 的请求都会获得免校验权限
-> - 系统用户仍需携带有效 SSO Token（token 失效则 401），仍需通过 workspaceId 格式校验和空间存在性校验
+> - 系统用户仍需携带有效 SSO Token（token 失效则 401；SSO 故障时降级使用 300 秒内缓存，与普通用户一致），仍需通过 workspaceId 格式校验和空间存在性校验
 > - 系统用户操作已由 `@OperationLog` 和 `@DistributedLock` 记录，可通过日志追溯
 
 ### 回退与关闭
