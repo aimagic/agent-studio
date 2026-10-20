@@ -6,12 +6,19 @@ from typing import List
 
 from common_utils.common_config import RedisSettings
 from common_utils.redis_manager import RedisClientManager
-from redis_spi import accessor
-from redis_spi.types import Duration
 from agent_builder.adapter.logger_rt_bridge import logger as rt_logger
 from agent_builder.adapter.singleton import Singleton
 
 from .base import BaseConversationMemory
+
+try:
+    from redis_spi import accessor
+    from redis_spi.types import Duration
+except ImportError:  # 适配层包未安装（独立环境）：server_fastapi 启动期
+    # 回退 legacy 客户端；本模块的异步存储路径不可用——调用期显式
+    # 报错，而非 import 期即崩（否则 server_fastapi 的回退分支不可达）
+    accessor = None
+    Duration = None
 
 
 class HistoryStorage(metaclass=Singleton):
@@ -63,6 +70,11 @@ class AsyncHistoryStorage(metaclass=Singleton):
 
     async def _get_async_redis_client(self):
         if AsyncHistoryStorage._async_redis_client is None:
+            if accessor is None:
+                raise RuntimeError(
+                    "redis adapter packages not installed; "
+                    "async history storage requires redis_spi"
+                )
             AsyncHistoryStorage._async_redis_client = accessor.get_redis()
         return AsyncHistoryStorage._async_redis_client
 
@@ -200,6 +212,11 @@ class AsyncSessionStorage(metaclass=Singleton):
     @staticmethod
     async def _get_async_redis_client():
         if AsyncSessionStorage._async_redis_client is None:
+            if accessor is None:
+                raise RuntimeError(
+                    "redis adapter packages not installed; "
+                    "async session storage requires redis_spi"
+                )
             AsyncSessionStorage._async_redis_client = accessor.get_redis()
         return AsyncSessionStorage._async_redis_client
 

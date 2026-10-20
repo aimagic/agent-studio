@@ -30,17 +30,18 @@
 
 - **核心必选**（`RedisClient` 协议，所有 Provider 必须实现）：
   `KeyCommands`（exists/delete/expire/ttl/persist…）、`StringCommands`（get/set/mget/mset…）、
-  `HashCommands`、`ListCommands`、`SetCommands`、`ZSetCommands`、`ScanCommands`、pipeline、`ping`。
+  `HashCommands`、`ListCommands`、`SetCommands`、`ScanCommands`、pipeline、`ping`。
 - **可选能力组**（`supports()` 声明，按声明跑批）：`CounterCapability`、`SortedSetCapability`、
   `BitmapCapability`、`HyperLogLogCapability`、`GeoCapability`、`ScriptingCapability`、
   `PubSubCapability`、`BlockingCommands`。
+  （注：ZSet 命令属可选能力组 `SortedSetCapability`，不在核心必选面——与 protocols.py 一致）
 
 ### 2.2 类型与语义约定
 
 | 约定 | 内容 |
 |---|---|
 | 值类型 | 默认 **bytes**（对齐 redis-py `decode_responses=False`）；`REDIS_TEXT_MODE=true` 可切 text 视图（memory_server 场景） |
-| TTL | 显式 `Duration` 类型（`Duration.seconds(n)` / `Duration.of_millis(ms)`），禁止裸 int |
+| TTL | 显式 `Duration` 类型（`Duration.seconds(n)` / `Duration.milliseconds(ms)`），禁止裸 int |
 | SET 条件 | `condition=SetCondition.NX / XX`（替代 redis-py `nx=True`） |
 | 返回哨兵 | key 缺失 → `get` 返回 `None`；`lrange` 返回 `[]`；计数器不存在从 0 起 |
 | pipeline | 运行期命令错误不回滚已执行命令（与 redis-py 语义一致） |
@@ -174,7 +175,7 @@ REDIS_CONTRACT_TARGET=127.0.0.1:6379 REDIS_CONTRACT_PASSWORD=*** \
 
 | 后端 | redis-py 8.1.0 | redis-py 6.4.0 |
 |---|---|---|
-| native × 真实 Redis | 71/71 | 71/71 |
+| native × 真实 Redis | 71/71（阻塞超时浮点缺陷修复**前**的口径：fakeredis 宽容浮点掩盖了真实 Redis 整数秒要求——PR 评审复现推翻本行结论；修复后经真实 Redis 定向实证阻塞路径恢复，全量重验待 CI 接入） | 同左 |
 | 委托层替身 | 49 过 | 49 过 |
 | native 单测 | 202/202 | 202/202 |
 
