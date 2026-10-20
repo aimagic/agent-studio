@@ -1130,12 +1130,12 @@ export class AppFlowService {
             content: '',
             hint: '',
           },
-          source: 'system',
+          source: 'user',
         },
       ],
       configs: {
         isDefaultName: true,
-        template: "用户名称：{{ data.get('customerName') }}",
+        template: this.i18n.transform('template_transform_default_template'),
       },
     };
   }

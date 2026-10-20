@@ -22,9 +22,24 @@ def test_render_for_and_if():
     assert text == "a,b"
 
 
+def test_literal_double_underscore_text_allowed():
+    text = render_jinja("Markdown __bold__ and field __init__ ok", {})
+    assert text == "Markdown __bold__ and field __init__ ok"
+
+
+def test_dict_key_with_dunder_name_allowed():
+    text = render_jinja("{{ data.get('__init__') }}", {"data": {"__init__": "ok"}})
+    assert text == "ok"
+
+
 def test_block_dunder_attribute():
     with pytest.raises(TemplateRenderError, match="forbidden dunder access"):
         render_jinja("{{ ''.__class__ }}", {})
+
+
+def test_block_private_attribute():
+    with pytest.raises(TemplateRenderError, match="forbidden dunder access"):
+        render_jinja("{{ obj._secret }}", {"obj": type("O", (), {"_secret": "x"})()})
 
 
 def test_block_include_import_extends():

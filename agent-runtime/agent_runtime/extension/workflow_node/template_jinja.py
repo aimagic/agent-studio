@@ -18,15 +18,21 @@ class TemplateRenderError(ValueError):
     """模板语法、安全策略或渲染失败。"""
 
 
+def _has_forbidden_attr_access(parsed: nodes.Template) -> bool:
+    """拒绝 AST 中对 _ / __ 开头属性的访问，避免误杀正文里的双下划线文本。"""
+    for node in parsed.find_all(nodes.Getattr):
+        attr = getattr(node, "attr", None)
+        if isinstance(attr, str) and attr.startswith("_"):
+            return True
+    return False
+
+
 def render_jinja(template: str, variables: dict[str, Any]) -> str:
-    """用 SandboxedEnvironment 渲染。拒绝 include/import/extends，并拦住 _ 属性访问。"""
+    """用 SandboxedEnvironment 渲染。拒绝 include/import/extends，并按 AST 拦住私有属性访问。"""
     if not isinstance(template, str) or not template.strip():
         raise TemplateRenderError("template must be a non-empty string")
     if not isinstance(variables, dict):
         raise TemplateRenderError("template variables must be a dict")
-    # 沙箱对单独的 {{ ''.__class__ }} 会静默渲染成空串，这里先按字面拦截双下划线。
-    if "__" in template:
-        raise TemplateRenderError("forbidden dunder access")
 
     env = SandboxedEnvironment(autoescape=False)
     try:
@@ -37,6 +43,9 @@ def render_jinja(template: str, variables: dict[str, Any]) -> str:
     forbidden = next(parsed.find_all(_FORBIDDEN_TAGS), None)
     if forbidden is not None:
         raise TemplateRenderError(f"forbidden jinja tag: {type(forbidden).__name__}")
+
+    if _has_forbidden_attr_access(parsed):
+        raise TemplateRenderError("forbidden dunder access")
 
     try:
         rendered = env.from_string(template).render(**variables)
