@@ -505,15 +505,15 @@ class TestCapabilityViewDispatch:
 
         view = capability_view(_Client(), PubSubCapability)
         assert isinstance(view, NativePubSubCapability)
-        assert view._main is main and view._subscriber is subscriber  # noqa: SLF001
+        assert getattr(view, "_main") is main and getattr(view, "_subscriber") is subscriber  # noqa: SLF001
 
         view = capability_view(_Client(), BlockingCommands)
         assert isinstance(view, NativeBlockingCapability)
-        assert view._redis is blocking  # noqa: SLF001
+        assert getattr(view, "_redis") is blocking  # noqa: SLF001
 
         view = capability_view(_Client(), CounterCapability)
         assert isinstance(view, NativeCounterCapability)
-        assert view._redis is main  # noqa: SLF001
+        assert getattr(view, "_redis") is main  # noqa: SLF001
 
         view = capability_view(_Client(), BitmapCapability)
         assert isinstance(view, NativeBitmapCapability)

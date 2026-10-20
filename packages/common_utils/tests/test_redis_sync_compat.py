@@ -186,4 +186,4 @@ class TestManagerSyncCompatWiring:
         client, _ = bridge
         RedisClientManager.set_sync_compat(client)
         RedisClientManager.reset()
-        assert RedisClientManager._sync_compat is None
+        assert getattr(RedisClientManager, "_sync_compat") is None

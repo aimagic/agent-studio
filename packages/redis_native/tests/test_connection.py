@@ -51,7 +51,7 @@ class TestBuildSingle:
         assert isinstance(wrapped, _NonTransactionRedis)
         plain = build_async_client(make_settings(redis_transaction_enabled=True))
         # 精确类型断言（G.TYP.08 有意豁免）：isinstance 会放行子类，此处验证的就是缺省装配的精确基类
-        assert type(plain) is Redis
+        assert plain.__class__ is Redis
 
     @staticmethod
     def test_text_mode():

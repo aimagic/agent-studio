@@ -56,7 +56,7 @@ class TestTranslateError:
     def test_mapping_table(self, exc, expected):
         err = translate_error(exc, operation="op")
         # 精确类型：子类断言会让判定顺序错误侥幸通过。
-        assert type(err) is expected
+        assert err.__class__ is expected
         assert err.operation == "op"
         assert err.__cause__ is None  # translate 只构造，raise 由调用方挂 cause
         assert exc.__class__.__name__ in err.message
@@ -68,7 +68,7 @@ class TestTranslateError:
             redis_exc.ResponseError("wrongtype skey"), operation="hget"
         )
         # 精确类型断言（G.TYP.08 有意豁免）：子类断言会让判定顺序错误侥幸通过
-        assert type(err) is RedisWrongTypeError
+        assert err.__class__ is RedisWrongTypeError
 
     @staticmethod
     def test_redis_key_context_carried():

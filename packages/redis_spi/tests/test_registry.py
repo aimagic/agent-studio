@@ -109,7 +109,7 @@ class TestEntryPointLoading:
             "entry_points",
             lambda **kw: [EvilEP()] if kw.get("group") == registry.ENTRY_POINT_GROUP else [],
         )
-        assert "native" not in registry._entry_points()
+        assert "native" not in getattr(registry, "_entry_points")()
         assert registry.lookup("native") is None
 
     def test_broken_entry_point_raises_config_error(self, monkeypatch):

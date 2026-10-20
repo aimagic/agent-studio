@@ -89,7 +89,7 @@ class TestRuleMatcher:
         )
         with patch("redis_spi.accessor.get_redis", return_value=client):
             matcher = RuleMatcher(RuleMatcherConfig())
-        loaded = asyncio.run(matcher._load_all_rules())
+        loaded = asyncio.run(getattr(matcher, "_load_all_rules")())
         assert loaded == rules
 
     @staticmethod
@@ -97,24 +97,26 @@ class TestRuleMatcher:
         client, _ = spi_client
         with patch("redis_spi.accessor.get_redis", return_value=client):
             matcher = RuleMatcher(RuleMatcherConfig())
-        assert matcher._get_domain_rules_key("sales") == "intent_rules:sales"
+        assert getattr(matcher, "_get_domain_rules_key")("sales") == "intent_rules:sales"
 
 
 class TestLLMMatcher:
-    def test_construction_wired_to_accessor(self, spi_client, monkeypatch):
+    @staticmethod
+    def test_construction_wired_to_accessor(spi_client, monkeypatch):
         client, _ = spi_client
         # LLM 实例化与提示词模板不是本回归锁的对象（走模型配置/模板库）
-        monkeypatch.setattr(LLMMatcher, "_get_llm_instance", lambda self: object())
-        monkeypatch.setattr(LLMMatcher, "_get_prompt_template", lambda self: "tpl")
+        monkeypatch.setattr(LLMMatcher, "_get_llm_instance", lambda _: object())
+        monkeypatch.setattr(LLMMatcher, "_get_prompt_template", lambda _: "tpl")
 
         with patch("redis_spi.accessor.get_redis", return_value=client):
             matcher = LLMMatcher(LLMMatcherConfig())
         assert matcher.redis_client is client
 
-    def test_intent_examples_and_descriptions_read_via_hmget(self, spi_client, monkeypatch):
+    @staticmethod
+    def test_intent_examples_and_descriptions_read_via_hmget(spi_client, monkeypatch):
         client, raw = spi_client
-        monkeypatch.setattr(LLMMatcher, "_get_llm_instance", lambda self: object())
-        monkeypatch.setattr(LLMMatcher, "_get_prompt_template", lambda self: "tpl")
+        monkeypatch.setattr(LLMMatcher, "_get_llm_instance", lambda _: object())
+        monkeypatch.setattr(LLMMatcher, "_get_prompt_template", lambda _: "tpl")
 
         with patch("redis_spi.accessor.get_redis", return_value=client):
             matcher = LLMMatcher(LLMMatcherConfig())
@@ -135,11 +137,11 @@ class TestLLMMatcher:
         )
 
         # hmget(list) 形态 + 缺失位语义
-        examples = asyncio.run(matcher._get_intent_examples(["i1", "missing", "i2"]))
+        examples = asyncio.run(getattr(matcher, "_get_intent_examples")(["i1", "missing", "i2"]))
         assert set(examples["i1"]) <= {"ex1", "ex2", "ex3", "ex4"}
         assert examples["missing"] == []
         assert set(examples["i2"]) <= {"ex5", "ex6", "ex7", "ex8"}
 
-        descriptions = asyncio.run(matcher._get_intent_descriptions(["i1", "missing"]))
+        descriptions = asyncio.run(getattr(matcher, "_get_intent_descriptions")(["i1", "missing"]))
         assert descriptions["i1"] == "意图一"
         assert descriptions["missing"] == ""

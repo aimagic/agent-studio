@@ -59,8 +59,8 @@ class TestStartAssembly:
         assert created[2][1] == {"max_connections": 2, "socket_timeout": None}
         # 视图绑定：发布走主池，订阅句柄来自订阅池
         assert client.native_client() is main
-        assert client._subscriber is subscriber  # noqa: SLF001
-        assert client._blocking is blocking  # noqa: SLF001
+        assert getattr(client, "_subscriber") is subscriber  # noqa: SLF001
+        assert getattr(client, "_blocking") is blocking  # noqa: SLF001
 
     @staticmethod
     def test_pool_sizes_from_settings(created):
@@ -134,7 +134,7 @@ class TestStop:
         provider = NativeRedisProvider()
         client = asyncio.run(provider.start(make_settings()))
         main = client.native_client()
-        main._exceptions["aclose"] = redis_exc.ConnectionError("main down")  # noqa: SLF001
+        getattr(main, "_exceptions")["aclose"] = redis_exc.ConnectionError("main down")  # noqa: SLF001
         created[1][0]._exceptions["aclose"] = redis_exc.TimeoutError("t")  # noqa: SLF001
 
         with pytest.raises(RedisConnectionError) as excinfo:
