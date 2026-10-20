@@ -176,7 +176,8 @@ class RuntimeAssetExporterTest {
             mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
             byte[] zipBytes = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
             // 断言 resolvedVersion 传给了 mapper（非 null/latest）
-            verify(mappingMapper).selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any());
+            // atLeast(1)：collectMappingsRecursive（rootMappings）+ collectModelKbAssetsFromFinalIrs（根 IR 自身 model/KB）各查一次
+            verify(mappingMapper, atLeast(1)).selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any());
             assertNotNull(zipBytes);
         }
     }
@@ -550,6 +551,94 @@ class RuntimeAssetExporterTest {
             assertFalse(names.contains(oldSkill), "stale skill from removed old-version sub-IR must NOT be in zip");
             // 新版本子 IR 的 skill 入包
             assertTrue(names.contains(newSkill), "new-version sub-IR skill should be in zip");
+        }
+    }
+
+    // ===== 巡检（P1-2）：版本冲突 model/KB 按新版本收集，旧版本不残留 =====
+
+    @Test
+    void testVersionConflict_modelKb_collectedByNewVersion_notStaleFromOld() throws Exception {
+        // 巡检（P1-2）：子 IR 版本冲突时，model/KB 按版本对齐后的新版本子 IR 查 t_mapping 收集，
+        // 旧版本子 IR 的 model/KB 不残留（修复"新 IR + 旧依赖"错配）。
+        // 此前 model/KB 在 collectAssetKeysFromMappings 按 t_mapping 旧版本收集，版本对齐替换子 IR 时
+        // 旧版本 model/KB 已入 assets 无法撤销（旧子 IR 的 t_mapping 派生无归属信息，worklist.remove 只移除旧 IR 本体）。
+        mockDefaultAgent();
+        String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
+        String oldSubKey = "workflow/ir/sub/sub_old-ver.json";
+        String newSubKey = "workflow/ir/sub/sub_new-ver.json";
+        // t_mapping 给子工作流 old-ver；根 IR 内嵌 ir_path 指向 new-ver（版本冲突 → new-ver 胜出）
+        List<MappingEntity> mappings = new ArrayList<>();
+        mappings.add(mapping("workflow", "sub", "old-ver"));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any())).thenReturn(mappings);
+        // 旧版本子 IR 的 t_mapping 含 model-old（collectMappingsRecursive 递归会查，但 else 不收集）
+        when(mappingMapper.selectByAppIdAndAppVersion(eq("sub"), eq("old-ver"), any(), any()))
+            .thenReturn(List.of(mapping("model", "model-old", null)));
+        // 新版本子 IR 的 t_mapping 含 model-new（collectModelKbAssetsFromFinalIrs 按新版本查）
+        when(mappingMapper.selectByAppIdAndAppVersion(eq("sub"), eq("new-ver"), any(), any()))
+            .thenReturn(List.of(mapping("model", "model-new", null)));
+        when(mgObsService.getObject(oldSubKey)).thenReturn("{\"configs\":{}}");
+        when(mgObsService.getObject(newSubKey)).thenReturn("{\"configs\":{}}");
+        when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithWorkflowsJson(newSubKey));
+        // 新版本 model-service 文件（证明按新版本收集）
+        when(mgObsService.getObject("model-service/ir/model-new.json"))
+            .thenReturn(modelServiceJson("prov-1", PROJECT_ID, null));
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            Set<String> names = zipEntryNames(zip);
+            // 关键（巡检 P1-2）：新版本子 IR 的 model 入包
+            assertTrue(names.contains("model-service/ir/model-new.json"),
+                "new-version sub-IR model should be in zip");
+            // 关键（巡检 P1-2）：旧版本子 IR 的 model 不残留（旧子 IR 版本对齐移除，不遍历其 t_mapping）
+            assertFalse(names.contains("model-service/ir/model-old.json"),
+                "stale model from old-version sub-IR must NOT be in zip");
+        }
+    }
+
+    @Test
+    void testVersionConflict_twoLevel_modelKb_collectedByNewVersion() throws Exception {
+        // 巡检（P1-2）：两层版本冲突（子 IR + 孙 IR 都版本对齐），孙 IR 的 model 按新版本收集，
+        // 旧版本孙 IR 的 model 不残留。多层场景下旧孙 IR 派生已入包也不回滚（此前无法撤销）。
+        mockDefaultAgent();
+        String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
+        String oldSubKey = "workflow/ir/subA/subA_v1old.json";
+        String newSubKey = "workflow/ir/subA/subA_v1new.json";
+        String oldGrandKey = "workflow/ir/grand/grand_v2old.json";
+        String newGrandKey = "workflow/ir/grand/grand_v2new.json";
+        // t_mapping：根 → 子A(v1old)；子A(v1old/v1new) → 孙(v2old)；孙(v2old/v2new) → model
+        when(mappingMapper.selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any()))
+            .thenReturn(List.of(mapping("workflow", "subA", "v1old")));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq("subA"), eq("v1old"), any(), any()))
+            .thenReturn(List.of(mapping("workflow", "grand", "v2old")));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq("subA"), eq("v1new"), any(), any()))
+            .thenReturn(List.of(mapping("workflow", "grand", "v2old")));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq("grand"), eq("v2old"), any(), any()))
+            .thenReturn(List.of(mapping("model", "model-old-g", null)));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq("grand"), eq("v2new"), any(), any()))
+            .thenReturn(List.of(mapping("model", "model-new-g", null)));
+        // IR JSON：根 → 子A(v1new)；新版本子A → 孙(v2new)
+        when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrWithWorkflowsJson(newSubKey));
+        when(mgObsService.getObject(oldSubKey)).thenReturn("{\"configs\":{}}");
+        when(mgObsService.getObject(newSubKey)).thenReturn(agentIrWithWorkflowsJson(newGrandKey));
+        when(mgObsService.getObject(oldGrandKey)).thenReturn("{\"configs\":{}}");
+        when(mgObsService.getObject(newGrandKey)).thenReturn("{\"configs\":{}}");
+        // 新版本孙 model-service 文件（证明按新版本收集）
+        when(mgObsService.getObject("model-service/ir/model-new-g.json"))
+            .thenReturn(modelServiceJson("prov-1", PROJECT_ID, null));
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            Set<String> names = zipEntryNames(zip);
+            // 关键（巡检 P1-2）：两层版本对齐后，新版本孙 IR 的 model 入包
+            assertTrue(names.contains("model-service/ir/model-new-g.json"),
+                "new-version grandchild model should be in zip");
+            // 关键（巡检 P1-2）：旧版本孙 IR 的 model 不残留
+            assertFalse(names.contains("model-service/ir/model-old-g.json"),
+                "stale model from old-version grandchild IR must NOT be in zip");
         }
     }
 
@@ -1090,6 +1179,94 @@ class RuntimeAssetExporterTest {
         }
     }
 
+    // ===== 巡检（P1）：configs==null 不再跳过 collectSubWorkflowPaths/extractAuthIds =====
+
+    @Test
+    void testConfigsNull_stillCollectsSubWorkflowAndAuthIds() throws Exception {
+        // 巡检（P1）：IR 顶层 configs=null 时，collectSubWorkflowPaths/extractAuthIds 必须仍执行。
+        // SubWorkflow 子 IR 路径在 components[].configs.reference.path（不依赖顶层 configs），
+        // 鉴权信息在 component.extension.authId（不在顶层 configs 内）—— 漏执行会漏导子 IR / model-auth。
+        mockDefaultAgent();
+        String rootIrKey = "agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json";
+        String subWfIrKey = "workflow/ir/sub-sw/sub-sw_v1.json";
+        // 根 IR：顶层 configs=null，但 components[].configs.reference.path 指向 SubWorkflow 子 IR，
+        // 且 component 节点上带 extension.authId（不在顶层 configs 内）
+        when(mgObsService.getObject(rootIrKey)).thenReturn(agentIrNoConfigsButComponentsJson(subWfIrKey, "auth-sw"));
+        when(mgObsService.getObject(subWfIrKey)).thenReturn("{\"configs\":{}}");
+        // t_mapping 提供一个 model 依赖，使 model-service 收集 → authId 笛卡尔积产生 model-auth
+        List<MappingEntity> mappings = new ArrayList<>();
+        mappings.add(mapping("model", "ms-1", null));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any())).thenReturn(mappings);
+        when(mgObsService.getObject("model-service/ir/ms-1.json"))
+            .thenReturn(modelServiceJson("prov-1", PROJECT_ID, null));
+        // SubWorkflow 子 IR 归属当前 workspace（放行版本对齐 + 入包）
+        when(workflowMapper.selectByWorkflowIds(eq(PROJECT_ID), eq(WORKSPACE_ID), anyList()))
+            .thenReturn(List.of(new WorkflowEntity()));
+        // model-auth 文件（authId 笛卡尔积产生，打包阶段读取写 entry）
+        when(mgObsService.getObject("model-auth/auth/" + PROJECT_ID + "/prov-1/auth-sw.json")).thenReturn("{}");
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null);
+            Set<String> names = zipEntryNames(zip);
+            // 关键（巡检 P1）：configs=null 时 collectSubWorkflowPaths 仍执行 → SubWorkflow 子 IR 收集
+            assertTrue(names.contains(subWfIrKey),
+                "SubWorkflow child IR must be collected even when configs=null");
+            // 关键（巡检 P1）：configs=null 时 extractAuthIds 仍执行 → model-auth 收集
+            assertTrue(names.contains("model-auth/auth/" + PROJECT_ID + "/prov-1/auth-sw.json"),
+                "model-auth must be collected from extension.authId even when configs=null");
+        }
+    }
+
+    // ===== 巡检（P2）：JSON 字面量 "null" 不触发 NPE，按损坏/缺失处理 =====
+
+    @Test
+    void testModelServiceNullLiteral_skipsAndCompletesExport() throws Exception {
+        // 巡检（P2）：model-service 文件内容为 JSON 字面量 "null" → parseObject 返回 null（不抛异常），
+        // 不判空后续 getJSONObject/getString 会 NPE → 导出 500。按损坏/缺失处理（跳过 model-auth），导出完成。
+        // 覆盖 collectModelAssets + collectModelAuthFromIrs 两处 parseObject null 判空。
+        mockDefaultAgent();
+        List<MappingEntity> mappings = new ArrayList<>();
+        mappings.add(mapping("model", "null-ms", null));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any())).thenReturn(mappings);
+        when(mgObsService.getObject("model-service/ir/null-ms.json")).thenReturn("null");
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = assertDoesNotThrow(() -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            Set<String> names = zipEntryNames(zip);
+            assertTrue(names.contains("agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json"),
+                "root IR should still be in zip");
+            boolean hasModelAuth = names.stream().anyMatch(n -> n.startsWith("model-auth/auth/"));
+            assertFalse(hasModelAuth, "null-literal model-service should skip model-auth collection (no NPE)");
+        }
+    }
+
+    @Test
+    void testKbReferenceNullLiteral_skipsAndCompletesExport() throws Exception {
+        // 巡检（P2）：kb-reference 文件内容为 JSON 字面量 "null" → parseObject 返回 null（不抛异常），
+        // 不判空后续 getString("connectionId") 会 NPE → 导出 500。按损坏/缺失处理，导出完成。
+        mockDefaultAgent();
+        List<MappingEntity> mappings = new ArrayList<>();
+        mappings.add(mapping("repo", "null-kb", null));
+        when(mappingMapper.selectByAppIdAndAppVersion(eq(AGENT_ID), eq(VERSION), any(), any())).thenReturn(mappings);
+        when(mgObsService.getObject("kb-connection/ir/knowledge-base/null-kb.json")).thenReturn("null");
+        try (MockedStatic<RequestContextUtils> mocked = Mockito.mockStatic(RequestContextUtils.class)) {
+            mocked.when(RequestContextUtils::getRequestProjectId).thenReturn(PROJECT_ID);
+            mocked.when(RequestContextUtils::getRequestWorkspaceId).thenReturn(WORKSPACE_ID);
+            mocked.when(RequestContextUtils::getRequestUserId).thenReturn("testUser");
+            byte[] zip = assertDoesNotThrow(() -> exportZipBytes(PROJECT_ID, WORKSPACE_ID, "agent", AGENT_ID, null));
+            Set<String> names = zipEntryNames(zip);
+            assertTrue(names.contains("agent/ir/" + AGENT_ID + "/" + AGENT_ID + "_" + VERSION + ".json"),
+                "root IR should still be in zip");
+            // kb-reference 文件本身入包（parse 前 addAsset），但 kb-connection 不收集（parse null 跳过，无 NPE）
+            assertFalse(names.stream().anyMatch(n -> n.startsWith("kb-connection/ir/connection/")),
+                "null-literal kb-reference should skip kb-connection collection (no NPE)");
+        }
+    }
+
     // ===== 辅助：IR 构建 =====
 
     /** 根 IR 内嵌恶意 skill_path + 恶意 child ir_path（含 ../ 遍历，bug005 #2 路径校验） */
@@ -1130,6 +1307,24 @@ class RuntimeAssetExporterTest {
         Map<String, Object> configs = new HashMap<>();
         configs.put("skills", skills);
         ir.put("configs", configs);
+        return com.alibaba.fastjson2.JSON.toJSONString(ir);
+    }
+
+    /** 根 IR：顶层 configs=null，但 components[].configs.reference.path 指向 SubWorkflow 子 IR，
+     * 且 component 节点上带 extension.authId（不在顶层 configs 内）—— 巡检 P1 configs=null 场景。 */
+    private String agentIrNoConfigsButComponentsJson(String subWorkflowIrPath, String authId) {
+        Map<String, Object> ir = new HashMap<>();
+        ir.put("agentId", AGENT_ID);
+        Map<String, Object> reference = new HashMap<>();
+        reference.put("path", subWorkflowIrPath);
+        Map<String, Object> compConfigs = new HashMap<>();
+        compConfigs.put("reference", reference);
+        Map<String, Object> ext = new HashMap<>();
+        ext.put("authId", authId);
+        Map<String, Object> component = new HashMap<>();
+        component.put("configs", compConfigs);
+        component.put("extension", ext);
+        ir.put("components", List.of(component));
         return com.alibaba.fastjson2.JSON.toJSONString(ir);
     }
 

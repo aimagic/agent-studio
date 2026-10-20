@@ -272,7 +272,9 @@ public class RuntimeAssetExporter {
             .filter(a -> TYPE_AGENT_IR.equals(a.getType()) || TYPE_WORKFLOW_IR.equals(a.getType()))
             .toList();
         Set<String> irAuthIds = collectIrDerivedAssets(assets, collectedKeys, irAssets, projectId, obsCache);
-        // 2e. model-auth：用 IR 提取的 authId 补充 model-auth 资产（SDD 5.2，优先于 model-service.auth_id）
+        // 2e. model/KB：按版本对齐后的最终 IR 版本查 t_mapping 收集（巡检 P1-2，防旧版本 model/KB 残留）
+        collectModelKbAssetsFromFinalIrs(assets, collectedKeys, projectId, obsCache);
+        // 2f. model-auth：用 IR 提取的 authId 补充 model-auth 资产（SDD 5.2，优先于 model-service.auth_id）
         collectModelAuthFromIrs(assets, collectedKeys, irAssets, irAuthIds, projectId, obsCache);
 
         // SDD 9.1：assets 数量上限校验（防大型智能体导出超时）
@@ -370,7 +372,10 @@ public class RuntimeAssetExporter {
                     nextLevel.addAll(childMappings);
                 }
             } else {
-                acc.add(m);
+                // 巡检（P1-2）：model/KB/strategy/skill 不在此收集。model/KB 收集挪到
+                // collectModelKbAssetsFromFinalIrs，按版本对齐后的最终 IR 版本查 t_mapping 收集，
+                // 避免 t_mapping 旧版本 model/KB 入包后版本对齐替换子 IR 时无法撤销（新 IR + 旧依赖错配）。
+                // skill 在 collectIrDerivedAssets 从 IR JSON 提取。
             }
         }
         if (!nextLevel.isEmpty()) {
@@ -385,7 +390,10 @@ public class RuntimeAssetExporter {
     }
 
     /**
-     * 从 t_mapping 收集资产 key（SDD 4.2.4）：子 IR + model-service/model-auth + KB 连接/引用 + skill 交叉校验。
+     * 从 t_mapping 收集子 IR 资产 key（SDD 4.2.4）。
+     * <p>仅收集 workflow/agent/controller 子 IR。model/KB 收集挪到 collectModelKbAssetsFromFinalIrs
+     * （巡检 P1-2，按版本对齐后最终 IR 版本查 t_mapping，防旧版本 model/KB 残留）；
+     * skill 在 collectIrDerivedAssets 从 IR JSON 提取。
      */
     private void collectAssetKeysFromMappings(List<ManifestAsset> assets, Set<String> collectedKeys,
         List<MappingEntity> mappings, String rootProjectId, Map<String, String> obsCache) {
@@ -401,19 +409,9 @@ public class RuntimeAssetExporter {
                 case RES_TYPE_CONTROLLER:
                     addAsset(assets, collectedKeys, buildAgentIrKey(resId, resVer), TYPE_AGENT_IR);
                     break;
-                case RES_TYPE_MODEL:
-                case RES_TYPE_STRATEGY:
-                    // model-service 配置 + model-auth 鉴权配置（SDD 5.2）
-                    collectModelAssets(assets, collectedKeys, resId, resType, rootProjectId, obsCache, null);
-                    break;
-                case RES_TYPE_REPO:
-                    // KB 引用 + KB 连接（SDD 5.3）
-                    collectKbAssets(assets, collectedKeys, resId, rootProjectId, obsCache);
-                    break;
-                case RES_TYPE_SKILL:
-                    // skill 路径以 IR skill_info[].skill_path 为准，t_mapping 仅交叉校验（SDD 5.4）
-                    // 在 collectSkillAssets 中从根/子 IR 提取
-                    break;
+                // 巡检（P1-2）：model/strategy/repo 收集挪到 collectModelKbAssetsFromFinalIrs，
+                // 按版本对齐后的最终 IR 版本查 t_mapping 收集（防 t_mapping 旧版本 model/KB 残留）。
+                // skill 在 collectIrDerivedAssets 从 IR JSON 提取。
                 default:
                     break;
             }
@@ -466,36 +464,39 @@ public class RuntimeAssetExporter {
             try {
                 JSONObject ir = JSON.parseObject(irJson);
                 JSONObject configs = ir.getJSONObject("configs");
-                if (configs == null) {
-                    continue;
-                }
-                // SDD 5.4：skill_info[].skill_path
-                JSONObject skills = configs.getJSONObject("skills");
-                if (skills != null) {
-                    JSONArray skillInfo = skills.getJSONArray("skill_info");
-                    if (skillInfo != null) {
-                        for (int i = 0; i < skillInfo.size(); i++) {
-                            JSONObject skill = skillInfo.getJSONObject(i);
-                            String skillPath = skill.getString("skill_path");
-                            if (StringUtils.isNotBlank(skillPath)) {
-                                // bug007 #1：skill_path 必须归属当前用户（格式 {userId}/skills/...），
-                                // 防 IR 可构造 user-{他人userId}/skills/... 跨用户读取他人技能。
-                                if (!isOwnedSkillPath(skillPath)) {
-                                    log.warn("runtime_asset_export_skill_skipped|skill_path={}|reason=unowned",
-                                        skillPath);
-                                    continue;
+                // 巡检（P1）：configs==null 不再 continue，否则 collectSubWorkflowPaths/extractAuthIds
+                // 被整体跳过——这两处不依赖顶层 configs（SubWorkflow 子工作流在 components[].configs.reference.path，
+                // authId 递归遍历整个 IR 树），漏执行会漏导 SubWorkflow 子 IR / model-auth，运行包不完整。
+                // 仅在读取 configs 下技能和 workflows/agents 子 IR 路径时判空。
+                if (configs != null) {
+                    // SDD 5.4：skill_info[].skill_path
+                    JSONObject skills = configs.getJSONObject("skills");
+                    if (skills != null) {
+                        JSONArray skillInfo = skills.getJSONArray("skill_info");
+                        if (skillInfo != null) {
+                            for (int i = 0; i < skillInfo.size(); i++) {
+                                JSONObject skill = skillInfo.getJSONObject(i);
+                                String skillPath = skill.getString("skill_path");
+                                if (StringUtils.isNotBlank(skillPath)) {
+                                    // bug007 #1：skill_path 必须归属当前用户（格式 {userId}/skills/...），
+                                    // 防 IR 可构造 user-{他人userId}/skills/... 跨用户读取他人技能。
+                                    if (!isOwnedSkillPath(skillPath)) {
+                                        log.warn("runtime_asset_export_skill_skipped|skill_path={}|reason=unowned",
+                                            skillPath);
+                                        continue;
+                                    }
+                                    addAsset(assets, collectedKeys, skillPath, TYPE_SKILL);
                                 }
-                                addAsset(assets, collectedKeys, skillPath, TYPE_SKILL);
                             }
                         }
                     }
+                    // SDD 5.1：configs.workflows[].ir_path / configs.agents[].ir_path（子资产版本对齐）
+                    collectChildIrPaths(configs, "workflows", childIrPaths);
+                    collectChildIrPaths(configs, "agents", childIrPaths);
                 }
-                // SDD 5.1：configs.workflows[].ir_path / configs.agents[].ir_path（子资产版本对齐）
-                collectChildIrPaths(configs, "workflows", childIrPaths);
-                collectChildIrPaths(configs, "agents", childIrPaths);
-                // SDD 2.5/5.1：SubWorkflow 节点子工作流路径 components[].configs.reference.path
+                // SDD 2.5/5.1：SubWorkflow 节点子工作流路径 components[].configs.reference.path（不依赖顶层 configs，始终执行）
                 collectSubWorkflowPaths(ir, childIrPaths);
-                // SDD 5.2：递归提取所有 extension.authId（5 处）
+                // SDD 5.2：递归提取所有 extension.authId（不依赖顶层 configs，始终执行）
                 extractAuthIds(ir, authIds);
             } catch (Exception e) {
                 log.warn("collectIrDerivedAssets parse IR failed, key={}. {}", asset.getKey(), e.getMessage());
@@ -560,6 +561,52 @@ public class RuntimeAssetExporter {
             }
         }
         return authIds;
+    }
+
+    /**
+     * 按版本对齐后的最终 IR 集合收集 model/KB 资产（巡检 P1-2）。
+     * <p>model/KB 收集延后到版本对齐后，按每个 IR 的最终版本查 t_mapping 收集，天然按新版本收集，
+     * 无旧版本残留（修复"新 IR + 旧依赖"错配）。
+     * <p>此前 model/KB 在 collectAssetKeysFromMappings 按 t_mapping 版本（可能旧）收集，版本对齐替换
+     * 子 IR 时，旧版本 model/KB 已入 assets 无法撤销（旧子 IR 的 t_mapping 派生无归属信息，
+     * worklist.remove 只移除旧 IR 本体不撤销其 model/KB 派生）；多层场景下旧孙 IR 派生已入包也不回滚。
+     * <p>共享资源去重由 collectedKeys 保证：多个 IR 引用同一 model/KB，首个收集入包，后续跳过。
+     * @param rootProjectId 根应用 projectId（平台模型 project_id=SYSTEM 时 authProjectId 回退用）
+     */
+    private void collectModelKbAssetsFromFinalIrs(List<ManifestAsset> assets, Set<String> collectedKeys,
+        String rootProjectId, Map<String, String> obsCache) {
+        // 遍历所有最终版本 IR（根 + 子 + 孙，版本对齐后旧版本已移除），按各自最终版本查 t_mapping 收集 model/KB
+        List<ManifestAsset> finalIrs = assets.stream()
+            .filter(a -> TYPE_AGENT_IR.equals(a.getType()) || TYPE_WORKFLOW_IR.equals(a.getType()))
+            .toList();
+        for (ManifestAsset irAsset : finalIrs) {
+            String rid = parseResourceIdFromIrKey(irAsset.getKey());
+            String rver = parseVersionFromIrKey(irAsset.getKey());
+            if (rid == null || "?".equals(rver)) {
+                continue; // 非标准 IR key，无法查 t_mapping
+            }
+            List<MappingEntity> irMappings;
+            try {
+                irMappings = mappingMapper.selectByAppIdAndAppVersion(rid, rver, null, null);
+            } catch (Exception e) {
+                log.warn("collectModelKbAssetsFromFinalIrs query t_mapping failed, rid={}, ver={}. {}",
+                    rid, rver, e.getMessage());
+                continue;
+            }
+            if (irMappings == null || irMappings.isEmpty()) {
+                continue;
+            }
+            for (MappingEntity m : irMappings) {
+                String resType = m.getResourceType();
+                String resId = m.getResourceId();
+                if (RES_TYPE_MODEL.equals(resType) || RES_TYPE_STRATEGY.equals(resType)) {
+                    collectModelAssets(assets, collectedKeys, resId, resType, rootProjectId, obsCache, null);
+                } else if (RES_TYPE_REPO.equals(resType)) {
+                    collectKbAssets(assets, collectedKeys, resId, rootProjectId, obsCache);
+                }
+                // workflow/agent/controller/skill 跳过：IR 已收集（版本对齐完成）；skill 在 collectIrDerivedAssets 提取
+            }
+        }
     }
 
     /** 从 configs.workflows / configs.agents 数组提取 ir_path */
@@ -678,6 +725,12 @@ public class RuntimeAssetExporter {
                     msAsset.getKey(), e.getMessage());
                 continue;
             }
+            // 巡检（P2）：JSON 字面量 "null" → parseObject 返回 null（不抛异常），按损坏/缺失处理，防后续 NPE。
+            if (msObj == null) {
+                log.warn("collectModelAuthFromIrs parse model-service null literal, key={}, skip.",
+                    msAsset.getKey());
+                continue;
+            }
             // model-service 文件结构：{"type":"model", "data": {...}}
             JSONObject msData = msObj.getJSONObject("data");
             if (msData == null) {
@@ -741,6 +794,11 @@ public class RuntimeAssetExporter {
             msObj = JSON.parseObject(msJson);
         } catch (Exception e) {
             log.warn("collectModelAssets parse model-service failed, key={}, skip. {}", modelServiceKey, e.getMessage());
+            return;
+        }
+        // 巡检（P2）：JSON 字面量 "null" → parseObject 返回 null（不抛异常），按损坏/缺失处理，防后续 NPE。
+        if (msObj == null) {
+            log.warn("collectModelAssets parse model-service null literal, key={}, skip.", modelServiceKey);
             return;
         }
         // model-service 文件结构：{"type":"model", "data": {provider_id, project_id, auth_metadata_id, ...}}
@@ -848,6 +906,11 @@ public class RuntimeAssetExporter {
             kbObj = JSON.parseObject(kbJson);
         } catch (Exception e) {
             log.warn("collectKbAssets parse kb-reference failed, key={}, skip. {}", kbRefKey, e.getMessage());
+            return;
+        }
+        // 巡检（P2）：JSON 字面量 "null" → parseObject 返回 null（不抛异常），按损坏/缺失处理，防后续 NPE。
+        if (kbObj == null) {
+            log.warn("collectKbAssets parse kb-reference null literal, key={}, skip.", kbRefKey);
             return;
         }
         String connectionId = kbObj.getString("connectionId");
