@@ -46,19 +46,20 @@ public class RedisClientAutoConfig {
      */
     @Bean
     public RedisTemplate<String, Object> redisTemplate(RedisConnectionFactory redisConnectionFactory) {
-        StringRedisSerializer keys = new StringRedisSerializer();
-        Jackson2JsonRedisSerializer<Object> values =
-            new Jackson2JsonRedisSerializer<>(buildRedisObjectMapper(), Object.class);
-
         RedisTemplate<String, Object> template = new RedisTemplate<>();
         template.setConnectionFactory(redisConnectionFactory);
-        // 键侧（含哈希键）统一字符串序列化：key 可读、redis-cli 运维直查兼容；
-        // 值侧（含哈希值）统一 JSON：两侧各持一个序列化器实例、哈希位复用，
-        // 保证同一份数据在 string 与 hash 两种编码下的字节同构。
-        template.setKeySerializer(keys);
-        template.setHashKeySerializer(keys);
-        template.setValueSerializer(values);
-        template.setHashValueSerializer(values);
+
+        // 值侧先定：JSON 编码（含多态类型保留的专用 mapper），string 与
+        // hash 两个值位复用同一序列化器实例，保证两种编码下字节同构。
+        Jackson2JsonRedisSerializer<Object> jsonValues =
+            new Jackson2JsonRedisSerializer<>(buildRedisObjectMapper(), Object.class);
+        template.setValueSerializer(jsonValues);
+        template.setHashValueSerializer(jsonValues);
+
+        // 键侧后定：UTF-8 字符串（redis-cli 运维直查可读），同样复用单例。
+        template.setKeySerializer(StringRedisSerializer.UTF_8);
+        template.setHashKeySerializer(StringRedisSerializer.UTF_8);
+
         // 装配期即校验：序列化器缺失/组合非法在此刻失败，而非首次读写时。
         template.afterPropertiesSet();
         return template;
