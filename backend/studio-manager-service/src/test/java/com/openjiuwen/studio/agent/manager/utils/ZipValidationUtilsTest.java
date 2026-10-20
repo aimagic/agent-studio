@@ -17,15 +17,27 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Enumeration;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -561,18 +573,17 @@ public class ZipValidationUtilsTest {
         assertEquals(StudioError.COMPATIBILITY_LENGTH_EXCEED, exception.getErrorCode());
     }
 
-    // ==================== getFrontmatter 方法测试用例 ====================
+    // ==================== validateZipFile 返回 frontmatter 测试用例 ====================
 
     /**
-     * 测试获取frontmatter
+     * 测试 validateZipFile 直接返回 frontmatter（取代原 getFrontmatter 静态变量方案）
      */
     @Test
-    public void testGetFrontmatter_AfterValidZip() {
-        // 先验证一个有效的ZIP文件
-        assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(validZipFile));
+    public void testValidateZipFile_ReturnsFrontmatter() {
+        // 验证有效 ZIP 文件并直接获取返回的 frontmatter
+        Map<String, Object> frontmatter = assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(validZipFile));
 
-        // 验证frontmatter不为空
-        Map<String, Object> frontmatter = ZipValidationUtils.getFrontmatter();
+        // 验证 frontmatter 不为空且字段正确
         assertNotNull(frontmatter);
         assertEquals("valid", frontmatter.get("name"));
         assertEquals("A valid skill", frontmatter.get("description"));
@@ -689,13 +700,428 @@ public class ZipValidationUtilsTest {
             zos.closeEntry();
         }
 
-        // 应该验证通过
-        assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(edgeCaseFile));
+        // 应该验证通过并返回 frontmatter
+        Map<String, Object> frontmatter = assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(edgeCaseFile));
 
-        // 验证frontmatter
-        Map<String, Object> frontmatter = ZipValidationUtils.getFrontmatter();
+        // 验证 frontmatter
         assertEquals("edge-skill", frontmatter.get("name"));
         assertEquals(499, frontmatter.get("compatibility").toString().length());
+    }
+
+    // ==================== 平铺包（flat layout）测试用例 ====================
+
+    /**
+     * 平铺包：根级 SKILL.md + 单个附属文件 → 校验通过
+     */
+    @Test
+    public void testValidateZipFile_FlatLayout_WithMetaFile() throws IOException {
+        File zip = tempDir.resolve("flat-meta.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry meta = new ZipEntry("_meta.json");
+            zos.putNextEntry(meta);
+            zos.write("{\"version\":\"1.0\"}".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            ZipEntry skillMd = new ZipEntry("SKILL.md");
+            zos.putNextEntry(skillMd);
+            zos.write("---\nname: flat-skill\ndescription: A flat skill\nlicense: MIT\n---\n# Flat Skill".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        Map<String, Object> frontmatter = assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(zip));
+        assertNotNull(frontmatter);
+        assertEquals("flat-skill", frontmatter.get("name"));
+        assertEquals("A flat skill", frontmatter.get("description"));
+    }
+
+    /**
+     * 平铺包：根级 SKILL.md + 多个附属子目录（scripts/ styles/ tests/）→ 校验通过
+     */
+    @Test
+    public void testValidateZipFile_FlatLayout_MultipleSubFolders() throws IOException {
+        File zip = tempDir.resolve("flat-multi.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry script = new ZipEntry("scripts/run.py");
+            zos.putNextEntry(script);
+            zos.write("print('hi')".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            ZipEntry style = new ZipEntry("styles/main.css");
+            zos.putNextEntry(style);
+            zos.write("body{}".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            ZipEntry test = new ZipEntry("tests/test.py");
+            zos.putNextEntry(test);
+            zos.write("assert True".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            ZipEntry skillMd = new ZipEntry("SKILL.md");
+            zos.putNextEntry(skillMd);
+            zos.write("---\nname: multi-flat\ndescription: multi folder flat\n---\n# Multi".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        Map<String, Object> frontmatter = assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(zip));
+        assertNotNull(frontmatter);
+        assertEquals("multi-flat", frontmatter.get("name"));
+    }
+
+    /**
+     * 平铺包：zip 文件名与 name 字段不一致 → 校验通过（不比对 zip 文件名）
+     */
+    @Test
+    public void testValidateZipFile_FlatLayout_ZipNameMismatch() throws IOException {
+        // zip 文件名是 random-name.zip，但 SKILL.md name 是 my-flat-skill
+        File zip = tempDir.resolve("random-name.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry skillMd = new ZipEntry("SKILL.md");
+            zos.putNextEntry(skillMd);
+            zos.write("---\nname: my-flat-skill\ndescription: name mismatch test\n---\n# Skill".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        // 校验通过：平铺结构不比对 zip 文件名
+        Map<String, Object> frontmatter = assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(zip));
+        assertEquals("my-flat-skill", frontmatter.get("name"));
+    }
+
+    /**
+     * 平铺包：含中文文件名 → 校验通过
+     */
+    @Test
+    public void testValidateZipFile_FlatLayout_ChineseFilename() throws IOException {
+        File zip = tempDir.resolve("flat-chinese.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry script = new ZipEntry("脚本/run.py");
+            zos.putNextEntry(script);
+            zos.write("print('中文')".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            ZipEntry skillMd = new ZipEntry("SKILL.md");
+            zos.putNextEntry(skillMd);
+            zos.write("---\nname: chinese-flat\ndescription: 中文文件名测试\n---\n# 中文".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        Map<String, Object> frontmatter = assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(zip));
+        assertEquals("chinese-flat", frontmatter.get("name"));
+    }
+
+    /**
+     * 负向：平铺包根级 + 子目录同时含 SKILL.md → 抛 FILES_NUMBER_DOES_NOT_MATCH
+     * 覆盖 §3.2.1 新增校验
+     */
+    @Test
+    public void testValidateZipFile_FlatLayout_RootAndChildBothHaveSkillMd() throws IOException {
+        File zip = tempDir.resolve("flat-dup.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry rootSkillMd = new ZipEntry("SKILL.md");
+            zos.putNextEntry(rootSkillMd);
+            zos.write("---\nname: root-skill\ndescription: root\n---\n# Root".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            ZipEntry subSkillMd = new ZipEntry("subdir/SKILL.md");
+            zos.putNextEntry(subSkillMd);
+            zos.write("---\nname: sub-skill\ndescription: sub\n---\n# Sub".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        AgentStudioException exception = assertThrows(AgentStudioException.class, () ->
+                ZipValidationUtils.validateZipFile(zip));
+        assertEquals(StudioError.FILES_NUMBER_DOES_NOT_MATCH, exception.getErrorCode());
+    }
+
+    /**
+     * 负向：平铺包多个子目录同时含 SKILL.md（无根级 SKILL.md）→ 抛 FILES_NUMBER_DOES_NOT_MATCH
+     */
+    @Test
+    public void testValidateZipFile_MultipleSubFoldersWithSkillMd() throws IOException {
+        File zip = tempDir.resolve("multi-sub-skillmd.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry s1 = new ZipEntry("dir1/SKILL.md");
+            zos.putNextEntry(s1);
+            zos.write("---\nname: skill1\ndescription: s1\n---\n# s1".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            ZipEntry s2 = new ZipEntry("dir2/SKILL.md");
+            zos.putNextEntry(s2);
+            zos.write("---\nname: skill2\ndescription: s2\n---\n# s2".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        AgentStudioException exception = assertThrows(AgentStudioException.class, () ->
+                ZipValidationUtils.validateZipFile(zip));
+        assertEquals(StudioError.FILES_NUMBER_DOES_NOT_MATCH, exception.getErrorCode());
+    }
+
+    /**
+     * 负向：单文件夹包中 SKILL.md 位于深层子目录 a/b/SKILL.md → skillDirs.size()==1 通过结构校验，
+     * 但 isValidDirectoryName 拿 "b" 与 name 比对失败 → 抛 NAME_FORMAT_MISMATCH
+     * 覆盖该行为路径
+     */
+    @Test
+    public void testValidateZipFile_DeepSkillMd_NameMismatch() throws IOException {
+        File zip = tempDir.resolve("deep-skillmd.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry deep = new ZipEntry("a/b/SKILL.md");
+            zos.putNextEntry(deep);
+            zos.write("---\nname: my-skill\ndescription: deep\n---\n# Deep".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        AgentStudioException exception = assertThrows(AgentStudioException.class, () ->
+                ZipValidationUtils.validateZipFile(zip));
+        assertEquals(StudioError.NAME_FORMAT_MISMATCH, exception.getErrorCode());
+    }
+
+    // ==================== repackIfFlat 方法测试用例 ====================
+
+    /**
+     * 平铺包重打包：输入根级 SKILL.md + _meta.json，输出 zip 解压后为 {name}/SKILL.md + {name}/_meta.json
+     */
+    @Test
+    public void testRepackIfFlat_FlatLayout() throws IOException {
+        File zip = tempDir.resolve("repack-flat.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry meta = new ZipEntry("_meta.json");
+            zos.putNextEntry(meta);
+            zos.write("{\"v\":\"1\"}".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            ZipEntry skillMd = new ZipEntry("SKILL.md");
+            zos.putNextEntry(skillMd);
+            zos.write("---\nname: repack-skill\ndescription: repack test\n---\n# Repack".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        File repacked = ZipValidationUtils.repackIfFlat(zip, "repack-skill");
+        try {
+            assertNotNull(repacked);
+            assertTrue(repacked.exists());
+            // 验证解压后条目为 {name}/SKILL.md + {name}/_meta.json
+            List<String> entries = listZipEntries(repacked);
+            assertTrue(entries.contains("repack-skill/SKILL.md"));
+            assertTrue(entries.contains("repack-skill/_meta.json"));
+            // 不应有根级 SKILL.md
+            assertFalse(entries.contains("SKILL.md"));
+        } finally {
+            if (repacked != zip && repacked.exists()) {
+                repacked.delete();
+            }
+        }
+    }
+
+    /**
+     * 多文件夹平铺包重打包：输出 {name}/SKILL.md + {name}/scripts/run.py
+     */
+    @Test
+    public void testRepackIfFlat_MultiFolderFlat() throws IOException {
+        File zip = tempDir.resolve("repack-multi.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry script = new ZipEntry("scripts/run.py");
+            zos.putNextEntry(script);
+            zos.write("print(1)".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            ZipEntry skillMd = new ZipEntry("SKILL.md");
+            zos.putNextEntry(skillMd);
+            zos.write("---\nname: multi-repack\ndescription: multi\n---\n# Multi".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        File repacked = ZipValidationUtils.repackIfFlat(zip, "multi-repack");
+        try {
+            List<String> entries = listZipEntries(repacked);
+            assertTrue(entries.contains("multi-repack/SKILL.md"));
+            assertTrue(entries.contains("multi-repack/scripts/run.py"));
+        } finally {
+            if (repacked != zip && repacked.exists()) {
+                repacked.delete();
+            }
+        }
+    }
+
+    /**
+     * 重打包后中文文件名无乱码
+     */
+    @Test
+    public void testRepackIfFlat_ChineseFilename() throws IOException {
+        File zip = tempDir.resolve("repack-chinese.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry script = new ZipEntry("脚本/run.py");
+            zos.putNextEntry(script);
+            zos.write("print('中文')".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            ZipEntry skillMd = new ZipEntry("SKILL.md");
+            zos.putNextEntry(skillMd);
+            zos.write("---\nname: chinese-repack\ndescription: 中文\n---\n# 中文".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        File repacked = ZipValidationUtils.repackIfFlat(zip, "chinese-repack");
+        try {
+            List<String> entries = listZipEntries(repacked);
+            assertTrue(entries.contains("chinese-repack/SKILL.md"));
+            assertTrue(entries.contains("chinese-repack/脚本/run.py"));
+        } finally {
+            if (repacked != zip && repacked.exists()) {
+                repacked.delete();
+            }
+        }
+    }
+
+    /**
+     * 单文件夹包（回归）：repackIfFlat 返回原 zipFile（引用相等 ==）
+     */
+    @Test
+    public void testRepackIfFlat_SingleFolder_ReturnsOriginal() throws IOException {
+        File zip = tempDir.resolve("repack-single.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry skillMd = new ZipEntry("my-skill/SKILL.md");
+            zos.putNextEntry(skillMd);
+            zos.write("---\nname: my-skill\ndescription: single\n---\n# Single".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        // 单文件夹结构：返回值应与入参引用相等
+        File result = ZipValidationUtils.repackIfFlat(zip, "my-skill");
+        assertSame(zip, result);
+    }
+
+    /**
+     * 边缘场景：平铺包根级存在与 skillName 同名子目录（SKILL.md + my-skill/helper.py，name=my-skill）
+     * 预期：校验通过；重打包后为 my-skill/SKILL.md + my-skill/helper.py
+     */
+    @Test
+    public void testRepackIfFlat_FlatLayout_WithSameNameSubFolder() throws IOException {
+        File zip = tempDir.resolve("repack-edge.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry helper = new ZipEntry("my-skill/helper.py");
+            zos.putNextEntry(helper);
+            zos.write("helper".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            ZipEntry skillMd = new ZipEntry("SKILL.md");
+            zos.putNextEntry(skillMd);
+            zos.write("---\nname: my-skill\ndescription: edge\n---\n# Edge".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        // 先验证校验通过
+        Map<String, Object> frontmatter = assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(zip));
+        assertEquals("my-skill", frontmatter.get("name"));
+
+        // 重打包后为 my-skill/SKILL.md + my-skill/helper.py
+        File repacked = ZipValidationUtils.repackIfFlat(zip, "my-skill");
+        try {
+            List<String> entries = listZipEntries(repacked);
+            assertTrue(entries.contains("my-skill/SKILL.md"));
+            assertTrue(entries.contains("my-skill/helper.py"));
+        } finally {
+            if (repacked != zip && repacked.exists()) {
+                repacked.delete();
+            }
+        }
+    }
+
+    // ==================== 并发测试 ====================
+
+    /**
+     * 并发调用 validateZipFile：N 个线程并发导入 N 个不同 skill，
+     * 每个线程拿到的 frontmatter 与各自包内 SKILL.md 一致
+     * 覆盖 §3.2.4 frontmatter 静态变量线程安全修复
+     */
+    @Test
+    public void testValidateZipFile_ConcurrentThreads_GetCorrectFrontmatter() throws Exception {
+        int threadCount = 8;
+        ExecutorService pool = Executors.newFixedThreadPool(threadCount);
+        try {
+            // 为每个线程创建一个独立的平铺包，name 各不相同
+            ConcurrentHashMap<Integer, String> actualNames = new ConcurrentHashMap<>();
+            List<Future<Void>> futures = new ArrayList<>();
+            for (int i = 0; i < threadCount; i++) {
+                final int idx = i;
+                final String skillName = "skill-" + idx;
+                Callable<Void> task = () -> {
+                    File zip = tempDir.resolve("concurrent-" + idx + "-" + UUID.randomUUID() + ".zip").toFile();
+                    try (FileOutputStream fos = new FileOutputStream(zip);
+                         ZipOutputStream zos = new ZipOutputStream(fos)) {
+                        ZipEntry skillMd = new ZipEntry("SKILL.md");
+                        zos.putNextEntry(skillMd);
+                        zos.write(("---\nname: " + skillName + "\ndescription: concurrent " + idx + "\n---\n# " + skillName)
+                                .getBytes(StandardCharsets.UTF_8));
+                        zos.closeEntry();
+                    }
+
+                    // 模拟并发：多线程同时调用 validateZipFile
+                    Map<String, Object> frontmatter = ZipValidationUtils.validateZipFile(zip);
+                    actualNames.put(idx, frontmatter.get("name").toString());
+
+                    // 清理
+                    zip.delete();
+                    return null;
+                };
+                futures.add(pool.submit(task));
+            }
+
+            // 等待全部完成，任意一个失败立即抛出
+            for (Future<Void> f : futures) {
+                f.get();
+            }
+
+            // 断言每个线程拿到各自的 name
+            for (int i = 0; i < threadCount; i++) {
+                assertEquals("skill-" + i, actualNames.get(i),
+                        "线程 " + i + " 拿到了错误的 frontmatter（线程安全回归）");
+            }
+        } finally {
+            pool.shutdown();
+            assertTrue(pool.awaitTermination(30, TimeUnit.SECONDS));
+        }
+    }
+
+    // ==================== 辅助方法 ====================
+
+    /**
+     * 列出 zip 文件中所有条目名（用于重打包结果断言）
+     */
+    private List<String> listZipEntries(File zipFile) throws IOException {
+        List<String> result = new ArrayList<>();
+        try (ZipFile zf = new ZipFile(zipFile)) {
+            Enumeration<? extends ZipEntry> entries = zf.entries();
+            while (entries.hasMoreElements()) {
+                ZipEntry entry = entries.nextElement();
+                if (!entry.isDirectory()) {
+                    result.add(entry.getName());
+                }
+            }
+        } catch (java.util.zip.ZipException e) {
+            // GBK 回退
+            try (ZipFile zf = new ZipFile(zipFile, java.nio.charset.Charset.forName("GBK"))) {
+                Enumeration<? extends ZipEntry> entries = zf.entries();
+                while (entries.hasMoreElements()) {
+                    ZipEntry entry = entries.nextElement();
+                    if (!entry.isDirectory()) {
+                        result.add(entry.getName());
+                    }
+                }
+            }
+        }
+        return result;
     }
 
 }

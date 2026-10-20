@@ -14,9 +14,14 @@ import com.openjiuwen.studio.agent.common.utils.ResponseModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
+
+import java.io.InputStream;
 
 /**
  * SkillManagement controller
@@ -56,5 +61,25 @@ public class SkillManagementApiController implements SkillManagementApi {
     public ResponseEntity<GetStudioSkillDetailsResponseBody> showStudioSkillDetail(String skillId, String workspaceId,
         String projectId) {
         return ResponseModel.success(skillManagementService.showStudioSkillDetail(skillId, workspaceId, projectId));
+    }
+
+    @Override
+    public ResponseEntity<StreamingResponseBody> getSkillPackageContent(String skillId, String workspaceId,
+        String projectId) {
+        InputStream obsStream = skillManagementService.getSkillPackageContent(skillId, workspaceId, projectId);
+        StreamingResponseBody body = outputStream -> {
+            try (InputStream in = obsStream) {
+                byte[] buffer = new byte[8192];
+                int bytesRead;
+                while ((bytesRead = in.read(buffer)) != -1) {
+                    outputStream.write(buffer, 0, bytesRead);
+                    outputStream.flush();
+                }
+            }
+        };
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+        headers.set(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + skillId + ".zip\"");
+        return ResponseEntity.ok().headers(headers).body(body);
     }
 }
