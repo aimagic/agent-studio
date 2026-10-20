@@ -12,7 +12,9 @@ import org.springframework.util.StringUtils;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -158,7 +160,17 @@ public class AuthProperties {
         private String ids = "";
 
         /**
-         * 解析 ids 为列表
+         * 保留值黑名单：SSO 响应缺字段时的默认回退值或无意义占位符。
+         * <p>这些值一旦被配置为系统用户 ID，会导致所有携带有效 SSO Token 但 SSO 未返回
+         * userId 的请求被误判为系统用户，从而跳过空间成员校验和权限校验，形成越权风险。
+         * 在 {@link #isSystemUser(String)} 和 {@link #getIdList()} 中均拒绝这些值，作为代码层兜底，
+         * 防止运维误配 + SSO 响应异常叠加导致的越权。</p>
+         */
+        private static final Set<String> RESERVED_IDS = new HashSet<>(Arrays.asList(
+            "unknown", "null", "none", "n/a", ""));
+
+        /**
+         * 解析 ids 为列表（过滤保留值）
          */
         public List<String> getIdList() {
             if (ids == null || ids.isBlank()) {
@@ -167,13 +179,19 @@ public class AuthProperties {
             return Arrays.stream(ids.split(","))
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
+                .filter(s -> !RESERVED_IDS.contains(s))
                 .collect(Collectors.toList());
         }
 
         /**
          * 判断 userId 是否为系统用户
+         * <p>拒绝 SSO 默认回退值（如 "unknown"）等保留值，
+         * 防止运维误配 auth_system_user_ids=unknown + SSO 响应缺 userId 时形成越权。</p>
          */
         public boolean isSystemUser(String userId) {
+            if (userId == null || RESERVED_IDS.contains(userId)) {
+                return false;
+            }
             return getIdList().contains(userId);
         }
     }

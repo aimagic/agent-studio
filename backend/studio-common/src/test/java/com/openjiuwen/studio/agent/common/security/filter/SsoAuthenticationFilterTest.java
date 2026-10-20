@@ -403,4 +403,23 @@ public class SsoAuthenticationFilterTest {
         verify(filterChain).doFilter(request, response);
         verify(request).setAttribute(eq(Constants.SYSTEM_USER_SKIP_ATTR), eq(Boolean.TRUE));
     }
+
+    // 场景：SSO 响应缺 userId 回退为 "unknown"，运维误配 auth_system_user_ids=unknown 时不触发免校验
+    // 防止所有有效 SSO Token 但缺 userId 的请求被误判为系统用户形成越权
+    @Test
+    void doFilter_reservedUserIdEvenIfMisconfigured_shouldNotSetSkipAttribute() throws Exception {
+        authProperties.getSystemUser().setIds("unknown");
+        setExcludedPaths(Collections.emptyList());
+
+        when(request.getRequestURI()).thenReturn("/api/data");
+        when(request.getHeader(HEADER_NAME)).thenReturn("valid-token");
+
+        SimpleUser userInfo = SimpleUser.builder().userId("unknown").userName("unknown").domainId("0").projectId("0").build();
+        when(ssoAuthenticationService.authenticate("valid-token")).thenReturn(Optional.of(userInfo));
+
+        filter.doFilterInternal(request, response, filterChain);
+
+        verify(filterChain).doFilter(request, response);
+        verify(request, never()).setAttribute(eq(Constants.SYSTEM_USER_SKIP_ATTR), any());
+    }
 }
