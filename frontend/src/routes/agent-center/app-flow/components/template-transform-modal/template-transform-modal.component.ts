@@ -17,6 +17,7 @@ import { NodeService } from '../../node.service';
 import type { IParamRef, ITemplateTransformNode, IWorkflowField } from '../../node.type';
 import { ModalBaseComponent } from '../base/modal-base.component';
 import { NodeUtils } from '../utils';
+import { rewriteTemplateInputRefs } from './rewrite-template-input-refs';
 
 @Component({
   selector: 'meta-template-transform-modal',
@@ -143,9 +144,7 @@ export class TemplateTransformModalComponent extends ModalBaseComponent implemen
     const newName = this.inputParams[index]?.name;
     if (oldName && newName && oldName !== newName) {
       const current = this.modelFormGroup.controls.template.value || '';
-      const next = current
-        .split(`{{ ${oldName}`).join(`{{ ${newName}`)
-        .split(`{{${oldName}`).join(`{{${newName}`);
+      const next = rewriteTemplateInputRefs(current, oldName, newName);
       if (next !== current) {
         this.modelFormGroup.controls.template.setValue(next);
       }
