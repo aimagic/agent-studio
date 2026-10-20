@@ -30,6 +30,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc python3-dev
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && rm -rf ${PACKAGES_HOME}/future/backports/test
 
+# 变更频率极低，放在应用代码之前以充分利用 Docker 缓存
+COPY extensions/ $SERVICE_HOME/app/extensions/
+
 # 再复制应用代码（变更频率高，放在依赖安装之后）
 # 注：agent_builder 已从 studio-runtime 镜像剥离，独立构建为 studio-builder 镜像
 COPY agent_runtime/ $SERVICE_HOME/app/agent_runtime/

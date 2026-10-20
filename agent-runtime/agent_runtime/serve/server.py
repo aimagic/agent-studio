@@ -115,6 +115,15 @@ from agent_runtime.extension.workflow_node.flow_code import FlowCode, JIUWEN_COD
 component_class_pool.register_component_class(JIUWEN_CODE_TYPE, FlowCode)
 logger.info("Registered workflow component: jiuwen.code")
 
+# 加载自定义插件组件
+from jiuwen.common.init import load_components
+
+try:
+    load_components()
+    logger.info("Custom plugin components loaded")
+except Exception as e:
+    logger.warning(f"Failed to load custom components: {e}")
+
 # FastAPI routers must be included BEFORE Flask app mount (Flask catches all routes)
 # 注：prompt_manage_app（agent_builder.app）已随 agent_builder 抽离到 studio-builder 镜像，runtime 不含。
 apps_map = [
@@ -193,8 +202,8 @@ async def lifespan(_app: FastAPI):
     try:
         await redis_client.ping()
         logger.info("Redis connection check passed")
-    except Exception as e:
-        raise RuntimeError(f"Redis connection check failed: {e}") from e
+    except Exception as exc:
+        raise RuntimeError(f"Redis connection check failed: {exc}") from exc
 
     # 启动终止广播订阅（终止接口：多实例取消信令，持有实例本地 task.cancel 尽力即时取消）
     cancel_subscriber_task = asyncio.create_task(
@@ -232,8 +241,8 @@ async def lifespan(_app: FastAPI):
         s3_provider = S3StorageProvider.instance()
         await s3_provider.initialize()
         logger.info("S3 async storage client initialized")
-    except Exception as e:
-        logger.warning(f"S3 async storage client initialization failed (non-critical): {e}")
+    except Exception as exc:
+        logger.warning(f"S3 async storage client initialization failed (non-critical): {exc}")
 
     # 初始化外部记忆凭证解析器（从 OBS auth 文件惰性取 api_key，镜像 model-auth 约定）
     try:
@@ -241,8 +250,8 @@ async def lifespan(_app: FastAPI):
         resolver = get_resolver()
         resolver.set_storage_provider(S3StorageProvider.instance())
         logger.info("Memory instance credential resolver initialized")
-    except Exception as e:
-        logger.warning(f"Memory instance credential resolver init failed (non-critical): {e}")
+    except Exception as exc:
+        logger.warning(f"Memory instance credential resolver init failed (non-critical): {exc}")
 
     # 注册 flow_code 专用的 SysOperation（local mode）
     # 注意：当 LOCAL_CODE_EXEC_MODE=inprocess（默认）时，代码节点使用进程内 exec() 执行，
@@ -310,8 +319,8 @@ async def lifespan(_app: FastAPI):
         try:
             s3_provider = S3StorageProvider.instance()
             await s3_provider.close()
-        except Exception as e:
-            logger.warning(f"S3 storage client close failed (non-critical): {e}")
+        except Exception as exc:
+            logger.warning(f"S3 storage client close failed (non-critical): {exc}")
 
         # 关闭 Redis 客户端（Provider 适配层 + legacy 单例，manager.close 幂等收口）
         await RedisClientManager.get_instance().close()

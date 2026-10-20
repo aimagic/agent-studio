@@ -8,6 +8,7 @@ This guide covers the various development and extension capabilities of the agen
 - [SSO Remote Auth Configuration](#sso-remote-auth-configuration)
 - [Storage Configuration and Extension](#storage-configuration-and-extension)
 - [Database Password Provider Extension](#database-password-provider-extension)
+- [Custom Plugin Development](#custom-plugin-development)
 - [Redis Adaptation Configuration and Extension](#redis-adaptation-configuration-and-extension)
 
 ---
@@ -742,3 +743,11 @@ class RedisProvider(ABC):
 ### Rollback and Disable
 
 Remove the Provider-related settings (Java: `redis.client-type` / `redis.provider-class` / `redis.provider-config*`; Python: `REDIS_PROVIDER*`) and restart the service to fall back to the default implementations (Java = Redisson, Python = native).
+
+---
+
+## Custom Plugin Development
+
+When existing HTTP API plugins cannot meet your needs (e.g., direct database access, file processing, canvas interaction, local computation, and other non-HTTP scenarios), the platform supports developing custom Python plugins with Schema-driven forms and custom execution logic.
+
+See the [Custom Plugin Development Guide](./custom-plugin-development-guide.md) for details on plugin structure, Python interface contract, SQL specification, integration methods, and self-check checklist.

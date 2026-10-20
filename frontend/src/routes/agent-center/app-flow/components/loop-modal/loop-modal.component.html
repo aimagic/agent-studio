@@ -256,6 +256,7 @@
                 nz-input
                 [(ngModel)]="param.name"
                 [title]="param.name"
+                (ngModelChange)="changeUpdateTime()"
                 (input)="onMidNameChange()"
                 (blur)="onMidRefChange()"
                 [valueValidityValidator]="getNames(midParams, i)"
@@ -319,9 +320,9 @@
                       style="width: 100%"
                       type="text"
                       [name]="'midParamValue' + i"
-                      nonEmptyValidator
                       nz-input
                       [placeholder]="'input_placeholder' | i18nextEager"
+                      (ngModelChange)="changeUpdateTime()"
                       (blur)="onMidRefChange()"
                       [(ngModel)]="param.value.content"
                       [title]="param.value.content"
@@ -350,10 +351,11 @@
                       style="width: 100%"
                       type="text"
                       [name]="'midParamValue' + i"
-                      nonEmptyValidator
                       integerStr
+                      nonEmptyValidator
                       nz-input
                       [placeholder]="'input_placeholder' | i18nextEager"
+                      (ngModelChange)="changeUpdateTime()"
                       (blur)="onMidRefChange()"
                       [(ngModel)]="param.value.content"
                       [title]="param.value.content"
@@ -369,10 +371,11 @@
                       style="width: 100%"
                       type="text"
                       [name]="'midParamValue' + i"
-                      nonEmptyValidator
                       numberStr
+                      nonEmptyValidator
                       nz-input
                       [placeholder]="'input_placeholder' | i18nextEager"
+                      (ngModelChange)="changeUpdateTime()"
                       (blur)="onMidRefChange()"
                       [(ngModel)]="param.value.content"
                       [title]="param.value.content"

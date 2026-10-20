@@ -2361,6 +2361,7 @@ export class AppFlowService {
         id: '',
         name: '',
         sql: '',
+        output_format: 'json',
       },
     };
   }
@@ -2426,6 +2427,7 @@ export class AppFlowService {
         id: '',
         name: '',
         sql: '',
+        output_format: 'json',
       },
     };
   }

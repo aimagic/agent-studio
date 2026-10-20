@@ -8,6 +8,7 @@
 - [SSO 远程鉴权配置](#sso-远程鉴权配置)
 - [存储配置与扩展](#存储配置与扩展)
 - [数据库密码获取扩展](#数据库密码获取扩展)
+- [自定义插件开发](#自定义插件开发)
 - [Redis 适配配置与扩展](#redis-适配配置与扩展)
 
 ---
@@ -739,3 +740,11 @@ class RedisProvider(ABC):
 ### 回退与关闭
 
 删除 Provider 相关配置（Java 侧 `redis.client-type` / `redis.provider-class` / `redis.provider-config*`，Python 侧 `REDIS_PROVIDER*`），重启服务即回退缺省实现（Java=Redisson，Python=native）。
+
+---
+
+## 自定义插件开发
+
+当现有 HTTP API 插件无法满足需求（如数据库直连、文件处理、画布交互、本地计算等非 HTTP 场景）时，平台支持开发自定义 Python 插件，通过 Schema 驱动表单 + 自定义执行逻辑实现扩展能力。
+
+详见 [自定义插件开发指南](./custom-plugin-development-guide.md)，包含插件结构、Python 接口契约、SQL 规范、集成方式和自查 Checklist。

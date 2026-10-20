@@ -7,6 +7,7 @@
   - [Deploy Service](how-to/deploy-service.md)
   - [Beta5 Upgrade Deployment](how-to/upgrade-from-beta4.md)
   - [Development Guide](how-to/development-guide.md)
+  - [Custom Plugin Development Guide](how-to/custom-plugin-development-guide.md)
   - [Asset Plaza Preset](how-to/asset-plaza-preset.md)
   - [Observability Deployment](how-to/configure-opentelemetry.md)
   - [Knowledge Base Integration Guide](how-to/knowledge-base-guide.md)
