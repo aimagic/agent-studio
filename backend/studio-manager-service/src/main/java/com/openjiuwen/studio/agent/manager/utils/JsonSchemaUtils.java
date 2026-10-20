@@ -184,12 +184,19 @@ public class JsonSchemaUtils {
     }
 
     /**
-     * 判断当前字段类型，是否不属于JsonSchema类型
+     * 判断当前字段类型，是否不属于JsonSchema类型。
+     *
+     * FEAT-073：file/<子类型>（如 file/image、file/video、file/default）为插件
+     * File 类型入参的合法类型标识，与开始节点 File 参数、运行时引擎的识别
+     * 体系三方一致，按前缀放行。
      *
      * @param type 字段类型
      * @return true：不属于JsonSchema类型，false：属于JsonSchema类型
      */
     private static boolean isNotJsonSchemaType(String type) {
+        if (type != null && type.startsWith("file/")) {
+            return false;
+        }
         return Arrays.stream(JsonSchemaType.values()).noneMatch(jsonSchemaType -> jsonSchemaType.type.equals(type));
     }
 
@@ -252,6 +259,12 @@ public class JsonSchemaUtils {
         if (Objects.nonNull(jsonNode.get(DEFAULT))) {
             JsonNode defaultNode = jsonNode.get(DEFAULT);
             if (StringUtils.isBlank(defaultNode.asText())) {
+                return;
+            }
+            // FEAT-073：file/<子类型>（file/image 等）不在 JsonSchemaType 枚举内，
+            // valueOf 会抛 IllegalArgumentException 使接口 500 而非受控错误；
+            // 其默认值为文件 URL 字符串，无 number/integer/boolean 格式校验，直接放行
+            if (type.startsWith("file/")) {
                 return;
             }
             switch (JsonSchemaType.valueOf(type.toUpperCase(Locale.ROOT))) {
