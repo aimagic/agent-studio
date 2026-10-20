@@ -1,7 +1,0 @@
-Metadata-Version: 2.4
-Name: redis-native
-Version: 0.1.0
-Summary: openJiuwen Redis SPI 内置原生实现（redis-py 委托；运行时镜像内唯一允许 import redis 的包）
-Requires-Python: >=3.11
-Requires-Dist: redis>=5.0
-Requires-Dist: redis-spi

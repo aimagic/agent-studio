@@ -1,7 +1,0 @@
-Metadata-Version: 2.4
-Name: redis-spi
-Version: 0.1.0
-Summary: Redis 适配层 SPI：能力协议、契约类型、异常体系、Provider 工厂与注册表（零 redis-py 依赖）
-Requires-Python: >=3.11
-Requires-Dist: pydantic>=2.0
-Requires-Dist: pydantic-settings>=2.0
