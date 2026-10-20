@@ -1,7 +1,7 @@
 # -*- coding: UTF-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""以独名注册本目录 fakes，规避两包 tests/fakes.py 同名互撞与
-importlib 收集模式下顶层 `from fakes import` 不可达的问题。"""
+# 以独名注册本目录 fakes：规避两包 tests/fakes.py 同名互撞，以及
+# importlib 收集模式下顶层 `from fakes import` 不可达的问题。
 
 import importlib.util
 import pathlib
