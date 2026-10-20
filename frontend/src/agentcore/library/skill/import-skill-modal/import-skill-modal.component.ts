@@ -206,18 +206,33 @@ export class ImportSkillModalComponent {
     // （importZipErrorTip 仅在 @if (isShowResult) 区块内渲染，见模板）。
     this.isShowResult = false;
 
+    // 与后端 validateDirectoryStructure 的 equalsIgnoreCase 对齐：SKILL.md 判断大小写不敏感
+    const SKILL_MD_LOWER = 'skill.md';
+    const findSkillMdKey = (predicate: (path: string) => boolean) =>
+      rootFiles.find(p => {
+        const lower = p.toLowerCase();
+        return predicate(lower);
+      });
+    const findNestedSkillMdKey = () =>
+      rootFiles.find(p => {
+        const lower = p.toLowerCase();
+        // 根级 SKILL.md 之外的、以 /skill.md 结尾的路径（子目录 SKILL.md）
+        return lower !== SKILL_MD_LOWER && lower.endsWith('/' + SKILL_MD_LOWER);
+      });
+
     // 策略1：根级 SKILL.md（平铺结构）
-    if (fileMap['SKILL.md']) {
+    const rootSkillMdKey = findSkillMdKey(p => p === SKILL_MD_LOWER);
+    if (rootSkillMdKey) {
       // 与后端 validateDirectoryStructure 对齐：根级有 SKILL.md 时禁止子目录再出现 SKILL.md，
       // 否则后端会以 FILES_NUMBER_DOES_NOT_MATCH 拒绝，避免预览通过但导入失败。
-      const hasNestedSkillMd = rootFiles.some(p => p !== 'SKILL.md' && p.endsWith('/SKILL.md'));
-      if (hasNestedSkillMd) {
+      const nestedSkillMdKey = findNestedSkillMdKey();
+      if (nestedSkillMdKey) {
         this.skillInfo = { name: '', description: '' };
         this.importZipErrorTip = this.i18n.transform('skill.import.result.valid.tip1');
         this.isShowResult = true;
         return;
       }
-      this.skillInfo = this.parseSkillMd(fileMap['SKILL.md']);
+      this.skillInfo = this.parseSkillMd(fileMap[rootSkillMdKey]);
       if (!this.skillInfo?.name?.trim() || !this.skillInfo?.description?.trim()) {
         this.skillInfo = { name: '', description: '' };
         this.importZipErrorTip = this.i18n.transform('skill.import.result.null');
@@ -231,7 +246,7 @@ export class ImportSkillModalComponent {
     // 策略2：单文件夹结构 {folderName}/SKILL.md
     // 与后端对齐：根级无 SKILL.md 时，允许根级存在额外附属文件（如 README.md），
     // 只要存在唯一一个含 SKILL.md 的子目录即可（不再强制根级只能有一个目录）。
-    const skillMdCandidates = rootFiles.filter(p => p.endsWith('/SKILL.md'));
+    const skillMdCandidates = rootFiles.filter(p => p.toLowerCase().endsWith('/' + SKILL_MD_LOWER));
     if (skillMdCandidates.length !== 1) {
       this.skillInfo = { name: '', description: '' };
       this.importZipErrorTip = this.i18n.transform('skill.import.result.valid.tip1');
@@ -239,7 +254,7 @@ export class ImportSkillModalComponent {
       return;
     }
     const skillMdPath = skillMdCandidates[0];
-    const folderName = skillMdPath.slice(0, -'/SKILL.md'.length);
+    const folderName = skillMdPath.slice(0, -('/' + SKILL_MD_LOWER).length);
     // SKILL.md 必须直接位于该子目录根级，不允许 a/b/SKILL.md（后端校验 {name}/SKILL.md 规范）
     if (folderName.includes('/')) {
       this.skillInfo = { name: '', description: '' };

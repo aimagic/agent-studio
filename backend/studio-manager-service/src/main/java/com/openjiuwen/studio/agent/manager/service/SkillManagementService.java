@@ -148,15 +148,19 @@ public class SkillManagementService implements ISkillManagementService {
      * 复用 {@link MgObsService#readObsFileStream(String)} 直接读取 OBS 对象字节流，
      * 由 Controller 层包装为 StreamingResponseBody 流式转发给前端。</p>
      *
-     * <p><b>访问控制</b>：不做 domainId / workspaceId / projectId 比对。
-     * 原因：skill 市场按 published_asset 查询时不带 domainId 过滤（SkillMapper.xml search），
-     * 市场资源可能来自其他 domain；同时 showStudioSkillDetail 也不校验 domainId 即可返回详情。
-     * 若本接口加 domainId 校验，会导致市场资源详情页"元信息能加载、文件树变空"的割裂回归
-     * （详见检视意见 High Priority #127、#151）。
-     * 跨 domain 的已发布/共享资源预览属于既有契约，不在 vencent-m 原意见覆盖范围。</p>
+     * <p><b>访问控制（按发布状态区分）</b>：</p>
+     * <ul>
+     *   <li><b>已发布资源</b>（published_asset = 1）：跳过 domainId 校验。
+     *       skill 市场按 published_asset 查询时不带 domainId 过滤，市场资源可能来自其他 domain，
+     *       跨 domain 预览属于既有契约（详见检视意见 #127、#151）。</li>
+     *   <li><b>私有包</b>（published_asset = 0 或 null）：必须校验 domainId 归属。
+     *       私有 skill 的完整制品包含源码与工具配置，不应被其他 domain 的用户越权拉取
+     *       （详见检视意见 Medium Priority #168）。鉴权强度与 deleteStudioSkill 对齐。</li>
+     * </ul>
+     * <p>不比对 workspaceId / projectId：同 domain 内跨工作区/项目的预览属于既有契约。</p>
      *
-     * <p>实现说明：使用 {@link SkillMapper#searchBySkillId(String)}（LEFT JOIN 版本表）
-     * 一次性拿到 obs_path，仅做存在性校验。</p>
+     * <p>实现说明：使用 {@link SkillMapper#searchBySkillId(String)}（LEFT JOIN 版本表 + t_skill.*）
+     * 一次性拿到 obs_path / domain_id / published_asset。</p>
      *
      * <p>返回的 InputStream 由调用方（Controller）负责关闭。</p>
      */
@@ -170,8 +174,16 @@ public class SkillManagementService implements ISkillManagementService {
             log.error("Skill not exists or obs path is empty, skillId: {}", skillId);
             throw new AgentStudioException(StudioError.SKILL_NOT_EXISTS);
         }
-        // 不做 domainId/workspaceId/projectId 校验：保留跨 domain 市场资源预览的既有契约
-        // （与 showStudioSkillDetail / listStudioSkills(publishedAsset=1) 的访问控制强度对齐）
+        // 访问控制：私有包必须校验 domainId，已发布资源跳过（保留跨 domain 市场预览契约）
+        boolean isPublished = skill.getPublishedAsset() != null && skill.getPublishedAsset() == 1;
+        if (!isPublished) {
+            String requestDomainId = RequestContextUtils.getRequestUserDomainId();
+            if (!Objects.equals(skill.getDomainId(), requestDomainId)) {
+                log.error("Private skill does not belong to the current domain, skillId: {}, domainId: {}, requestDomainId: {}",
+                        skillId, skill.getDomainId(), requestDomainId);
+                throw new AgentStudioException(StudioError.SKILL_NOT_EXISTS);
+            }
+        }
         return mgObsService.readObsFileStream(skill.getObsPath());
     }
 
