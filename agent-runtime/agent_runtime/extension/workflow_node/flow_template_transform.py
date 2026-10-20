@@ -54,7 +54,7 @@ class FlowTemplateTransform(WorkflowComponent):
                 reason=str(exc),
                 workflow="n/a",
                 cause=exc,
-            )
+            ) from exc
 
         if not isinstance(self._conf.template, str) or not self._conf.template.strip():
             raise build_error(
@@ -110,7 +110,7 @@ class FlowTemplateTransform(WorkflowComponent):
                 reason=str(exc),
                 workflow=session.get_workflow_id(),
                 cause=exc,
-            )
+            ) from exc
 
     async def stream(
         self, inputs: Input, session: Session, context: ModelContext

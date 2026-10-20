@@ -1,4 +1,5 @@
 # coding: utf-8
+# pylint: disable=protected-access
 """模板转换节点必须能从 IR 创建出来，否则单节点调试会报 101040。"""
 
 import asyncio
@@ -27,9 +28,10 @@ def test_create_component_maps_template_transform():
         },
     }
 
-    component, node_type, _configs = asyncio.run(IRConverter._create_component(node, None))
+    component, node_type, configs = asyncio.run(IRConverter._create_component(node, None))
 
     assert node_type == "jiuwen.templateTransform"
     assert isinstance(component, FlowTemplateTransform)
-    assert component._conf.template == "用户名称：{{ data.get('customerName') }}"
-    assert component._conf.user_fields["inputs"][0]["id"] == "data"
+    assert component.component_type() == "jiuwen.templateTransform"
+    assert configs.get("template") == "用户名称：{{ data.get('customerName') }}"
+    assert configs.get("userFields", {}).get("inputs", [])[0]["id"] == "data"
