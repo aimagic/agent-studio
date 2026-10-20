@@ -161,7 +161,7 @@ class ScanCommandsMixin:
         *,
         match: Value | None = None,
         count: int | None = None,
-        type_name = None,
+        type_name=None,
     ) -> ScanBatch:
         # SPI ``type`` → redis-py ``_type``（参数名遮蔽内建/关键字）。
         next_cursor, items = await self._redis.scan(  # type: ignore[attr-defined]

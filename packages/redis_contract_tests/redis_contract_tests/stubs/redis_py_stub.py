@@ -388,7 +388,7 @@ class InMemoryRedisPyStub:
         current = self._strings.get(key, b"")
         if offset > len(current):
             current = current + b"\x00" * (offset - len(current))
-        self._strings[key] = current[:offset] + chunk + current[offset + len(chunk) :]
+        self._strings[key] = current[:offset] + chunk + current[offset + len(chunk):]
         return len(self._strings[key])
 
     # ---------------------------------------------------------------- Hash

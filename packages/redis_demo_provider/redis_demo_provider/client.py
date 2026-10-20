@@ -419,7 +419,7 @@ class AcmeDemoClient:
         *,
         match: Value | None = None,
         count: int | None = None,
-        type_name = None,
+        type_name=None,
     ) -> ScanBatch:
         next_cursor, items = await self._redis.scan(
             cursor, match=match, count=count, _type=type_name
