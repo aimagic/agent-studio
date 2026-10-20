@@ -20,8 +20,7 @@ class DemoProviderContractTest extends RedisContractTestBase {
     protected RedisClient createClient() {
         // 走工厂链路（含企业专属参数透传），与生产装配路径一致
         RedisProviderContext context = new RedisProviderContext.Builder()
-            .host("demo-local")
-            .port(6379)
+            .singleNode("demo-local", 6379, 0)
             .rawConfig(Map.of("logCommands", false, "latencyMillis", 0))
             .build();
         return new DemoRedisProviderFactory().create(context);

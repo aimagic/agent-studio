@@ -61,15 +61,11 @@ public class RedisProviderAutoConfig {
         List<String> targetPorts = parseCsv(config.getTargetPorts());
 
         return new RedisProviderContext.Builder()
-            .host(config.getRedisHost())
-            .port(config.getRedisPort())
-            .password(config.getRedisPassword())
-            .connectionMinimumIdleSize(config.getConnectionMinimumIdleSize())
-            .connectionPoolSize(config.getConnectionPoolSize())
-            .clusterNodeList(clusterNodes)
-            .sentinelMasterName(config.getMasterName())
-            .sentinelNodeList(sentinelNodes)
-            .sentinelTargetPorts(targetPorts)
+            .singleNode(config.getRedisHost(), config.getRedisPort(), 0)
+            .auth(config.getRedisPassword())
+            .poolSizes(config.getConnectionMinimumIdleSize(), config.getConnectionPoolSize())
+            .clusterNodes(clusterNodes)
+            .sentinel(config.getMasterName(), sentinelNodes, targetPorts)
             .rawConfig(rawConfig)
             .build();
     }

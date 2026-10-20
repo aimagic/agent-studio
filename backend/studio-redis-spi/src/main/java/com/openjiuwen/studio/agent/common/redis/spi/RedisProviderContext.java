@@ -144,7 +144,8 @@ public class RedisProviderContext {
     }
 
     /**
-     * Builder 模式构造上下文。
+     * 按配置域分组的流式构造器：每个域一次设一组相关字段，调用方按
+     * 实际部署形态选择需要的域（单机/集群/哨兵在同一上下文中互斥）。
      */
     public static class Builder {
         private String host;
@@ -159,56 +160,54 @@ public class RedisProviderContext {
         private List<String> sentinelTargetPorts = List.of();
         private Map<String, Object> rawConfig = Map.of();
 
-        public Builder host(String host) {
+        /**
+         * 单机直连域：地址、端口与库编号（库编号仅单机语义，集群忽略）。
+         */
+        public Builder singleNode(String host, int port, int database) {
             this.host = host;
-            return this;
-        }
-
-        public Builder port(int port) {
             this.port = port;
-            return this;
-        }
-
-        public Builder password(String password) {
-            this.password = password;
-            return this;
-        }
-
-        public Builder database(int database) {
             this.database = database;
             return this;
         }
 
-        public Builder connectionMinimumIdleSize(int size) {
-            this.connectionMinimumIdleSize = size;
+        /**
+         * 认证域：已解密密码。
+         */
+        public Builder auth(String password) {
+            this.password = password;
             return this;
         }
 
-        public Builder connectionPoolSize(int size) {
-            this.connectionPoolSize = size;
+        /**
+         * 连接池域：最小空闲与上限成对设置。
+         */
+        public Builder poolSizes(int minimumIdle, int maximum) {
+            this.connectionMinimumIdleSize = minimumIdle;
+            this.connectionPoolSize = maximum;
             return this;
         }
 
-        public Builder clusterNodeList(List<String> nodeList) {
+        /**
+         * 集群节点域。
+         */
+        public Builder clusterNodes(List<String> nodeList) {
             this.clusterNodeList = nodeList != null ? List.copyOf(nodeList) : List.of();
             return this;
         }
 
-        public Builder sentinelMasterName(String masterName) {
+        /**
+         * 哨兵域：master 名、哨兵地址列表与数据节点目标端口列表。
+         */
+        public Builder sentinel(String masterName, List<String> nodeList, List<String> targetPorts) {
             this.sentinelMasterName = masterName;
-            return this;
-        }
-
-        public Builder sentinelNodeList(List<String> nodeList) {
             this.sentinelNodeList = nodeList != null ? List.copyOf(nodeList) : List.of();
+            this.sentinelTargetPorts = targetPorts != null ? List.copyOf(targetPorts) : List.of();
             return this;
         }
 
-        public Builder sentinelTargetPorts(List<String> ports) {
-            this.sentinelTargetPorts = ports != null ? List.copyOf(ports) : List.of();
-            return this;
-        }
-
+        /**
+         * 企业专属参数域（null 值剔除后不可变化）。
+         */
         public Builder rawConfig(Map<String, Object> rawConfig) {
             if (rawConfig != null) {
                 // Map.copyOf 拒绝 null 值（JSON "key": null 场景），此处过滤为显式契约
