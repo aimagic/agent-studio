@@ -79,12 +79,24 @@ public class RedisClientAutoConfig {
      * </ul>
      */
     private ObjectMapper buildRedisObjectMapper() {
-        ObjectMapper mapper = objectMapper != null ? objectMapper.copy() : new ObjectMapper();
-        mapper.registerModule(new JavaTimeModule());
-        mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        mapper.setVisibility(PropertyAccessor.ALL, JsonAutoDetect.Visibility.ANY);
-        mapper.activateDefaultTyping(mapper.getPolymorphicTypeValidator(),
+        // 值编码专用 mapper：优先复用全局实例的副本（沉淀全局定制），否则独立构建
+        ObjectMapper valueMapper = new ObjectMapper();
+        if (objectMapper != null) {
+            valueMapper = objectMapper.copy();
+        }
+
+        // 多态类型信息保留：兼容既有缓存值以 @class 属性落库的历史数据——
+        // 关闭会丢失具体类型、EVERYTHING 范围过宽则扩大反序列化攻击面；
+        // 校验器取 mapper 自带口径，仅放行已注册/基础类型
+        valueMapper.activateDefaultTyping(valueMapper.getPolymorphicTypeValidator(),
             ObjectMapper.DefaultTyping.NON_FINAL, JsonTypeInfo.As.PROPERTY);
-        return mapper;
+
+        // 时间类型按 ISO 文本落库（JSR-310 全量注册，回读不依赖应用时区）
+        valueMapper.registerModule(new JavaTimeModule());
+        valueMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+
+        // 序列化取全部字段（含 private），不依赖 getter 命名
+        valueMapper.setVisibility(PropertyAccessor.ALL, JsonAutoDetect.Visibility.ANY);
+        return valueMapper;
     }
 }
