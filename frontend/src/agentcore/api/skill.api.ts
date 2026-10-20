@@ -87,6 +87,9 @@ export class SkillApi extends JiuwenBaseApi {
   getSkillPackageContent(skillId: string): Observable<ArrayBuffer> {
     return this.request.get({
       url: `${this.prefix}/${skillId}/package-content`,
+      query: {
+        workspace_id: this.request.getWorkspaceId(),
+      },
       dataType: 'arraybuffer',
     } as any);
   }

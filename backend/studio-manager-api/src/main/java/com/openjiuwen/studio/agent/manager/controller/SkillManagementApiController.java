@@ -78,7 +78,8 @@ public class SkillManagementApiController implements SkillManagementApi {
             }
         };
         HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+        // 与接口声明 produces = {"application/zip"} 保持一致，避免 Content-Type 与 Accept 协商不一致
+        headers.setContentType(MediaType.parseMediaType("application/zip"));
         headers.set(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + skillId + ".zip\"");
         return ResponseEntity.ok().headers(headers).body(body);
     }

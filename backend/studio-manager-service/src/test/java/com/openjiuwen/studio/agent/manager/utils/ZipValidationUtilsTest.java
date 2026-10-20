@@ -310,6 +310,46 @@ public class ZipValidationUtilsTest {
     }
 
     /**
+     * 负向：zip 条目名以 "/" 开头（绝对路径）→ 拦截，避免 destDir.resolve 写出临时目录外。
+     * 覆盖意见 C：validateZipSecurity 原仅拦截 ".." 相对穿越，未拦截绝对路径条目。
+     */
+    @Test
+    public void testValidateZipFile_AbsolutePathEntry() throws IOException {
+        File absZip = tempDir.resolve("absolute-entry.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(absZip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry absEntry = new ZipEntry("/etc/passwd");
+            zos.putNextEntry(absEntry);
+            zos.write("evil".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        AgentStudioException exception = assertThrows(AgentStudioException.class, () ->
+                ZipValidationUtils.validateZipFile(absZip));
+        assertEquals(StudioError.INSECURE_PATH, exception.getErrorCode());
+    }
+
+    /**
+     * 负向：zip 条目名为 Windows 盘符绝对路径（如 C:\evil.txt）→ 拦截。
+     * 覆盖意见 C：Windows 盘符路径穿越。
+     */
+    @Test
+    public void testValidateZipFile_WindowsDriveAbsolutePathEntry() throws IOException {
+        File driveZip = tempDir.resolve("drive-entry.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(driveZip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry driveEntry = new ZipEntry("C:\\evil.txt");
+            zos.putNextEntry(driveEntry);
+            zos.write("evil".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        AgentStudioException exception = assertThrows(AgentStudioException.class, () ->
+                ZipValidationUtils.validateZipFile(driveZip));
+        assertEquals(StudioError.INSECURE_PATH, exception.getErrorCode());
+    }
+
+    /**
      * 测试符号链接
      */
     @Test
@@ -862,9 +902,10 @@ public class ZipValidationUtilsTest {
     }
 
     /**
-     * 负向：单文件夹包中 SKILL.md 位于深层子目录 a/b/SKILL.md → skillDirs.size()==1 通过结构校验，
-     * 但 isValidDirectoryName 拿 "b" 与 name 比对失败 → 抛 NAME_FORMAT_MISMATCH
-     * 覆盖该行为路径
+     * 负向：单文件夹包中 SKILL.md 位于深层子目录 a/b/SKILL.md
+     * → 结构校验阶段拦截：SKILL.md 所在目录不是 baseDir 的直接子目录
+     * （rel.getNameCount() != 1），抛 FILES_NUMBER_DOES_NOT_MATCH。
+     * 覆盖意见 G：禁止 a/b/SKILL.md 通过，避免生成不符合 {name}/SKILL.md 规范的制品。
      */
     @Test
     public void testValidateZipFile_DeepSkillMd_NameMismatch() throws IOException {
@@ -879,6 +920,39 @@ public class ZipValidationUtilsTest {
 
         AgentStudioException exception = assertThrows(AgentStudioException.class, () ->
                 ZipValidationUtils.validateZipFile(zip));
+        assertEquals(StudioError.FILES_NUMBER_DOES_NOT_MATCH, exception.getErrorCode());
+    }
+
+    /**
+     * 负向：平铺包根级存在与 skillName 同名的<b>文件</b>（非目录）
+     * → repackIfFlat 在 Files.createDirectories 时抛 FileAlreadyExistsException
+     * → 显式捕获并返回 NAME_FORMAT_MISMATCH（而非泛化的 RESOURCE_READER_ERROR）。
+     * 覆盖意见 H：避免错误码误导排错。
+     */
+    @Test
+    public void testRepackIfFlat_FlatLayout_RootConflictFileName() throws IOException {
+        File zip = tempDir.resolve("repack-conflict.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            // 根级同名文件（非目录）
+            ZipEntry conflict = new ZipEntry("my-skill");
+            zos.putNextEntry(conflict);
+            zos.write("not a directory".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            ZipEntry skillMd = new ZipEntry("SKILL.md");
+            zos.putNextEntry(skillMd);
+            zos.write("---\nname: my-skill\ndescription: conflict\n---\n# Conflict".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        // 先校验通过（validateDirectoryStructure 不拦截同名文件）
+        Map<String, Object> frontmatter = assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(zip));
+        assertEquals("my-skill", frontmatter.get("name"));
+
+        // 重打包阶段应抛 NAME_FORMAT_MISMATCH
+        AgentStudioException exception = assertThrows(AgentStudioException.class, () ->
+                ZipValidationUtils.repackIfFlat(zip, "my-skill"));
         assertEquals(StudioError.NAME_FORMAT_MISMATCH, exception.getErrorCode());
     }
 

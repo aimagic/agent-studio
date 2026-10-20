@@ -227,10 +227,32 @@ public class ZipValidationUtils {
     }
 
     /**
-     * 检查路径穿越
+     * 检查路径穿越。
+     *
+     * <p>拦截以下三类恶意条目名：</p>
+     * <ol>
+     *   <li>相对路径穿越：包含 {@code ../} 或 {@code ..\}，或以 {@code ..} 开头；</li>
+     *   <li>绝对路径条目：以 {@code /} 或 {@code \} 开头，或以 Windows 盘符（如 {@code C:}）开头，
+     *       避免 {@code destDir.resolve(entry.getName())} 写出到临时目录之外；</li>
+     *   <li>盘符分隔：包含 {@code :} 作为路径段（Windows 盘符）。</li>
+     * </ol>
      */
     private static boolean containsPathTraversal(String path) {
-        return path.contains("../") || path.contains("..\\") || path.startsWith("..");
+        if (path == null || path.isEmpty()) {
+            return false;
+        }
+        if (path.contains("../") || path.contains("..\\") || path.startsWith("..")) {
+            return true;
+        }
+        // 绝对路径条目（Unix 或 Windows）
+        if (path.charAt(0) == '/' || path.charAt(0) == '\\') {
+            return true;
+        }
+        // Windows 盘符绝对路径，如 C:\ 或 C:/（长度 >= 2 且第 2 个字符为 ':'）
+        if (path.length() >= 2 && path.charAt(1) == ':') {
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -330,6 +352,15 @@ public class ZipValidationUtils {
      * <p>平铺结构优先判定：根级有 SKILL.md 即视为平铺包，允许任意数量的附属文件/文件夹，
      * 但显式禁止子目录下再出现 SKILL.md，避免后续 Files.walk 查找歧义。
      * 根级无 SKILL.md 时才进入"单子目录含 SKILL.md"分支。</p>
+     *
+     * <p><b>单文件夹结构的根级约束</b>：仅认可直接位于子目录根级的 SKILL.md
+     * （即 {@code baseDir/<name>/SKILL.md}）。</p>
+     * <ul>
+     *   <li>禁止 {@code a/b/SKILL.md}：即 SKILL.md 嵌套在二级及更深子目录，
+     *       即使 name=b 也无法通过——否则会以原始结构上传，生成不符合
+     *       {@code {name}/SKILL.md} 规范的制品，下游消费方可能解析失败；</li>
+     *   <li>skillDirs.size() != 1 拒绝：含 SKILL.md 的直接子目录数量必须恰为 1。</li>
+     * </ul>
      */
     private static void validateDirectoryStructure(Path baseDir) throws IOException {
         // 情况1：根目录有 SKILL.md（平铺结构），允许任意数量的附属文件夹/文件
@@ -350,11 +381,13 @@ public class ZipValidationUtils {
             return; // 有效结构（平铺）
         }
 
-        // 情况2：根目录无 SKILL.md，需恰有 1 个子目录含 SKILL.md（单文件夹结构）
-        try (Stream<Path> paths = Files.walk(baseDir)) {
-            List<Path> allDirs = paths.filter(Files::isDirectory).filter(p -> !p.equals(baseDir)).toList();
+        // 情况2：根目录无 SKILL.md，需恰有 1 个直接子目录含 SKILL.md（单文件夹结构）
+        // 仅认可 baseDir/<name>/SKILL.md，禁止 a/b/SKILL.md 嵌套结构。
+        List<Path> skillDirs = new ArrayList<>();
+        try (Stream<Path> allPaths = Files.walk(baseDir)) {
+            List<Path> allDirs = allPaths.filter(Files::isDirectory).filter(p -> !p.equals(baseDir)).toList();
 
-            // 过滤掉空目录
+            // 过滤掉空目录，仅保留非空目录
             List<Path> nonEmptyDirs = new ArrayList<>();
             for (Path dir : allDirs) {
                 try (Stream<Path> dirContents = Files.list(dir)) {
@@ -364,9 +397,17 @@ public class ZipValidationUtils {
                 }
             }
 
-            List<Path> skillDirs = new ArrayList<>();
+            // 仅取直接位于 baseDir 下且自身根级含 SKILL.md 的子目录
+            // （skillMdFile.parent == baseDir.resolve(name) 时，name 应直接是 baseDir 的子段）
             for (Path dir : nonEmptyDirs) {
-                if (Files.exists(dir.resolve("SKILL.md"))) {
+                Path skillMdAtRoot = dir.resolve("SKILL.md");
+                if (Files.exists(skillMdAtRoot)) {
+                    // 强制 SKILL.md 所在目录必须是 baseDir 的直接子目录（深度=1）
+                    Path rel = baseDir.relativize(dir);
+                    if (rel.getNameCount() != 1) {
+                        log.error("Nested SKILL.md directory must be a direct child of base, got: {}", rel);
+                        throw new AgentStudioException(StudioError.FILES_NUMBER_DOES_NOT_MATCH);
+                    }
                     skillDirs.add(dir);
                 }
             }
@@ -642,14 +683,20 @@ public class ZipValidationUtils {
      * {@link #validateZipFile(File)} 完成安全校验后再调用本方法，
      * 否则可能解压恶意构造的 zip 导致路径穿越风险。</p>
      *
+     * <p><b>并发安全</b>：重打包产物使用 {@link Files#createTempFile(String, String, File[])}
+     * 生成 UUID 前缀的唯一临时文件（与 {@code convertToZipFile} 命名策略一致），
+     * 避免多线程并发导入同名 skill 时写同一路径导致互相覆盖或被 finally 误删。
+     * 调用方 finally 仅负责清理本方法返回的 zip 文件（若与入参不同），不会误删他人产物。</p>
+     *
      * <p><b>边缘场景</b>：若平铺包根级恰好存在与 skillName 同名的子目录
      * （如 SKILL.md + my-skill/helper.py，其中 name=my-skill），
-     * Files.createDirectories 不会报错（目录已存在），
-     * Files.list 循环对该同名目录的 !entry.equals(targetDir) 为 false → 跳过移动，
+     * {@code Files.createDirectories} 不会报错（目录已存在），
+     * {@code Files.list} 循环对该同名目录的 {@code !entry.equals(targetDir)} 为 false → 跳过移动，
      * 该目录原内容保留在 tempDir/my-skill/ 下；后续 zipDirectory(tempDir/my-skill, ...)
-     * 会把原内容一并打包。最终结果正确（my-skill/SKILL.md + my-skill/helper.py），
-     * 仅代码意图不直观。若需更清晰可改为先把同名目录重命名为临时名（如
-     * skillName + ".orig"），再统一 move；本次不强制改造，仅保留注释说明。</p>
+     * 会把原内容一并打包。最终结果正确（my-skill/SKILL.md + my-skill/helper.py）。
+     * 但若根级存在与 skillName 同名的<b>文件</b>（非目录），{@code Files.createDirectories}
+     * 会抛 {@link java.nio.file.FileAlreadyExistsException} → 被泛化为 RESOURCE_READER_ERROR，
+     * 本实现显式捕获并返回更精确的 NAME_FORMAT_MISMATCH。</p>
      *
      * @param zipFile 已通过 {@link #validateZipFile(File)} 校验的 zip 文件
      * @param skillName SKILL.md frontmatter 中的 name 字段值
@@ -671,7 +718,13 @@ public class ZipValidationUtils {
 
             // 平铺结构：创建 {skillName}/ 子目录，将根级所有条目移入
             Path targetDir = tempDir.resolve(skillName);
-            Files.createDirectories(targetDir);
+            try {
+                Files.createDirectories(targetDir);
+            } catch (java.nio.file.FileAlreadyExistsException faee) {
+                // 根级已存在与 skillName 同名的文件（非目录），结构非法
+                log.error("Root-level entry conflicts with skill name directory: {}", skillName);
+                throw new AgentStudioException(StudioError.NAME_FORMAT_MISMATCH);
+            }
             try (Stream<Path> entries = Files.list(tempDir)) {
                 for (Path entry : entries.toList()) {
                     if (!entry.equals(targetDir)) {
@@ -681,8 +734,8 @@ public class ZipValidationUtils {
                 }
             }
 
-            // 重新打包为 zip，使用 UTF-8 编码避免中文文件名乱码
-            repackedZip = new File(zipFile.getParent(), skillName + ".zip");
+            // 重新打包为 zip：使用唯一临时文件，避免并发导入同名 skill 时互相覆盖
+            repackedZip = Files.createTempFile(skillName + "-", ".zip").toFile();
             zipDirectory(targetDir, repackedZip, skillName);
             log.info("Repacked flat skill package to {}/ structure: {}", skillName, repackedZip.getName());
             return repackedZip;

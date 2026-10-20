@@ -201,17 +201,27 @@ export class ImportSkillModalComponent {
     }
     const rootFiles = Object.keys(fileMap);
 
-    // isShowResult 语义：仅当成功解析出 SKILL.md 且 frontmatter 含 name/description 时置 true，
-    // 用于控制解析结果区域的展示；任何错误分支（结构异常/缺 SKILL.md/frontmatter 缺字段）
-    // 必须显式置 false，避免 UI 误展示成功状态。
+    // isShowResult 语义：成功解析出 SKILL.md 且 frontmatter 含 name/description 时置 true；
+    // 错误分支同样保持 true，但清空 skillInfo，以便模板 @else 分支渲染 importZipErrorTip
+    // （importZipErrorTip 仅在 @if (isShowResult) 区块内渲染，见模板）。
     this.isShowResult = false;
 
     // 策略1：根级 SKILL.md（平铺结构）
     if (fileMap['SKILL.md']) {
+      // 与后端 validateDirectoryStructure 对齐：根级有 SKILL.md 时禁止子目录再出现 SKILL.md，
+      // 否则后端会以 FILES_NUMBER_DOES_NOT_MATCH 拒绝，避免预览通过但导入失败。
+      const hasNestedSkillMd = rootFiles.some(p => p !== 'SKILL.md' && p.endsWith('/SKILL.md'));
+      if (hasNestedSkillMd) {
+        this.skillInfo = { name: '', description: '' };
+        this.importZipErrorTip = this.i18n.transform('skill.import.result.valid.tip1');
+        this.isShowResult = true;
+        return;
+      }
       this.skillInfo = this.parseSkillMd(fileMap['SKILL.md']);
       if (!this.skillInfo?.name?.trim() || !this.skillInfo?.description?.trim()) {
+        this.skillInfo = { name: '', description: '' };
         this.importZipErrorTip = this.i18n.transform('skill.import.result.null');
-        this.isShowResult = false;
+        this.isShowResult = true;
         return;
       }
       this.isShowResult = true;
@@ -219,21 +229,29 @@ export class ImportSkillModalComponent {
     }
 
     // 策略2：单文件夹结构 {folderName}/SKILL.md
-    const hasSingleFolder = this.hasSingleFolder(rootFiles);
-    if (!hasSingleFolder) {
+    // 与后端对齐：根级无 SKILL.md 时，允许根级存在额外附属文件（如 README.md），
+    // 只要存在唯一一个含 SKILL.md 的子目录即可（不再强制根级只能有一个目录）。
+    const skillMdCandidates = rootFiles.filter(p => p.endsWith('/SKILL.md'));
+    if (skillMdCandidates.length !== 1) {
+      this.skillInfo = { name: '', description: '' };
       this.importZipErrorTip = this.i18n.transform('skill.import.result.valid.tip1');
+      this.isShowResult = true;
       return;
     }
-    const folders = rootFiles.filter(path => path.includes('/'));
-    const folderName = folders[0]?.split('/')?.[0];
-    const skillMdPath = `${folderName}/SKILL.md`;
-    if (!fileMap[skillMdPath]) {
-      this.importZipErrorTip = this.i18n.transform('skill.import.result.valid.tip2');
+    const skillMdPath = skillMdCandidates[0];
+    const folderName = skillMdPath.slice(0, -'/SKILL.md'.length);
+    // SKILL.md 必须直接位于该子目录根级，不允许 a/b/SKILL.md（后端校验 {name}/SKILL.md 规范）
+    if (folderName.includes('/')) {
+      this.skillInfo = { name: '', description: '' };
+      this.importZipErrorTip = this.i18n.transform('skill.import.result.valid.tip1');
+      this.isShowResult = true;
       return;
     }
     this.skillInfo = this.parseSkillMd(fileMap[skillMdPath]);
     if (!this.skillInfo?.name?.trim() || !this.skillInfo?.description?.trim()) {
+      this.skillInfo = { name: '', description: '' };
       this.importZipErrorTip = this.i18n.transform('skill.import.result.null');
+      this.isShowResult = true;
       return;
     }
     this.isShowResult = true;
@@ -244,11 +262,6 @@ export class ImportSkillModalComponent {
     normalized = normalized.replace(/\/+/g, '/');
     normalized = normalized.replace(/\/+$/, '');
     return normalized;
-  }
-
-  private hasSingleFolder(zipFiles: string[]): boolean {
-    const rootFolders = new Set(zipFiles.map(file => file.split('/')[0]));
-    return rootFolders.size === 1;
   }
 
   handleUploadChange(fileItem: any): void {

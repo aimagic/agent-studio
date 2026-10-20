@@ -148,15 +148,31 @@ public class SkillManagementService implements ISkillManagementService {
      * 复用 {@link MgObsService#readObsFileStream(String)} 直接读取 OBS 对象字节流，
      * 由 Controller 层包装为 StreamingResponseBody 流式转发给前端。</p>
      *
+     * <p><b>越权校验</b>：使用 {@link SkillMapper#searchBySkillId(String)}（LEFT JOIN 版本表，
+     * 同时带出 obs_path / workspace_id / project_id / domain_id）一次性拿到完整信息，
+     * 再在 Java 层比对 domainId / workspaceId / projectId 与当前请求上下文一致，
+     * 避免任意用户持 skillId 即可下载他人制品。不直接使用 searchBySkillIdAndDomainId，
+     * 因其 SQL 不 JOIN t_skill_version，无法获取 obs_path。</p>
+     *
      * <p>返回的 InputStream 由调用方（Controller）负责关闭。</p>
      */
     @Override
     public InputStream getSkillPackageContent(String skillId, String workspaceId, String projectId) {
         log.info("Get skill package content, skillId: {}, workspaceId: {}, projectId: {}",
                 skillId, workspaceId, projectId);
+        // 一次性查询 Skill 基本信息及最新版本 obs_path（searchBySkillId 已 LEFT JOIN t_skill_version）
         SkillDetails skill = skillMapper.searchBySkillId(skillId);
         if (skill == null || Strings.isEmpty(skill.getObsPath())) {
             log.error("Skill not exists or obs path is empty, skillId: {}", skillId);
+            throw new AgentStudioException(StudioError.SKILL_NOT_EXISTS);
+        }
+        // 越权校验：domainId / workspaceId / projectId 必须与当前请求上下文一致
+        String requestDomainId = RequestContextUtils.getRequestUserDomainId();
+        if (!Objects.equals(skill.getDomainId(), requestDomainId)
+                || !Objects.equals(skill.getWorkspaceId(), workspaceId)
+                || !Objects.equals(skill.getProjectId(), projectId)) {
+            log.error("Skill does not belong to the current context, skillId: {}, domainId: {}, workspaceId: {}, projectId: {}",
+                    skillId, requestDomainId, workspaceId, projectId);
             throw new AgentStudioException(StudioError.SKILL_NOT_EXISTS);
         }
         return mgObsService.readObsFileStream(skill.getObsPath());
