@@ -902,6 +902,35 @@ public class ZipValidationUtilsTest {
     }
 
     /**
+     * 负向：单文件夹结构但根级有额外非空目录（assets/ + my-skill/SKILL.md）
+     * → 抛 FILES_NUMBER_DOES_NOT_MATCH。
+     * 覆盖意见 Medium Priority #415：避免详情页 sortTree 按字母序取 innerData[0]=assets/，
+     * openSkillMd 在 assets/SKILL.md 找不到文件而无法自动打开 SKILL.md。
+     */
+    @Test
+    public void testValidateZipFile_SingleFolderWithExtraRootDir() throws IOException {
+        File zip = tempDir.resolve("extra-root-dir.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            // 额外的非空目录（字母序在 my-skill 之前）
+            ZipEntry asset = new ZipEntry("assets/style.css");
+            zos.putNextEntry(asset);
+            zos.write("body{}".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            // 含 SKILL.md 的目录
+            ZipEntry skillMd = new ZipEntry("my-skill/SKILL.md");
+            zos.putNextEntry(skillMd);
+            zos.write("---\nname: my-skill\ndescription: extra\n---\n# Extra".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        AgentStudioException exception = assertThrows(AgentStudioException.class, () ->
+                ZipValidationUtils.validateZipFile(zip));
+        assertEquals(StudioError.FILES_NUMBER_DOES_NOT_MATCH, exception.getErrorCode());
+    }
+
+    /**
      * 负向：单文件夹包中 SKILL.md 位于深层子目录 a/b/SKILL.md
      * → 结构校验阶段拦截：SKILL.md 所在目录不是 baseDir 的直接子目录
      * （rel.getNameCount() != 1），抛 FILES_NUMBER_DOES_NOT_MATCH。

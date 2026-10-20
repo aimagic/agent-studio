@@ -359,7 +359,12 @@ public class ZipValidationUtils {
      *   <li>禁止 {@code a/b/SKILL.md}：即 SKILL.md 嵌套在二级及更深子目录，
      *       即使 name=b 也无法通过——否则会以原始结构上传，生成不符合
      *       {@code {name}/SKILL.md} 规范的制品，下游消费方可能解析失败；</li>
-     *   <li>skillDirs.size() != 1 拒绝：含 SKILL.md 的直接子目录数量必须恰为 1。</li>
+     *   <li>skillDirs.size() != 1 拒绝：含 SKILL.md 的直接子目录数量必须恰为 1；</li>
+     *   <li><b>根级非空目录唯一性</b>：根级非空目录总数也必须恰为 1（即 skillDirs 那个）。
+     *       否则如 {@code assets/ + my-skill/SKILL.md} 会通过校验并按原结构上传，
+     *       详情页解压后 innerData[0] 按 sortTree 字母序取到 assets/ 而非 my-skill/，
+     *       导致 openSkillMd 在 assets/SKILL.md 找不到文件、无法自动打开 SKILL.md
+     *       （详见检视意见 Medium Priority #415）。</li>
      * </ul>
      */
     private static void validateDirectoryStructure(Path baseDir) throws IOException {
@@ -412,14 +417,26 @@ public class ZipValidationUtils {
                 }
             }
 
-            if (skillDirs.size() == 1) {
-                return; // 有效结构（单文件夹）
+            if (skillDirs.size() != 1) {
+                log.error("Directory check failed - skillDirs: {}, nonEmpty: {}, hasRoot: {}",
+                        skillDirs.size(), nonEmptyDirs.size(), false);
+                throw new AgentStudioException(StudioError.FILES_NUMBER_DOES_NOT_MATCH);
             }
 
-            // 其他情况都是无效的
-            log.error("Directory check failed - skillDirs: {}, nonEmpty: {}, hasRoot: {}",
-                    skillDirs.size(), nonEmptyDirs.size(), false);
-            throw new AgentStudioException(StudioError.FILES_NUMBER_DOES_NOT_MATCH);
+            // 根级非空目录唯一性：含 SKILL.md 的目录必须是根级唯一的非空目录。
+            // 否则如 assets/ + my-skill/SKILL.md 会通过校验，详情页 sortTree 按字母序
+            // 取 innerData[0] = assets/，openSkillMd 在 assets/SKILL.md 找不到文件。
+            Path skillDir = skillDirs.get(0);
+            for (Path dir : nonEmptyDirs) {
+                // 仅看 baseDir 的直接子目录（深度=1），子目录内部的非空目录不算
+                Path rel = baseDir.relativize(dir);
+                if (rel.getNameCount() == 1 && !dir.equals(skillDir)) {
+                    log.error("Root-level has extra non-empty directory besides skill dir: {}", rel);
+                    throw new AgentStudioException(StudioError.FILES_NUMBER_DOES_NOT_MATCH);
+                }
+            }
+
+            return; // 有效结构（单文件夹）
         }
     }
 
