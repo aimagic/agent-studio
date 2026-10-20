@@ -1,21 +1,65 @@
+import asyncio
+import base64
+import io
 import json
+import math
+import os
+import urllib.request
+from urllib.parse import urlparse
 
+from jiuwen.common.utils.utils import illegal_url
 from jiuwen.extension.wrapper.plugin_base import PluginBase
+
+
+class SSRFSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """每个重定向目标都过 illegal_url 校验，防止 SSRF 重定向绕过。"""
+
+    def redirect_request(self, *args, **kwargs):
+        newurl = args[-1] if args else kwargs.get("newurl", "")
+        if illegal_url(newurl):
+            raise ValueError(
+                f"Redirect URL is illegal or points to an internal network address: {newurl}"
+            )
+        return super().redirect_request(*args, **kwargs)
 
 
 class FlowDrawBox(PluginBase):
     """画布框选交互插件
 
-    支持三种框选数据分析操作：
+    支持四种框选操作：
     - calculate_area: 计算框选区域面积、中心点和边界
     - find_overlaps: 检测多组框选区域之间的重叠
     - merge_boxes: 合并重叠的框选区域
-
-    一个插件通过 operation 参数支持多种操作。
+    - draw_boxes: 在图像上绘制边界框和标签
     """
+
+    _MAX_IMAGE_SIZE = 4096
+    _MAX_ANNOTATIONS = 100
+    _MAX_DOWNLOAD_SIZE = 50 * 1024 * 1024  # 50MB
+    _DEFAULT_BOX_COLOR = "#ff0000"
+    _DEFAULT_TEXT_COLOR = "#ffffff"
+    _DEFAULT_LINE_WIDTH = 2
+    _DEFAULT_FONT_SIZE = 16
+    _ALLOWED_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".ico")
+
+    FONT_CANDIDATES = [
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+    ]
 
     async def invoke(self, inputs: dict, **kwargs) -> dict:
         operation = inputs.get("operation", "calculate_area")
+
+        if operation == "draw_boxes":
+            return {"output": await asyncio.to_thread(self._draw_boxes, inputs)}
+
         coordinates = inputs.get("coordinates", [])
         if isinstance(coordinates, str):
             coordinates = json.loads(coordinates)
@@ -27,6 +71,252 @@ class FlowDrawBox(PluginBase):
         }.get(operation, self._calc_area)
 
         return {"output": handler(coordinates)}
+
+    def _draw_boxes(self, inputs):
+        """在图像上绘制边界框和标签，返回标注后图像的 base64。"""
+        try:
+            from PIL import Image, ImageColor, ImageDraw, ImageFont
+        except ImportError:
+            return {
+                "success": False,
+                "error": "Pillow is required for draw_boxes operation",
+                "error_code": 500,
+            }
+
+        image_input = inputs.get("image")
+        if not image_input:
+            return {"success": False, "error": "image is required", "error_code": 400}
+
+        annotations_input = inputs.get("annotations")
+        if annotations_input is None:
+            return {"success": False, "error": "annotations is required", "error_code": 400}
+
+        try:
+            image_bytes = self._resolve_image_bytes(image_input)
+            with Image.open(io.BytesIO(image_bytes)) as img:
+                width, height = img.size
+                if width > self._MAX_IMAGE_SIZE or height > self._MAX_IMAGE_SIZE:
+                    return {
+                        "success": False,
+                        "error": f"Image too large (max {self._MAX_IMAGE_SIZE}x{self._MAX_IMAGE_SIZE})",
+                        "error_code": 413,
+                    }
+                image = img.copy()
+        except Exception as e:
+            return {"success": False, "error": f"Image loading failed: {e}", "error_code": 404}
+
+        try:
+            annotations_data = (
+                json.loads(annotations_input)
+                if isinstance(annotations_input, str)
+                else annotations_input
+            )
+            annotations = (
+                annotations_data.get("annotations", [])
+                if isinstance(annotations_data, dict)
+                else annotations_data
+            )
+        except (json.JSONDecodeError, TypeError) as e:
+            return {"success": False, "error": f"Invalid annotation format: {e}", "error_code": 422}
+
+        if not isinstance(annotations, list):
+            return {"success": False, "error": "annotations must be a list", "error_code": 422}
+
+        if len(annotations) > self._MAX_ANNOTATIONS:
+            return {
+                "success": False,
+                "error": f"Too many annotations (max {self._MAX_ANNOTATIONS})",
+                "error_code": 400,
+            }
+
+        box_color = inputs.get("box_color", self._DEFAULT_BOX_COLOR)
+        text_color = inputs.get("text_color", self._DEFAULT_TEXT_COLOR)
+        try:
+            ImageColor.getrgb(box_color)
+            ImageColor.getrgb(text_color)
+        except Exception:
+            return {
+                "success": False,
+                "error": f"Invalid color format: box_color={box_color}, text_color={text_color}",
+                "error_code": 400,
+            }
+        line_width = self.clamp(inputs.get("line_width", self._DEFAULT_LINE_WIDTH), 1, 20)
+        font_size = self.clamp(inputs.get("font_size", self._DEFAULT_FONT_SIZE), 8, 72)
+        coordinate_type = inputs.get("coordinate_type", "relative")
+        if coordinate_type not in ("relative", "absolute"):
+            return {
+                "success": False,
+                "error": f"Invalid coordinate_type '{coordinate_type}', must be 'relative' or 'absolute'",
+                "error_code": 400,
+            }
+
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        draw = ImageDraw.Draw(image)
+        font = self.load_font(ImageFont, font_size)
+
+        drawn = 0
+        for ann in annotations:
+            if not isinstance(ann, dict):
+                continue
+            try:
+                bbox = ann.get("bbox")
+                if not bbox or len(bbox) != 4:
+                    continue
+                try:
+                    x1, y1, x2, y2 = [float(v) for v in bbox]
+                except (TypeError, ValueError):
+                    continue
+                if not all(math.isfinite(v) for v in (x1, y1, x2, y2)):
+                    continue
+                if coordinate_type == "relative":
+                    x1 = x1 * width / 1000
+                    y1 = y1 * height / 1000
+                    x2 = x2 * width / 1000
+                    y2 = y2 * height / 1000
+
+                draw.rectangle([x1, y1, x2, y2], outline=box_color, width=line_width)
+                drawn += 1
+
+                label = ann.get("label", "")
+                confidence = ann.get("confidence")
+                if confidence is not None:
+                    try:
+                        confidence_val = float(confidence)
+                    except (TypeError, ValueError):
+                        confidence_val = None
+                    if confidence_val is not None:
+                        label = f"{label} {confidence_val:.2f}" if label else f"{confidence_val:.2f}"
+
+                if label:
+                    text_xy = (x1 + line_width, y1 + line_width)
+                    try:
+                        bbox_text = draw.textbbox(text_xy, label, font=font)
+                        draw.rectangle(
+                            [bbox_text[0], bbox_text[1], bbox_text[2], bbox_text[3]],
+                            fill=box_color,
+                        )
+                        draw.text(text_xy, label, fill=text_color, font=font)
+                    except Exception:
+                        draw.text(text_xy, label, fill=text_color)
+            except (TypeError, ValueError, OSError):
+                continue
+
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        image_base64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        return {
+            "success": True,
+            "annotation_count": drawn,
+            "image_size": {"width": width, "height": height},
+            "image_base64": image_base64,
+            "message": f"Successfully drew {drawn} annotations",
+        }
+
+    @staticmethod
+    def clamp(value, lo, hi):
+        try:
+            v = int(value)
+        except (TypeError, ValueError):
+            v = lo
+        return max(lo, min(hi, v))
+
+    @staticmethod
+    def validate_image_path(path):
+        """校验本地文件路径：扩展名必须为图片类型，文件大小不能超过上限。"""
+        if not path.lower().endswith(FlowDrawBox._ALLOWED_IMAGE_EXTS):
+            raise ValueError(f"Path must point to an image file (allowed: {FlowDrawBox._ALLOWED_IMAGE_EXTS})")
+        file_size = os.path.getsize(path)
+        if file_size > FlowDrawBox._MAX_DOWNLOAD_SIZE:
+            raise ValueError(f"Image file too large (max {FlowDrawBox._MAX_DOWNLOAD_SIZE} bytes)")
+
+    def _resolve_image_bytes(self, image_input):
+        """兼容文件对象(dict/JSON string) / URL / 本地路径 / base64 多种格式。"""
+        if isinstance(image_input, dict):
+            if "binary" in image_input:
+                data = image_input["binary"]
+                if isinstance(data, str):
+                    if len(data) > FlowDrawBox._MAX_DOWNLOAD_SIZE * 2:
+                        raise ValueError(f"Image data too large (max {FlowDrawBox._MAX_DOWNLOAD_SIZE} bytes)")
+                    data = base64.b64decode(data)
+                if len(data) > FlowDrawBox._MAX_DOWNLOAD_SIZE:
+                    raise ValueError(f"Image data too large (max {FlowDrawBox._MAX_DOWNLOAD_SIZE} bytes)")
+                return data
+            url = image_input.get("url")
+            if url:
+                return self.fetch_url(url)
+            path = image_input.get("path")
+            if path:
+                self.validate_image_path(path)
+                with open(path, "rb") as f:
+                    return f.read()
+            raise ValueError("dict image must contain non-empty binary/url/path")
+
+        if isinstance(image_input, str):
+            if image_input.startswith("{"):
+                try:
+                    return self._resolve_image_bytes(json.loads(image_input))
+                except json.JSONDecodeError:
+                    pass
+            if image_input.startswith(("http://", "https://")):
+                return self.fetch_url(image_input)
+            if os.path.exists(image_input):
+                self.validate_image_path(image_input)
+                with open(image_input, "rb") as f:
+                    return f.read()
+            if len(image_input) > FlowDrawBox._MAX_DOWNLOAD_SIZE * 2:
+                raise ValueError(f"Image data too large (max {FlowDrawBox._MAX_DOWNLOAD_SIZE} bytes)")
+            try:
+                decoded = base64.b64decode(image_input)
+            except Exception as e:
+                raise ValueError("Unsupported image string format") from e
+            if len(decoded) > FlowDrawBox._MAX_DOWNLOAD_SIZE:
+                raise ValueError(f"Image data too large (max {FlowDrawBox._MAX_DOWNLOAD_SIZE} bytes)")
+            return decoded
+
+        raise ValueError(f"Unsupported image type: {type(image_input)}")
+
+    @staticmethod
+    def fetch_url(url):
+        if illegal_url(url):
+            raise ValueError("URL is illegal or points to an internal network address")
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"Only http/https URLs are allowed, got scheme: {parsed.scheme}")
+        opener = urllib.request.build_opener(SSRFSafeRedirectHandler)
+        with opener.open(url, timeout=30) as resp:
+            content_length = resp.headers.get("Content-Length")
+            if content_length:
+                try:
+                    cl_val = int(content_length)
+                except (TypeError, ValueError):
+                    cl_val = 0
+                if cl_val > FlowDrawBox._MAX_DOWNLOAD_SIZE:
+                    raise ValueError(f"Image file too large (max {FlowDrawBox._MAX_DOWNLOAD_SIZE} bytes)")
+            chunks = []
+            total = 0
+            while True:
+                chunk = resp.read(64 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > FlowDrawBox._MAX_DOWNLOAD_SIZE:
+                    raise ValueError(f"Image file too large (max {FlowDrawBox._MAX_DOWNLOAD_SIZE} bytes)")
+                chunks.append(chunk)
+            return b"".join(chunks)
+
+    def load_font(self, image_font, font_size):
+        for path in self.FONT_CANDIDATES:
+            if os.path.exists(path):
+                try:
+                    return image_font.truetype(path, font_size)
+                except OSError:
+                    continue
+        try:
+            return image_font.load_default(size=font_size)
+        except TypeError:
+            return image_font.load_default()
 
     def _calc_area(self, coordinates):
         if not coordinates or len(coordinates) < 2:
