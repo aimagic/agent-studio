@@ -161,11 +161,30 @@ public class UrlCheckUtils {
     }
 
     public void checkUrl(String projectId, String url) {
-        log.info("start to checkUrl {}", SensitiveLogContext.mask(url));
+        checkUrlAndResolve(projectId, url);
+    }
+
+    /**
+     * {@link #checkUrl(String, String)} 的解析结果返回版本。
+     *
+     * <p>校验通过且实际做过 IP 校验时，返回<strong>校验阶段</strong>解析到的
+     * 主机地址——供调用方在连接期钉死 DNS（如 {@code PluginAdapterImpl}
+     * 下载经 {@code PinnedDns}），消除"校验解析一次、OkHttp 连接再解析一次"
+     * 的 DNS TOCTOU（与 Python 侧 {@code pinned_https_resolution} 对齐）。
+     *
+     * <p>放行但未做 IP 校验的场景（开关关闭 / 整串占位符 / 域名白名单 /
+     * 域名解析失败放通）返回 {@code null}——调用方不钉死，走系统解析。
+     * 校验失败照常抛 {@link AgentStudioException}。
+     */
+    public InetAddress[] checkUrlAndResolve(String projectId, String url) {
+        // URL 查询串可能携带 OBS 预签名 AccessKeyId/Signature 等凭据，
+        // 查询串对 host/IP 校验无意义——校验类日志一律脱敏（与 Python 侧
+        // _redact_urls 同语义），再叠加本次请求登记的敏感值脱敏，避免抵消调用侧的脱敏意图
+        log.info("start to checkUrl {}", SensitiveLogContext.mask(redactUrlQuery(url)));
         // 未开启检查（默认开启），返回
         if (!enableUrlCheck || StringUtils.isEmpty(url)) {
             log.info("not check url");
-            return;
+            return null;
         }
         String trimmed = url.trim();
         // 整串就是一个合法占位符（${_env.plugin_url_params.VAR} 或 {}），运行期才解析，跳过 URI/IP 校验。
@@ -173,7 +192,7 @@ public class UrlCheckUtils {
         // 将走下面的 URI 解析，因未转义花括号触发 URISyntaxException → INVALID_URL，避免 SSRF/绕过。
         if (isFullPlaceholder(trimmed)) {
             log.info("url is a full placeholder, skip URI/IP check");
-            return;
+            return null;
         }
 
         URI parsedUri;
@@ -182,22 +201,23 @@ public class UrlCheckUtils {
         } catch (URISyntaxException e) {
             // URISyntaxException.getMessage() 会携带未脱敏的原始 URL，不能作为日志参数（会绕过脱敏），
             // 只记录脱敏后的 url 与异常原因/位置
-            log.error("Fail to parse url [{}], reason: {} at index {}", SensitiveLogContext.mask(url), e.getReason(),
-                e.getIndex());
+            log.error("Fail to parse url [{}], reason: {} at index {}", SensitiveLogContext.mask(redactUrlQuery(url)),
+                e.getReason(), e.getIndex());
             throw new AgentStudioException(StudioError.INVALID_URL);
         }
         String host = parsedUri.getHost();
 
         // 1. 检查黑名单
         if (toolUrlBlackList.contains(host)) {
-            log.error("URL is blocked by blacklist [{}]", SensitiveLogContext.mask(url));
+            log.error("URL is blocked by blacklist [{}]", SensitiveLogContext.mask(redactUrlQuery(url)));
             throw new AgentStudioException(StudioError.INVALID_URL);
         }
 
-        // 2. 检查白名单（白名单优先级高于其他规则）
+        // 2. 检查白名单（白名单优先级高于其他规则）——白名单 host 未做
+        // IP 校验，返回 null 不钉死
         if (toolUrlWhiteList.contains(host)) {
-            log.info("URL is in whitelist [{}]", SensitiveLogContext.mask(url));
-            return;
+            log.info("URL is in whitelist [{}]", SensitiveLogContext.mask(redactUrlQuery(url)));
+            return null;
         }
 
         // 3. 解析关联的IP地址
@@ -206,8 +226,8 @@ public class UrlCheckUtils {
             addresses = InetAddress.getAllByName(host);
         } catch (UnknownHostException e) {
             // 如果无法解析域名，放通处理
-            log.warn("can not get host [{}], url check interrupt", SensitiveLogContext.mask(url));
-            return;
+            log.warn("can not get host [{}], url check interrupt", SensitiveLogContext.mask(redactUrlQuery(url)));
+            return null;
         }
         for (InetAddress addr : addresses) {
             String ip = addr.getHostAddress();
@@ -224,6 +244,7 @@ public class UrlCheckUtils {
                 throw new AgentStudioException(StudioError.ACCESS_INTER_NETWORK_FORBIDDEN);
             }
         }
+        return addresses;
     }
 
     /**
@@ -315,7 +336,7 @@ public class UrlCheckUtils {
      * @throws AgentStudioException 如果URL不在白名单中，或者URL格式错误，或者无法解析主机名
      */
     public void checkUrlInWhiteList(String url) {
-        log.info("Starting URL check for: {}", SensitiveLogContext.mask(url));
+        log.info("Starting URL check for: {}", SensitiveLogContext.mask(redactUrlQuery(url)));
 
         if (!enableUrlCheck || StringUtils.isEmpty(url)) {
             log.info("URL check is disabled or URL is empty");
@@ -328,7 +349,7 @@ public class UrlCheckUtils {
 
             // 判断白名单中是否存在该URL
             if (toolUrlWhiteList.contains(host)) {
-                log.info("URL is in whitelist: {}", SensitiveLogContext.mask(url));
+                log.info("URL is in whitelist: {}", SensitiveLogContext.mask(redactUrlQuery(url)));
                 return;
             }
 
@@ -337,7 +358,7 @@ public class UrlCheckUtils {
             for (InetAddress addr : addresses) {
                 String ip = addr.getHostAddress();
                 if (toolUrlWhiteList.contains(ip)) {
-                    log.info("IP is in whitelist: {}", SensitiveLogContext.mask(url));
+                    log.info("IP is in whitelist: {}", SensitiveLogContext.mask(redactUrlQuery(url)));
                     return;
                 }
             }
@@ -345,11 +366,11 @@ public class UrlCheckUtils {
         } catch (URISyntaxException e) {
             // URISyntaxException.getMessage() 会携带未脱敏的原始 URL，不能作为日志参数（会绕过脱敏），
             // 只记录脱敏后的 url 与异常原因/位置
-            log.error("Invalid URL: {}, reason: {} at index {}", SensitiveLogContext.mask(url), e.getReason(),
-                e.getIndex());
+            log.error("Invalid URL: {}, reason: {} at index {}", SensitiveLogContext.mask(redactUrlQuery(url)),
+                e.getReason(), e.getIndex());
             throw new AgentStudioException(StudioError.INVALID_URL);
         } catch (UnknownHostException e) {
-            log.warn("can not get host [{}], url check interrupt", SensitiveLogContext.mask(url));
+            log.warn("can not get host [{}], url check interrupt", SensitiveLogContext.mask(redactUrlQuery(url)));
             throw new AgentStudioException(StudioError.URL_WHITELIST_CHECK_ERROR);
         }
     }
@@ -365,5 +386,20 @@ public class UrlCheckUtils {
         }
         // 内网地址
         return addr.isLinkLocalAddress() || addr.isSiteLocalAddress();
+    }
+
+    /**
+     * URL 查询串脱敏：保留 scheme://host/path，查询串替换为 {@code ?***}。
+     *
+     * <p>OBS 预签名等 URL 的查询串携带 AccessKeyId/Signature 等凭据；查询串
+     * 对 host/IP 校验无意义，校验类日志一律经本方法脱敏后再输出（与 Python
+     * 侧 {@code _redact_urls} 同语义）。供校验侧与调用侧共用，避免各处重复实现。
+     */
+    public static String redactUrlQuery(String url) {
+        if (url == null) {
+            return null;
+        }
+        int queryIdx = url.indexOf('?');
+        return queryIdx >= 0 ? url.substring(0, queryIdx) + "?***" : url;
     }
 }
