@@ -148,15 +148,15 @@ public class SkillManagementService implements ISkillManagementService {
      * 复用 {@link MgObsService#readObsFileStream(String)} 直接读取 OBS 对象字节流，
      * 由 Controller 层包装为 StreamingResponseBody 流式转发给前端。</p>
      *
-     * <p><b>越权校验</b>：与 {@link #deleteStudioSkill} 对齐，仅校验 domainId 归属。
-     * 不额外比对 workspaceId / projectId——详情页 skill-single-editor 对自有 skill 与
-     * skill 市场已发布/共享资源都会渲染，跨工作区/跨项目的预览能力属于既有契约，
-     * 收紧会破坏既有功能（详见检视意见 High Priority #127）。</p>
+     * <p><b>访问控制</b>：不做 domainId / workspaceId / projectId 比对。
+     * 原因：skill 市场按 published_asset 查询时不带 domainId 过滤（SkillMapper.xml search），
+     * 市场资源可能来自其他 domain；同时 showStudioSkillDetail 也不校验 domainId 即可返回详情。
+     * 若本接口加 domainId 校验，会导致市场资源详情页"元信息能加载、文件树变空"的割裂回归
+     * （详见检视意见 High Priority #127、#151）。
+     * 跨 domain 的已发布/共享资源预览属于既有契约，不在 vencent-m 原意见覆盖范围。</p>
      *
-     * <p>实现说明：不使用 {@link SkillMapper#searchBySkillIdAndDomainId(String, String)}，
-     * 因其 SQL 不 JOIN t_skill_version，无法获取 obs_path；
-     * 改用 {@link SkillMapper#searchBySkillId(String)}（LEFT JOIN 版本表）一次性拿完整信息，
-     * 再在 Java 层比对 domainId。</p>
+     * <p>实现说明：使用 {@link SkillMapper#searchBySkillId(String)}（LEFT JOIN 版本表）
+     * 一次性拿到 obs_path，仅做存在性校验。</p>
      *
      * <p>返回的 InputStream 由调用方（Controller）负责关闭。</p>
      */
@@ -164,20 +164,14 @@ public class SkillManagementService implements ISkillManagementService {
     public InputStream getSkillPackageContent(String skillId, String workspaceId, String projectId) {
         log.info("Get skill package content, skillId: {}, workspaceId: {}, projectId: {}",
                 skillId, workspaceId, projectId);
-        // 一次性查询 Skill 基本信息及最新版本 obs_path（searchBySkillId 已 LEFT JOIN t_skill_version）
+        // 查询 Skill 基本信息及最新版本 obs_path（searchBySkillId 已 LEFT JOIN t_skill_version）
         SkillDetails skill = skillMapper.searchBySkillId(skillId);
         if (skill == null || Strings.isEmpty(skill.getObsPath())) {
             log.error("Skill not exists or obs path is empty, skillId: {}", skillId);
             throw new AgentStudioException(StudioError.SKILL_NOT_EXISTS);
         }
-        // 越权校验：仅校验 domainId 归属，与 deleteStudioSkill 对齐
-        // （workspaceId / projectId 不参与访问控制，以保留跨工作区/跨项目预览的既有契约）
-        String requestDomainId = RequestContextUtils.getRequestUserDomainId();
-        if (!Objects.equals(skill.getDomainId(), requestDomainId)) {
-            log.error("Skill does not belong to the current domain, skillId: {}, domainId: {}, requestDomainId: {}",
-                    skillId, skill.getDomainId(), requestDomainId);
-            throw new AgentStudioException(StudioError.SKILL_NOT_EXISTS);
-        }
+        // 不做 domainId/workspaceId/projectId 校验：保留跨 domain 市场资源预览的既有契约
+        // （与 showStudioSkillDetail / listStudioSkills(publishedAsset=1) 的访问控制强度对齐）
         return mgObsService.readObsFileStream(skill.getObsPath());
     }
 
