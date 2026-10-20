@@ -84,6 +84,7 @@ import { AggregationModalComponent } from '../components/aggregation-modal/aggre
 import { BranchModalComponent } from '../components/branch-modal/branch-modal.component';
 import { ChildFlowModalComponent } from '../components/child-flow-modal/child-flow-modal.component';
 import { CodeModalComponent } from '../components/code-modal/code-modal.component';
+import { TemplateTransformModalComponent } from '../components/template-transform-modal/template-transform-modal.component';
 import { ControllerModalComponent } from '../components/controller-modal/controller-modal.component';
 import { DialogHalfmodalComponent } from '../components/dialog-halfmodal/dialog-halfmodal.component';
 import { EndModalComponent } from '../components/end-modal/end-modal.component';
@@ -233,6 +234,7 @@ const NodeMap = {
   Mcp: MCPServiceModalComponent,
   Branch: BranchModalComponent,
   Code: CodeModalComponent,
+  TemplateTransform: TemplateTransformModalComponent,
   IntentDetection: IntentModalComponent,
   ComplexIntentDetection: IntentModalComponent,
   Questioner: QuestionerModalComponent,

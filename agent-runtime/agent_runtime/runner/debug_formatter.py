@@ -16,6 +16,7 @@ _COMPONENT_TYPE_DISPLAY: dict[str, str] = {
     "jiuwen.agent": "Agent",
     "jiuwen.flowAgent": "Agent",
     "jiuwen.code": "Code",
+    "jiuwen.templateTransform": "TemplateTransform",
     "jiuwen.start": "Start",
     "jiuwen.end": "End",
     "jiuwen.message": "Message",
