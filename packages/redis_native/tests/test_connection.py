@@ -28,7 +28,8 @@ def make_settings(**overrides) -> RedisProviderSettings:
 
 
 class TestBuildSingle:
-    def test_default_kwargs(self):
+    @staticmethod
+    def test_default_kwargs():
         settings = make_settings(
             host="h1", port=6380, db=3, password="secret"
         )
@@ -44,34 +45,42 @@ class TestBuildSingle:
         # max_connections 是池级参数（ConnectionPool 构造期消费），不在连接参数里
         assert client.connection_pool.max_connections == 50
 
-    def test_transaction_wrapper_selected(self):
+    @staticmethod
+    def test_transaction_wrapper_selected():
         wrapped = build_async_client(make_settings(redis_transaction_enabled=False))
         assert isinstance(wrapped, _NonTransactionRedis)
         plain = build_async_client(make_settings(redis_transaction_enabled=True))
+        # 精确类型断言（G.TYP.08 有意豁免）：isinstance 会放行子类，此处验证的就是缺省装配的精确基类
         assert type(plain) is Redis
 
-    def test_text_mode(self):
+    @staticmethod
+    def test_text_mode():
         client = build_async_client(make_settings(text_mode=True))
         assert client.connection_pool.connection_kwargs["decode_responses"] is True
 
-    def test_socket_timeout_override_none(self):
+    @staticmethod
+    def test_socket_timeout_override_none():
         client = build_async_client(make_settings(), socket_timeout=None)
         assert client.connection_pool.connection_kwargs["socket_timeout"] is None
 
-    def test_socket_timeout_override_value(self):
+    @staticmethod
+    def test_socket_timeout_override_value():
         client = build_async_client(make_settings(), socket_timeout=9.5)
         assert client.connection_pool.connection_kwargs["socket_timeout"] == 9.5
 
-    def test_max_connections_override(self):
+    @staticmethod
+    def test_max_connections_override():
         client = build_async_client(make_settings(), max_connections=3)
         assert client.connection_pool.max_connections == 3
 
-    def test_empty_password_omitted(self):
+    @staticmethod
+    def test_empty_password_omitted():
         client = build_async_client(make_settings(password=""))
         # 未传时 redis-py 填默认 None（区别于显式空串）
         assert client.connection_pool.connection_kwargs.get("password") is None
 
-    def test_ssl_enabled(self):
+    @staticmethod
+    def test_ssl_enabled():
         # 行为对齐口径：redis-py asyncio 的 Redis(ssl=...) 把 SSLContext 当
         # 真值标志消费（旧 redis_manager 同款传法，bug 兼容），可观测效果是
         # 连接类切到 SSLConnection；自定义 CA 参数实际未生效（Phase 4 复评点）。
@@ -80,7 +89,8 @@ class TestBuildSingle:
 
 
 class TestNonTransactionPipelineDefault:
-    def test_bare_pipeline_defaults_to_false(self):
+    @staticmethod
+    def test_bare_pipeline_defaults_to_false():
         client = _NonTransactionRedis(host="localhost")
         # 包装类唯一职责：翻转裸 .pipeline() 默认（SPI 路径恒显式传参）；
         # redis-py asyncio pipeline 的事务标志属性是 is_transaction
@@ -90,7 +100,8 @@ class TestNonTransactionPipelineDefault:
 
 
 class TestBuildSentinel:
-    def test_master_kwargs_parity_and_override(self):
+    @staticmethod
+    def test_master_kwargs_parity_and_override():
         settings = make_settings(
             mode=RedisMode.SENTINEL, sentinel_nodes="s1:26379", password="p"
         )
@@ -121,25 +132,30 @@ class TestIndependentPool:
 
 
 class TestParseClusterNodes:
-    def test_mixed_forms(self):
+    @staticmethod
+    def test_mixed_forms():
         nodes = _parse_cluster_nodes("h1:7000, h2")
         assert [(n.host, n.port) for n in nodes] == [("h1", 7000), ("h2", 6379)]
 
-    def test_empty_raises(self):
+    @staticmethod
+    def test_empty_raises():
         with pytest.raises(ValueError, match="REDIS_CLUSTER_NODES"):
             _parse_cluster_nodes("  ")
 
 
 class TestParseSentinelNodes:
-    def test_default_port(self):
+    @staticmethod
+    def test_default_port():
         assert _parse_sentinel_nodes("s1") == [("s1", 26379)]
 
-    def test_explicit_ports(self):
+    @staticmethod
+    def test_explicit_ports():
         assert _parse_sentinel_nodes("s1:26380,s2:26381") == [
             ("s1", 26380),
             ("s2", 26381),
         ]
 
-    def test_empty_raises(self):
+    @staticmethod
+    def test_empty_raises():
         with pytest.raises(ValueError, match="REDIS_SENTINEL_NODES"):
             _parse_sentinel_nodes("")

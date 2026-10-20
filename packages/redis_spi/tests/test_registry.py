@@ -13,20 +13,24 @@ def _noop_factory():
 
 
 class TestRegister:
-    def test_register_and_lookup(self):
+    @staticmethod
+    def test_register_and_lookup():
         registry.register_provider("my-plugin", _noop_factory)
         assert registry.lookup("my-plugin") is _noop_factory
 
-    def test_reserved_name_rejected(self):
+    @staticmethod
+    def test_reserved_name_rejected():
         with pytest.raises(RedisConfigError):
             registry.register_provider("native", _noop_factory)
 
-    def test_duplicate_rejected_without_force(self):
+    @staticmethod
+    def test_duplicate_rejected_without_force():
         registry.register_provider("dup", _noop_factory)
         with pytest.raises(RedisConfigError):
             registry.register_provider("dup", _noop_factory)
 
-    def test_force_overrides(self):
+    @staticmethod
+    def test_force_overrides():
         def replacement():
             return "replaced"
 
@@ -34,17 +38,20 @@ class TestRegister:
         registry.register_provider("dup", replacement, force=True)
         assert registry.lookup("dup") is replacement
 
-    def test_non_callable_rejected(self):
+    @staticmethod
+    def test_non_callable_rejected():
         with pytest.raises(RedisConfigError):
             registry.register_provider("bad", "not-callable")  # type: ignore[arg-type]
 
-    def test_empty_or_padded_name_rejected(self):
+    @staticmethod
+    def test_empty_or_padded_name_rejected():
         with pytest.raises(RedisConfigError):
             registry.register_provider("", _noop_factory)
         with pytest.raises(RedisConfigError):
             registry.register_provider(" padded ", _noop_factory)
 
-    def test_unregister(self):
+    @staticmethod
+    def test_unregister():
         registry.register_provider("temp", _noop_factory)
         registry.unregister_provider("temp")
         assert registry.lookup("temp") is None
@@ -53,7 +60,8 @@ class TestRegister:
 
 
 class TestLookupPriority:
-    def test_entry_points_beat_manual(self, monkeypatch):
+    @staticmethod
+    def test_entry_points_beat_manual(monkeypatch):
         # 1030 亮点吸收口径：entry_points 注册表优先于手动注册
         def entry_point_factory():
             return "from-entry-points"
@@ -64,12 +72,14 @@ class TestLookupPriority:
         )
         assert registry.lookup("same-name") is entry_point_factory
 
-    def test_unknown_returns_none(self):
+    @staticmethod
+    def test_unknown_returns_none():
         assert registry.lookup("no-such-provider") is None
 
 
 class TestAvailableNames:
-    def test_includes_reserved_manual_and_entry_points(self, monkeypatch):
+    @staticmethod
+    def test_includes_reserved_manual_and_entry_points(monkeypatch):
         registry.register_provider("z-manual", _noop_factory)
         monkeypatch.setattr(
             registry,
@@ -90,7 +100,8 @@ class TestEntryPointLoading:
             name = "native"
             value = "evil_module:NativeProvider"
 
-            def load(self):
+            @staticmethod
+            def load():
                 raise AssertionError("reserved-name entry point must never load")
 
         monkeypatch.setattr(
@@ -106,7 +117,8 @@ class TestEntryPointLoading:
             name = "broken"
             value = "bad_module:thing"
 
-            def load(self):
+            @staticmethod
+            def load():
                 raise ImportError("no module named bad_module")
 
         monkeypatch.setattr(registry, "_entry_points", lambda: {"broken": BrokenEP()})
@@ -121,7 +133,8 @@ class TestEntryPointLoading:
             name = "nc"
             value = "mod:VALUE"
 
-            def load(self):
+            @staticmethod
+            def load():
                 return 42  # 非 callable
 
         monkeypatch.setattr(registry, "_entry_points", lambda: {"nc": NonCallableEP()})

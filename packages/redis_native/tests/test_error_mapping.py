@@ -61,24 +61,29 @@ class TestTranslateError:
         assert err.__cause__ is None  # translate 只构造，raise 由调用方挂 cause
         assert exc.__class__.__name__ in err.message
 
-    def test_wrongtype_requires_upper_prefix(self):
+    @staticmethod
+    def test_wrongtype_requires_upper_prefix():
         # WRONGTYPE 判定大小写不敏感且是前缀匹配
         err = translate_error(
             redis_exc.ResponseError("wrongtype skey"), operation="hget"
         )
+        # 精确类型断言（G.TYP.08 有意豁免）：子类断言会让判定顺序错误侥幸通过
         assert type(err) is RedisWrongTypeError
 
-    def test_redis_key_context_carried(self):
+    @staticmethod
+    def test_redis_key_context_carried():
         err = translate_error(
             redis_exc.ConnectionError("refused"), operation="get", redis_key="k1"
         )
         assert err.redis_key == "k1"
 
-    def test_timeout_result_known_default_true(self):
+    @staticmethod
+    def test_timeout_result_known_default_true():
         err = translate_error(redis_exc.TimeoutError("t"), operation="get")
         assert err.result_known is True
 
-    def test_timeout_result_known_false(self):
+    @staticmethod
+    def test_timeout_result_known_false():
         err = translate_error(
             redis_exc.TimeoutError("t"), operation="incr", result_known=False
         )
@@ -102,8 +107,6 @@ class _Probe:
 
     @spi_command("hset")
     async def set_raises_spi(self, key, mapping):
-        from redis_spi.exceptions import RedisCommandError
-
         raise RedisCommandError("spi validation", command="hset")
 
     @spi_command("set")
@@ -112,7 +115,8 @@ class _Probe:
 
 
 class TestSpiCommand:
-    def test_timeout_result_unknown_annotated(self):
+    @staticmethod
+    def test_timeout_result_unknown_annotated():
         with pytest.raises(RedisTimeoutError) as excinfo:
             asyncio.run(_Probe().incr_unknown("counter:1"))
         assert excinfo.value.result_known is False
@@ -120,24 +124,26 @@ class TestSpiCommand:
         assert excinfo.value.redis_key == "counter:1"
         assert isinstance(excinfo.value.__cause__, redis_exc.TimeoutError)
 
-    def test_timeout_result_known_default(self):
+    @staticmethod
+    def test_timeout_result_known_default():
         with pytest.raises(RedisTimeoutError) as excinfo:
             asyncio.run(_Probe().get_known("k"))
         assert excinfo.value.result_known is True
 
-    def test_non_redis_exception_passthrough(self):
+    @staticmethod
+    def test_non_redis_exception_passthrough():
         # 编程错误不吞不裹
         with pytest.raises(ValueError, match="programmer bug"):
             asyncio.run(_Probe().set_raises_native("k", b"v"))
 
-    def test_spi_exception_passthrough(self):
+    @staticmethod
+    def test_spi_exception_passthrough():
         # 本层（前置校验）的 redis_spi 异常原样透传，不被二次包装
-        from redis_spi.exceptions import RedisCommandError
-
         with pytest.raises(RedisCommandError, match="spi validation"):
             asyncio.run(_Probe().set_raises_spi("k", {"f": b"v"}))
 
-    def test_result_passthrough(self):
+    @staticmethod
+    def test_result_passthrough():
         assert asyncio.run(_Probe().ok("k", b"v")) == "result"
 
 

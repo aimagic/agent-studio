@@ -36,7 +36,8 @@ def _make_kv():
 
 
 class TestKVStoreRedisImpl:
-    def test_set_get_roundtrip_with_default_ttl(self):
+    @staticmethod
+    def test_set_get_roundtrip_with_default_ttl():
         kv, raw = _make_kv()
         asyncio.run(kv.set("m:u1", "v1"))
         # bytes 语义：老 jiuwen store 客户端同为 decode_responses=False
@@ -46,7 +47,8 @@ class TestKVStoreRedisImpl:
         assert 0 < ttl <= _DEFAULT_TTL_SECONDS
         assert asyncio.run(kv.get("m:none")) is None
 
-    def test_exclusive_set_plain_and_with_expiry(self):
+    @staticmethod
+    def test_exclusive_set_plain_and_with_expiry():
         kv, raw = _make_kv()
         # 行为对齐旧实现：exclusive_set 非 NX 语义（方法名与行为的历史差异保留）
         assert asyncio.run(kv.exclusive_set("m:x", "v1")) is True
@@ -55,7 +57,8 @@ class TestKVStoreRedisImpl:
         assert asyncio.run(kv.exclusive_set("m:y", "v3", expiry=60)) is True
         assert 0 < asyncio.run(raw.ttl("m:y")) <= 60
 
-    def test_exists_delete_mget(self):
+    @staticmethod
+    def test_exists_delete_mget():
         kv, _ = _make_kv()
         asyncio.run(kv.set("m:a", "1"))
         asyncio.run(kv.set("m:b", "2"))
@@ -66,7 +69,8 @@ class TestKVStoreRedisImpl:
         asyncio.run(kv.delete("m:a"))
         assert asyncio.run(kv.exists("m:a")) is False
 
-    def test_get_by_prefix(self):
+    @staticmethod
+    def test_get_by_prefix():
         kv, _ = _make_kv()
         asyncio.run(kv.set("pfx:a", "va"))
         asyncio.run(kv.set("pfx:b", "vb"))
@@ -74,7 +78,8 @@ class TestKVStoreRedisImpl:
         result = asyncio.run(kv.get_by_prefix("pfx:"))
         assert result == {"pfx:a": "va", "pfx:b": "vb"}
 
-    def test_delete_by_prefix(self):
+    @staticmethod
+    def test_delete_by_prefix():
         """旧实现此路径一调即 AttributeError；SCAN 语义在此首次验证。"""
         kv, _ = _make_kv()
         asyncio.run(kv.set("pfx:a", "va"))

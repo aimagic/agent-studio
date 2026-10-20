@@ -90,13 +90,15 @@ def _reset_manager():
 
 
 class TestSyncCompatClient:
-    def test_string_get_set_ex_roundtrip(self, bridge):
+    @staticmethod
+    def test_string_get_set_ex_roundtrip(bridge):
         client, _ = bridge
         assert client.set("k1", "v1", ex=60) == b"OK"
         assert client.get("k1") == b"v1"
         assert client.get("missing") is None
 
-    def test_list_rpush_lrange_llen(self, bridge):
+    @staticmethod
+    def test_list_rpush_lrange_llen(bridge):
         client, _ = bridge
         assert client.rpush("hist", "a", "b", "c") == 3
         assert client.lrange("hist", 0, -1) == [b"a", b"b", b"c"]
@@ -104,7 +106,8 @@ class TestSyncCompatClient:
         assert client.llen("hist") == 3
         assert client.llen("missing") == 0
 
-    def test_key_delete_expire_exists_ping(self, bridge):
+    @staticmethod
+    def test_key_delete_expire_exists_ping(bridge):
         client, _ = bridge
         client.set("k", "v")
         assert client.exists("k") == 1
@@ -115,7 +118,8 @@ class TestSyncCompatClient:
         assert client.delete("k") == 0
         assert client.expire("k", 30) is False
 
-    def test_call_from_event_loop_thread_succeeds(self, bridge):
+    @staticmethod
+    def test_call_from_event_loop_thread_succeeds(bridge):
         """回归用例：事件循环线程内同步调用（n2l Controller 形态）不得死锁/抛错。
 
         旧版桥（复用装配循环 + 循环线程内 fail-fast）在此形态抛 RuntimeError
@@ -142,12 +146,14 @@ class TestSyncCompatClient:
         assert done.is_set(), "event-loop-thread sync call did not finish"
         assert result["get"] == b"v"
 
-    def test_call_before_initialize_raises(self):
+    @staticmethod
+    def test_call_before_initialize_raises():
         client = SyncCompatClient(lambda: _return(StubAsyncClient()))
         with pytest.raises(RuntimeError, match="before initialize"):
             client.get("k")
 
-    def test_initialize_idempotent(self):
+    @staticmethod
+    def test_initialize_idempotent():
         stub = StubAsyncClient()
         client = SyncCompatClient(lambda: _return(stub))
         client.initialize()
@@ -156,7 +162,8 @@ class TestSyncCompatClient:
         client.close()
         client.close()  # 幂等
 
-    def test_close_releases_client(self):
+    @staticmethod
+    def test_close_releases_client():
         stub = StubAsyncClient()
         client = SyncCompatClient(lambda: _return(stub))
         client.initialize()
@@ -168,12 +175,14 @@ class TestSyncCompatClient:
 
 
 class TestManagerSyncCompatWiring:
-    def test_get_sync_client_prefers_registered_compat(self, bridge):
+    @staticmethod
+    def test_get_sync_client_prefers_registered_compat(bridge):
         client, _ = bridge
         RedisClientManager.set_sync_compat(client)
         assert RedisClientManager.get_instance().get_sync_client() is client
 
-    def test_reset_clears_registered_compat(self, bridge):
+    @staticmethod
+    def test_reset_clears_registered_compat(bridge):
         client, _ = bridge
         RedisClientManager.set_sync_compat(client)
         RedisClientManager.reset()

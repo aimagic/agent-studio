@@ -64,7 +64,7 @@ def _slice_inclusive(value: bytes, start: int, end: int) -> bytes:
     end = min(end, n - 1)
     if start > end:
         return b""
-    return value[start : end + 1]
+    return value[start:end + 1]
 
 
 def _slice_inclusive_list(container: List[bytes], start: int, stop: int) -> List[bytes]:
@@ -79,7 +79,7 @@ def _slice_inclusive_list(container: List[bytes], start: int, stop: int) -> List
     stop = min(stop, n - 1)
     if start > stop:
         return []
-    return container[start : stop + 1]
+    return container[start:stop + 1]
 
 
 class StubPipeline:
@@ -143,7 +143,8 @@ class InMemoryRedisPyStub:
 
     # ---------------------------------------------------------------- 内部守卫
 
-    def _now_ms(self) -> float:
+    @staticmethod
+    def _now_ms() -> float:
         return time.time() * 1000
 
     def _kind_of(self, key: bytes) -> Optional[str]:
@@ -306,6 +307,9 @@ class InMemoryRedisPyStub:
         keepttl: bool = False,
         **kwargs: Any,
     ) -> Optional[bool]:
+        # 参数面刻意对齐 redis-py 的 set() 完整签名（契约 stub 的存在意义
+        # 即模拟上游 API 形状，收敛参数会漏测调用方按上游签名传参的场景）——
+        # G.FNM.03 多参数为有意保留。
         key, value = _enc(key), _enc(value)
         old_deadline = self._expiry.get(key)
         exists = self._purge(key)
@@ -397,8 +401,12 @@ class InMemoryRedisPyStub:
         mapping: Optional[Any] = None,
     ) -> int:
         # redis-py 签名：hset(name, key=None, value=None, mapping=None)。
+        # 两种合法形态互斥：键值对 或 mapping；同时给/都不给即入参错误。
         has_pair = key is not None and value is not None
-        if (mapping and has_pair) or (not mapping and not has_pair):
+        uses_mapping = bool(mapping)
+        both_forms = uses_mapping and has_pair
+        no_form = not uses_mapping and not has_pair
+        if both_forms or no_form:
             raise redis_exc.DataError("hset requires 'key' and 'value', or 'mapping'")
         store_key = _enc(name)
         container = self._container(store_key, "hash", create=True)
@@ -512,7 +520,7 @@ class InMemoryRedisPyStub:
             return 0, {}
         fields = sorted(field for field in container if self._match(match, field))
         page = count or _SCAN_PAGE
-        batch = fields[cursor : cursor + page]
+        batch = fields[cursor:cursor + page]
         next_cursor = cursor + page if cursor + page < len(fields) else 0
         return next_cursor, {field: container[field] for field in batch}
 
@@ -784,7 +792,7 @@ class InMemoryRedisPyStub:
             return 0, []
         members = sorted(member for member in container if self._match(match, member))
         page = count or _SCAN_PAGE
-        batch = members[cursor : cursor + page]
+        batch = members[cursor:cursor + page]
         next_cursor = cursor + page if cursor + page < len(members) else 0
         return next_cursor, batch
 
@@ -799,14 +807,13 @@ class InMemoryRedisPyStub:
         **kwargs: Any,
     ) -> Tuple[int, List[bytes]]:
         kind_filter = _enc(_type).decode("ascii") if _type is not None else None
-        keys = [
-            key
-            for key in self._alive_keys()
-            if self._match(match, key)
-            and (kind_filter is None or self._kind_of(key) == kind_filter)
-        ]
+        # 过滤条件拆为具名中间步骤（G.EXP.04：推导式仅承载简单逻辑）
+        matched = [key for key in self._alive_keys() if self._match(match, key)]
+        if kind_filter is not None:
+            matched = [key for key in matched if self._kind_of(key) == kind_filter]
+        keys = matched
         page = count or _SCAN_PAGE
-        batch = keys[cursor : cursor + page]
+        batch = keys[cursor:cursor + page]
         next_cursor = cursor + page if cursor + page < len(keys) else 0
         return next_cursor, batch
 

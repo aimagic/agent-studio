@@ -67,13 +67,15 @@ def spi_client():
 
 
 class TestRuleMatcher:
-    def test_construction_wired_to_accessor(self, spi_client):
+    @staticmethod
+    def test_construction_wired_to_accessor(spi_client):
         client, _ = spi_client
         with patch("redis_spi.accessor.get_redis", return_value=client):
             matcher = RuleMatcher(RuleMatcherConfig())
         assert matcher.redis_client is client
 
-    def test_load_all_rules_reads_hash_via_spi(self, spi_client):
+    @staticmethod
+    def test_load_all_rules_reads_hash_via_spi(spi_client):
         client, raw = spi_client
         rules = {
             "greet": {"patterns": ["你好"], "responses": ["hi"]},
@@ -90,7 +92,8 @@ class TestRuleMatcher:
         loaded = asyncio.run(matcher._load_all_rules())
         assert loaded == rules
 
-    def test_domain_rules_key_format(self, spi_client):
+    @staticmethod
+    def test_domain_rules_key_format(spi_client):
         client, _ = spi_client
         with patch("redis_spi.accessor.get_redis", return_value=client):
             matcher = RuleMatcher(RuleMatcherConfig())

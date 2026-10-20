@@ -64,12 +64,12 @@ class NativeSortedSetCapability:
         return await self._redis.zincrby(key, amount, member)
 
     @spi_command("zcount")
-    async def zcount(self, key: Key, min: ScoreBoundary, max: ScoreBoundary) -> int:
-        return await self._redis.zcount(key, min, max)
+    async def zcount(self, key: Key, min_value, max_value) -> int:
+        return await self._redis.zcount(key, min_value, max_value)
 
     @spi_command("zlexcount")
-    async def zlexcount(self, key: Key, min: ScoreBoundary, max: ScoreBoundary) -> int:
-        return await self._redis.zlexcount(key, min, max)
+    async def zlexcount(self, key: Key, min_value, max_value) -> int:
+        return await self._redis.zlexcount(key, min_value, max_value)
 
     @spi_command("zrange")
     async def zrange(
@@ -89,8 +89,8 @@ class NativeSortedSetCapability:
     async def zrangebyscore(
         self,
         key: Key,
-        min: ScoreBoundary,
-        max: ScoreBoundary,
+        min_value,
+        max_value,
         *,
         withscores: bool = False,
         offset: int = 0,
@@ -101,8 +101,8 @@ class NativeSortedSetCapability:
         pagination = {} if limit is None else {"start": offset, "num": limit}
         return await self._redis.zrangebyscore(
             key,
-            min,
-            max,
+            min_value,
+            max_value,
             withscores=withscores,
             **pagination,
         )
@@ -111,14 +111,14 @@ class NativeSortedSetCapability:
     async def zrangebylex(
         self,
         key: Key,
-        min: ScoreBoundary,
-        max: ScoreBoundary,
+        min_value,
+        max_value,
         *,
         offset: int = 0,
         limit: int | None = None,
     ) -> list[Value]:
         pagination = {} if limit is None else {"start": offset, "num": limit}
-        return await self._redis.zrangebylex(key, min, max, **pagination)
+        return await self._redis.zrangebylex(key, min_value, max_value, **pagination)
 
     @spi_command("zremrangebyrank")
     async def zremrangebyrank(self, key: Key, start: int, stop: int) -> int:
@@ -126,15 +126,15 @@ class NativeSortedSetCapability:
 
     @spi_command("zremrangebyscore")
     async def zremrangebyscore(
-        self, key: Key, min: ScoreBoundary, max: ScoreBoundary
+        self, key: Key, min_value, max_value
     ) -> int:
-        return await self._redis.zremrangebyscore(key, min, max)
+        return await self._redis.zremrangebyscore(key, min_value, max_value)
 
     @spi_command("zremrangebylex")
     async def zremrangebylex(
-        self, key: Key, min: ScoreBoundary, max: ScoreBoundary
+        self, key: Key, min_value, max_value
     ) -> int:
-        return await self._redis.zremrangebylex(key, min, max)
+        return await self._redis.zremrangebylex(key, min_value, max_value)
 
     @spi_command("zunionstore")
     async def zunionstore(

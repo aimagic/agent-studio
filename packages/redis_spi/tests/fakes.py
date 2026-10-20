@@ -40,10 +40,12 @@ class FakeRedisClient:
     async def aclose(self) -> None:
         self.closed = True
 
-    def supports(self, capability: type) -> bool:
+    @staticmethod
+    def supports(capability: type) -> bool:
         return False
 
-    def as_capability(self, capability: type) -> Any:
+    @staticmethod
+    def as_capability(capability: type) -> Any:
         raise CapabilityNotSupportedError(
             f"fake client does not support "
             f"{getattr(capability, '__name__', capability)}"
@@ -87,86 +89,154 @@ class FullSurfaceFakeClient:
     async def aclose(self) -> None:
         return None
 
-    def supports(self, capability: type) -> bool:
+    @staticmethod
+    def supports(capability: type) -> bool:
         return False
 
-    def as_capability(self, capability: type) -> Any:
+    @staticmethod
+    def as_capability(capability: type) -> Any:
         raise CapabilityNotSupportedError(f"not supported: {capability}")
 
     # ---- KeyCommands ----
-    async def exists(self, *keys): return _stub()
-    async def delete(self, *keys): return _stub()
-    async def key_type(self, key): return _stub()
-    async def expire(self, key, duration): return _stub()
-    async def pexpire(self, key, duration): return _stub()
-    async def expire_at(self, key, unix_seconds): return _stub()
-    async def pexpire_at(self, key, unix_milliseconds): return _stub()
-    async def ttl(self, key): return _stub()
-    async def pttl(self, key): return _stub()
-    async def persist(self, key): return _stub()
+    async def exists(self, *keys):
+        return _stub()
+    async def delete(self, *keys):
+        return _stub()
+    async def key_type(self, key):
+        return _stub()
+    async def expire(self, key, duration):
+        return _stub()
+    async def pexpire(self, key, duration):
+        return _stub()
+    async def expire_at(self, key, unix_seconds):
+        return _stub()
+    async def pexpire_at(self, key, unix_milliseconds):
+        return _stub()
+    async def ttl(self, key):
+        return _stub()
+    async def pttl(self, key):
+        return _stub()
+    async def persist(self, key):
+        return _stub()
 
     # ---- StringCommands ----
-    async def get(self, key): return _stub()
-    async def set(self, key, value, *, condition=None, duration=None, keep_ttl=False): return _stub()
-    async def get_set(self, key, value): return _stub()
-    async def mget(self, keys): return _stub()
-    async def mset(self, mapping): return _stub()
-    async def msetnx(self, mapping): return _stub()
-    async def append(self, key, value): return _stub()
-    async def strlen(self, key): return _stub()
-    async def getrange(self, key, start, end): return _stub()
-    async def setrange(self, key, offset, value): return _stub()
+    async def get(self, key):
+        return _stub()
+    async def set(self, key, value, *, condition=None, duration=None, keep_ttl=False):
+        return _stub()
+    async def get_set(self, key, value):
+        return _stub()
+    async def mget(self, keys):
+        return _stub()
+    async def mset(self, mapping):
+        return _stub()
+    async def msetnx(self, mapping):
+        return _stub()
+    async def append(self, key, value):
+        return _stub()
+    async def strlen(self, key):
+        return _stub()
+    async def getrange(self, key, start, end):
+        return _stub()
+    async def setrange(self, key, offset, value):
+        return _stub()
 
     # ---- HashCommands ----
-    async def hset(self, key, mapping=None, *, field=None, value=None): return _stub()
-    async def hsetnx(self, key, field, value): return _stub()
-    async def hget(self, key, field): return _stub()
-    async def hgetall(self, key): return _stub()
-    async def hmget(self, key, fields): return _stub()
-    async def hdel(self, key, *fields): return _stub()
-    async def hexists(self, key, field): return _stub()
-    async def hlen(self, key): return _stub()
-    async def hkeys(self, key): return _stub()
-    async def hvals(self, key): return _stub()
-    async def hincr_by(self, key, field, amount): return _stub()
-    async def hincr_by_float(self, key, field, amount): return _stub()
-    async def hscan(self, key, cursor=0, *, match=None, count=None): return _stub()
+    async def hset(self, key, mapping=None, *, field=None, value=None):
+        return _stub()
+    async def hsetnx(self, key, field, value):
+        return _stub()
+    async def hget(self, key, field):
+        return _stub()
+    async def hgetall(self, key):
+        return _stub()
+    async def hmget(self, key, fields):
+        return _stub()
+    async def hdel(self, key, *fields):
+        return _stub()
+    async def hexists(self, key, field):
+        return _stub()
+    async def hlen(self, key):
+        return _stub()
+    async def hkeys(self, key):
+        return _stub()
+    async def hvals(self, key):
+        return _stub()
+    async def hincr_by(self, key, field, amount):
+        return _stub()
+    async def hincr_by_float(self, key, field, amount):
+        return _stub()
+    async def hscan(self, key, cursor=0, *, match=None, count=None):
+        return _stub()
 
     # ---- ListCommands ----
-    async def rpush(self, key, *values): return _stub()
-    async def lpush(self, key, *values): return _stub()
-    async def lpushx(self, key, value): return _stub()
-    async def rpushx(self, key, value): return _stub()
-    async def lpop(self, key, count=None): return _stub()
-    async def rpop(self, key, count=None): return _stub()
-    async def lrange(self, key, start, stop): return _stub()
-    async def ltrim(self, key, start, stop): return _stub()
-    async def llen(self, key): return _stub()
-    async def lindex(self, key, index): return _stub()
-    async def lset(self, key, index, value): return _stub()
-    async def lrem(self, key, count, value): return _stub()
-    async def rpoplpush(self, source, destination): return _stub()
+    async def rpush(self, key, *values):
+        return _stub()
+    async def lpush(self, key, *values):
+        return _stub()
+    async def lpushx(self, key, value):
+        return _stub()
+    async def rpushx(self, key, value):
+        return _stub()
+    async def lpop(self, key, count=None):
+        return _stub()
+    async def rpop(self, key, count=None):
+        return _stub()
+    async def lrange(self, key, start, stop):
+        return _stub()
+    async def ltrim(self, key, start, stop):
+        return _stub()
+    async def llen(self, key):
+        return _stub()
+    async def lindex(self, key, index):
+        return _stub()
+    async def lset(self, key, index, value):
+        return _stub()
+    async def lrem(self, key, count, value):
+        return _stub()
+    async def rpoplpush(self, source, destination):
+        return _stub()
 
     # ---- SetCommands ----
-    async def sadd(self, key, *members): return _stub()
-    async def srem(self, key, *members): return _stub()
-    async def smembers(self, key): return _stub()
-    async def sismember(self, key, member): return _stub()
-    async def scard(self, key): return _stub()
-    async def spop(self, key, count=None): return _stub()
-    async def srandmember(self, key, count=None): return _stub()
-    async def smove(self, source, destination, member): return _stub()
-    async def sinter(self, *keys): return _stub()
-    async def sunion(self, *keys): return _stub()
-    async def sdiff(self, *keys): return _stub()
-    async def sinterstore(self, destination, *keys): return _stub()
-    async def sunionstore(self, destination, *keys): return _stub()
-    async def sdiffstore(self, destination, *keys): return _stub()
-    async def sscan(self, key, cursor=0, *, match=None, count=None): return _stub()
+    async def sadd(self, key, *members):
+        return _stub()
+    async def srem(self, key, *members):
+        return _stub()
+    async def smembers(self, key):
+        return _stub()
+    async def sismember(self, key, member):
+        return _stub()
+    async def scard(self, key):
+        return _stub()
+    async def spop(self, key, count=None):
+        return _stub()
+    async def srandmember(self, key, count=None):
+        return _stub()
+    async def smove(self, source, destination, member):
+        return _stub()
+    async def sinter(self, *keys):
+        return _stub()
+    async def sunion(self, *keys):
+        return _stub()
+    async def sdiff(self, *keys):
+        return _stub()
+    async def sinterstore(self, destination, *keys):
+        return _stub()
+    async def sunionstore(self, destination, *keys):
+        return _stub()
+    async def sdiffstore(self, destination, *keys):
+        return _stub()
+    async def sscan(self, key, cursor=0, *, match=None, count=None):
+        return _stub()
 
     # ---- ScanCommands ----
-    async def scan(self, cursor=0, *, match=None, count=None, type=None): return _stub()
-    def scan_iter(self, *, match=None, count=None): return _stub()
+    async def scan(self, cursor=0, *, match=None, count=None, type_name=None):
+        return _stub()
+    @staticmethod
+    def scan_iter(*, match=None, count=None):
+        return _stub()
 
     # ---- PipelineCommands ----
-    def pipeline(self, *, transaction=None): return _stub()
+    @staticmethod
+    def pipeline(*, transaction=None):
+        return _stub()

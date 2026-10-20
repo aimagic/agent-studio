@@ -40,21 +40,25 @@ def make_client(results=None, exceptions=None, **kwargs):
 
 
 class TestStringCommands:
-    def test_set_returns_ok_bytes(self):
+    @staticmethod
+    def test_set_returns_ok_bytes():
         client, fake = make_client(results={"set": True})
         assert asyncio.run(client.set("k", b"v")) == b"OK"
         assert fake.calls == [("set", ("k", b"v"), {})]
 
-    def test_set_text_mode_returns_ok_str(self):
+    @staticmethod
+    def test_set_text_mode_returns_ok_str():
         client, _ = make_client(results={"set": True}, text_mode=True)
         assert asyncio.run(client.set("k", "v")) == "OK"
 
-    def test_set_condition_miss_returns_none(self):
+    @staticmethod
+    def test_set_condition_miss_returns_none():
         client, fake = make_client(results={"set": None})
         assert asyncio.run(client.set("k", b"v", condition=SetCondition.NX)) is None
         assert fake.calls[0][2] == {"nx": True}
 
-    def test_set_condition_and_duration_translated(self):
+    @staticmethod
+    def test_set_condition_and_duration_translated():
         client, fake = make_client(results={"set": True})
         asyncio.run(
             client.set(
@@ -63,7 +67,8 @@ class TestStringCommands:
         )
         assert fake.calls[0][2] == {"xx": True, "px": 1500}
 
-    def test_set_ttl_conflict_rejected_before_delegate(self):
+    @staticmethod
+    def test_set_ttl_conflict_rejected_before_delegate():
         client, fake = make_client(results={"set": True})
         with pytest.raises(RedisCommandError, match="互斥"):
             asyncio.run(
@@ -71,55 +76,64 @@ class TestStringCommands:
             )
         assert fake.calls == []
 
-    def test_setrange_negative_offset_rejected(self):
+    @staticmethod
+    def test_setrange_negative_offset_rejected():
         client, fake = make_client()
         with pytest.raises(RedisCommandError, match="offset"):
             asyncio.run(client.setrange("k", -1, b"v"))
         assert fake.calls == []
 
-    def test_get_passthrough(self):
+    @staticmethod
+    def test_get_passthrough():
         client, fake = make_client(results={"get": b"v"})
         assert asyncio.run(client.get("k")) == b"v"
         assert fake.calls == [("get", ("k",), {})]
 
 
 class TestKeyCommands:
-    def test_expire_ceil_to_seconds(self):
+    @staticmethod
+    def test_expire_ceil_to_seconds():
         client, fake = make_client(results={"expire": True})
         assert asyncio.run(client.expire("k", Duration.milliseconds(1500))) is True
         assert fake.calls == [("expire", ("k", 2), {})]
 
-    def test_pexpire_keeps_milliseconds(self):
+    @staticmethod
+    def test_pexpire_keeps_milliseconds():
         client, fake = make_client(results={"pexpire": True})
         asyncio.run(client.pexpire("k", Duration.milliseconds(1500)))
         assert fake.calls == [("pexpire", ("k", 1500), {})]
 
-    def test_expire_at_seconds_passthrough(self):
+    @staticmethod
+    def test_expire_at_seconds_passthrough():
         client, fake = make_client(results={"expireat": True})
         asyncio.run(client.expire_at("k", 1700000000))
         assert fake.calls == [("expireat", ("k", 1700000000), {})]
 
-    def test_pexpire_at_milliseconds_passthrough(self):
+    @staticmethod
+    def test_pexpire_at_milliseconds_passthrough():
         client, fake = make_client(results={"pexpireat": True})
         asyncio.run(client.pexpire_at("k", 1700000000000))
         assert fake.calls == [("pexpireat", ("k", 1700000000000), {})]
 
-    def test_exists_empty_rejected(self):
+    @staticmethod
+    def test_exists_empty_rejected():
         client, fake = make_client()
         with pytest.raises(RedisCommandError, match="至少一个 key"):
             asyncio.run(client.exists())
         assert fake.calls == []
 
-    def test_key_type(self):
+    @staticmethod
+    def test_key_type():
         client, _ = make_client(results={"type": b"hash"})
         assert asyncio.run(client.key_type("k")) == b"hash"
 
 
 class TestScanCommands:
-    def test_scan_type_param_mapped(self):
+    @staticmethod
+    def test_scan_type_param_mapped():
         client, fake = make_client(results={"scan": (0, [b"a", b"b"])})
         batch = asyncio.run(
-            client.scan(7, match=b"u:*", count=10, type=b"string")
+            client.scan(7, match=b"u:*", count=10, type_name=b"string")
         )
         assert isinstance(batch, ScanBatch)
         assert batch.cursor == 0
@@ -129,7 +143,8 @@ class TestScanCommands:
         assert args == (7,)
         assert kwargs == {"match": b"u:*", "count": 10, "_type": b"string"}
 
-    def test_scan_iter_delegates_and_iterates(self):
+    @staticmethod
+    def test_scan_iter_delegates_and_iterates():
         client, fake = make_client(results={"scan_iter_items": [b"a", b"b"]})
 
         async def run():
@@ -140,12 +155,14 @@ class TestScanCommands:
 
 
 class TestHashCommands:
-    def test_hset_mapping_path(self):
+    @staticmethod
+    def test_hset_mapping_path():
         client, fake = make_client(results={"hset": 1})
         assert asyncio.run(client.hset("k", {"f": b"v"})) == 1
         assert fake.calls == [("hset", ("k",), {"mapping": {"f": b"v"}, "key": None, "value": None})]
 
-    def test_hset_field_value_path(self):
+    @staticmethod
+    def test_hset_field_value_path():
         client, fake = make_client(results={"hset": 1})
         asyncio.run(client.hset("k", field="f", value=b"v"))
         assert fake.calls == [("hset", ("k",), {"mapping": None, "key": "f", "value": b"v"})]
@@ -160,7 +177,8 @@ class TestHashCommands:
             asyncio.run(client.hset("k", mapping, field=field, value=value))
         assert fake.calls == []
 
-    def test_hscan_list_payload_normalized(self):
+    @staticmethod
+    def test_hscan_list_payload_normalized():
         client, _ = make_client(
             results={"hscan": (0, [b"f1", b"v1", b"f2", b"v2"])}
         )
@@ -168,7 +186,8 @@ class TestHashCommands:
         assert cursor == 0
         assert mapping == {b"f1": b"v1", b"f2": b"v2"}
 
-    def test_hscan_dict_payload_passthrough(self):
+    @staticmethod
+    def test_hscan_dict_payload_passthrough():
         payload = {b"f": b"v"}
         client, _ = make_client(results={"hscan": (0, payload)})
         _, mapping = asyncio.run(client.hscan("k"))
@@ -176,41 +195,48 @@ class TestHashCommands:
 
 
 class TestListCommands:
-    def test_rpush_empty_rejected(self):
+    @staticmethod
+    def test_rpush_empty_rejected():
         client, fake = make_client()
         with pytest.raises(RedisCommandError, match="至少一个 value"):
             asyncio.run(client.rpush("k"))
         assert fake.calls == []
 
-    def test_lpop_passthrough(self):
+    @staticmethod
+    def test_lpop_passthrough():
         client, _ = make_client(results={"lpop": b"x"})
         assert asyncio.run(client.lpop("k")) == b"x"
 
 
 class TestSetCommands:
-    def test_sadd_empty_rejected(self):
+    @staticmethod
+    def test_sadd_empty_rejected():
         client, fake = make_client()
         with pytest.raises(RedisCommandError, match="至少一个 member"):
             asyncio.run(client.sadd("k"))
         assert fake.calls == []
 
-    def test_sinter_empty_rejected(self):
+    @staticmethod
+    def test_sinter_empty_rejected():
         client, fake = make_client()
         with pytest.raises(RedisCommandError, match="至少一个 key"):
             asyncio.run(client.sinter())
         assert fake.calls == []
 
-    def test_spop_set_passthrough(self):
+    @staticmethod
+    def test_spop_set_passthrough():
         client, _ = make_client(results={"spop": {b"a", b"b"}})
         assert asyncio.run(client.spop("k", 2)) == {b"a", b"b"}
 
 
 class TestLifecycle:
-    def test_ping_true(self):
+    @staticmethod
+    def test_ping_true():
         client, _ = make_client(results={"ping": True})
         assert asyncio.run(client.ping()) is True
 
-    def test_ping_timeout_translated_result_known(self):
+    @staticmethod
+    def test_ping_timeout_translated_result_known():
         client, _ = make_client(
             exceptions={"ping": redis_exc.TimeoutError("t/o")}
         )
@@ -219,14 +245,16 @@ class TestLifecycle:
         # ping 幂等：超时结果可知（可重试）
         assert excinfo.value.result_known is True
 
-    def test_ping_connection_translated(self):
+    @staticmethod
+    def test_ping_connection_translated():
         client, _ = make_client(
             exceptions={"ping": redis_exc.ConnectionError("refused")}
         )
         with pytest.raises(RedisConnectionError):
             asyncio.run(client.ping())
 
-    def test_aclose_dedupes_shared_clients(self):
+    @staticmethod
+    def test_aclose_dedupes_shared_clients():
         fake = FakeRedisClient()
         client = NativeRedisClient(fake)  # subscriber/blocking 回退主池
         asyncio.run(client.aclose())
@@ -234,7 +262,8 @@ class TestLifecycle:
         closes = [c for c in fake.calls if c[0] == "aclose"]
         assert len(closes) == 1
 
-    def test_aclose_closes_each_underlying_once(self):
+    @staticmethod
+    def test_aclose_closes_each_underlying_once():
         main = FakeRedisClient()
         subscriber = FakeRedisClient()
         blocking = FakeRedisClient()
@@ -263,12 +292,14 @@ class TestCapabilityDispatch:
         client, _ = make_client()
         assert all(client.supports(cap) for cap in self.ALL_CAPABILITIES)
 
-    def test_as_capability_unknown_rejected(self):
+    @staticmethod
+    def test_as_capability_unknown_rejected():
         client, _ = make_client()
         with pytest.raises(CapabilityNotSupportedError):
             client.as_capability(dict)
 
-    def test_views_bound_to_matching_pools(self):
+    @staticmethod
+    def test_views_bound_to_matching_pools():
         main = FakeRedisClient()
         subscriber = FakeRedisClient()
         blocking = FakeRedisClient()
@@ -286,7 +317,8 @@ class TestCapabilityDispatch:
         asyncio.run(client.as_capability(BlockingCommands).blpop(["k"]))
         assert [c[0] for c in blocking.calls] == ["blpop"]
 
-    def test_views_fall_back_to_main_when_shared(self):
+    @staticmethod
+    def test_views_fall_back_to_main_when_shared():
         # cluster 共享主池形态：subscriber/blocking 为 None → 回退主池
         main = FakeRedisClient()
         main.pubsub_obj = FakeRedisClient()
@@ -296,17 +328,20 @@ class TestCapabilityDispatch:
         names = [c[0] for c in main.calls]
         assert "pubsub" in names and "blpop" in names
 
-    def test_native_client_view(self):
+    @staticmethod
+    def test_native_client_view():
         fake = FakeRedisClient()
         client = NativeRedisClient(fake)
         assert client.native_client() is fake
 
-    def test_text_mode_property(self):
+    @staticmethod
+    def test_text_mode_property():
         assert NativeRedisClient(FakeRedisClient(), text_mode=True).text_mode is True
 
 
 class TestPipeline:
-    def test_transaction_default_resolution(self):
+    @staticmethod
+    def test_transaction_default_resolution():
         fake = FakeRedisClient()
         client = NativeRedisClient(fake)
         client.pipeline()
@@ -314,12 +349,14 @@ class TestPipeline:
         client.pipeline(transaction=False)
         assert fake.calls[1][2]["transaction"] is False
 
-    def test_transaction_default_from_constructor(self):
+    @staticmethod
+    def test_transaction_default_from_constructor():
         fake = FakeRedisClient()
         NativeRedisClient(fake, transaction_default=False).pipeline()
         assert fake.calls[0][2]["transaction"] is False
 
-    def test_enqueue_chain_and_execute(self):
+    @staticmethod
+    def test_enqueue_chain_and_execute():
         outer = FakeRedisClient()
         inner = FakePipeline(results={"execute": [b"OK", 2]})
         outer.pipeline_obj = inner
@@ -340,7 +377,8 @@ class TestPipeline:
             ("execute", (), {}),
         ]
 
-    def test_hset_validation_fails_at_enqueue(self):
+    @staticmethod
+    def test_hset_validation_fails_at_enqueue():
         outer = FakeRedisClient()
         inner = FakePipeline()
         outer.pipeline_obj = inner
@@ -349,7 +387,8 @@ class TestPipeline:
             pipe.hset("k", {"f": b"v"}, field="f2", value=b"v2")
         assert inner.calls == []
 
-    def test_execute_error_translated(self):
+    @staticmethod
+    def test_execute_error_translated():
         outer = FakeRedisClient()
         inner = FakePipeline(
             exceptions={"execute": redis_exc.ResponseError("ERR bad")}
@@ -359,7 +398,8 @@ class TestPipeline:
         with pytest.raises(RedisCommandError, match="ERR bad"):
             asyncio.run(pipe.execute())
 
-    def test_aclose_delegates(self):
+    @staticmethod
+    def test_aclose_delegates():
         outer = FakeRedisClient()
         inner = FakePipeline()
         outer.pipeline_obj = inner
@@ -367,7 +407,8 @@ class TestPipeline:
         asyncio.run(pipe.aclose())
         assert [c[0] for c in inner.calls] == ["aclose"]
 
-    def test_pipeline_type(self):
+    @staticmethod
+    def test_pipeline_type():
         outer = FakeRedisClient()
         pipe = NativeRedisClient(outer).pipeline()
         assert isinstance(pipe, NativePipeline)

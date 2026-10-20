@@ -21,26 +21,30 @@ def _register_fake():
 
 
 class TestLifecycle:
-    def test_initialize_then_get_redis(self):
+    @staticmethod
+    def test_initialize_then_get_redis():
         _register_fake()
         client = asyncio.run(accessor.initialize(RedisProviderSettings(**FAKE_SETTINGS)))
         assert isinstance(client, FakeRedisClient)
         assert accessor.get_redis() is client
         assert accessor.is_initialized() is True
 
-    def test_initialize_idempotent_returns_same_client(self):
+    @staticmethod
+    def test_initialize_idempotent_returns_same_client():
         _register_fake()
         first = asyncio.run(accessor.initialize(RedisProviderSettings(**FAKE_SETTINGS)))
         second = asyncio.run(accessor.initialize(RedisProviderSettings(**FAKE_SETTINGS)))
         assert first is second
 
-    def test_get_redis_uninitialized_fail_fast(self):
+    @staticmethod
+    def test_get_redis_uninitialized_fail_fast():
         with pytest.raises(RedisConfigError) as excinfo:
             accessor.get_redis()
         # 报错自描述：指明初始化入口
         assert "initialize" in str(excinfo.value)
 
-    def test_get_redis_or_none(self):
+    @staticmethod
+    def test_get_redis_or_none():
         assert accessor.get_redis_or_none() is None
         _register_fake()
         asyncio.run(accessor.initialize(RedisProviderSettings(**FAKE_SETTINGS)))
@@ -48,18 +52,21 @@ class TestLifecycle:
 
 
 class TestClose:
-    def test_aclose_closes_client_and_clears(self):
+    @staticmethod
+    def test_aclose_closes_client_and_clears():
         _register_fake()
         client = asyncio.run(accessor.initialize(RedisProviderSettings(**FAKE_SETTINGS)))
         asyncio.run(accessor.aclose())
         assert client.closed is True
         assert accessor.is_initialized() is False
 
-    def test_aclose_idempotent(self):
+    @staticmethod
+    def test_aclose_idempotent():
         asyncio.run(accessor.aclose())
         asyncio.run(accessor.aclose())
 
-    def test_reset_clears_without_closing(self):
+    @staticmethod
+    def test_reset_clears_without_closing():
         _register_fake()
         client = asyncio.run(accessor.initialize(RedisProviderSettings(**FAKE_SETTINGS)))
         accessor.reset()
@@ -68,17 +75,20 @@ class TestClose:
 
 
 class TestAwaitProviderReady:
-    def test_immediate_when_initialized(self):
+    @staticmethod
+    def test_immediate_when_initialized():
         _register_fake()
         client = asyncio.run(accessor.initialize(RedisProviderSettings(**FAKE_SETTINGS)))
         ready = asyncio.run(accessor.await_provider_ready())
         assert ready is client
 
-    def test_timeout_when_not_initialized(self):
+    @staticmethod
+    def test_timeout_when_not_initialized():
         with pytest.raises(RedisTimeoutError):
             asyncio.run(accessor.await_provider_ready(timeout=0.1))
 
-    def test_invalid_timeout_rejected(self):
+    @staticmethod
+    def test_invalid_timeout_rejected():
         with pytest.raises(ValueError):
             asyncio.run(accessor.await_provider_ready(timeout=0))
 

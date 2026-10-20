@@ -48,24 +48,24 @@ SUPPORTED_CAPABILITIES = frozenset(
 def capability_view(client: Any, capability: type) -> Any:
     """按能力组为 NativeRedisClient 构造委托视图；不支持返回 None。
 
-    视图与客户端共享底层连接池与生命周期（契约要求）——访问 client 的包内
-    部属性（``_redis`` / ``_subscriber`` / ``_blocking``）是包内约定，不构成
-    对外接口。
+    视图与客户端共享底层连接池与生命周期（契约要求）——经公开只读属性
+    （``redis_client`` / ``subscriber_client`` / ``blocking_client``）
+    取底层连接，不触碰包内受保护成员。
     """
     if capability is CounterCapability:
-        return NativeCounterCapability(client._redis)
+        return NativeCounterCapability(client.redis_client)
     if capability is SortedSetCapability:
-        return NativeSortedSetCapability(client._redis)
+        return NativeSortedSetCapability(client.redis_client)
     if capability is BitmapCapability:
-        return NativeBitmapCapability(client._redis)
+        return NativeBitmapCapability(client.redis_client)
     if capability is HyperLogLogCapability:
-        return NativeHyperLogLogCapability(client._redis)
+        return NativeHyperLogLogCapability(client.redis_client)
     if capability is GeoCapability:
-        return NativeGeoCapability(client._redis)
+        return NativeGeoCapability(client.redis_client)
     if capability is ScriptingCapability:
-        return NativeScriptingCapability(client._redis)
+        return NativeScriptingCapability(client.redis_client)
     if capability is PubSubCapability:
-        return NativePubSubCapability(client._redis, client._subscriber)
+        return NativePubSubCapability(client.redis_client, client.subscriber_client)
     if capability is BlockingCommands:
-        return NativeBlockingCapability(client._blocking)
+        return NativeBlockingCapability(client.blocking_client)
     return None

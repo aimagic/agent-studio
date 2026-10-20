@@ -38,50 +38,58 @@ def make_handle(
 
 
 class TestSubscription:
-    def test_subscribe_empty_rejected(self):
+    @staticmethod
+    def test_subscribe_empty_rejected():
         handle, fake = make_handle()
         with pytest.raises(RedisCommandError, match="至少一个频道"):
             asyncio.run(handle.subscribe())
         assert fake.operations == []
 
-    def test_psubscribe_empty_rejected(self):
+    @staticmethod
+    def test_psubscribe_empty_rejected():
         handle, fake = make_handle()
         with pytest.raises(RedisCommandError, match="至少一个模式"):
             asyncio.run(handle.psubscribe())
         assert fake.operations == []
 
-    def test_subscribe_delegates(self):
+    @staticmethod
+    def test_subscribe_delegates():
         handle, fake = make_handle()
         asyncio.run(handle.subscribe("ch1", "ch2"))
         assert fake.operations == [("subscribe", ("ch1", "ch2"))]
         assert fake.subscribed is True
 
-    def test_psubscribe_delegates(self):
+    @staticmethod
+    def test_psubscribe_delegates():
         handle, fake = make_handle()
         asyncio.run(handle.psubscribe("ch.*"))
         assert fake.operations == [("psubscribe", ("ch.*",))]
         assert fake.subscribed is True
 
-    def test_unsubscribe_empty_means_all(self):
+    @staticmethod
+    def test_unsubscribe_empty_means_all():
         handle, fake = make_handle()
         asyncio.run(handle.subscribe("ch"))
         asyncio.run(handle.unsubscribe())
         assert fake.subscribed is False
         assert fake.operations[-1] == ("unsubscribe", ())
 
-    def test_unsubscribe_specific_passthrough(self):
+    @staticmethod
+    def test_unsubscribe_specific_passthrough():
         handle, fake = make_handle()
         asyncio.run(handle.unsubscribe("ch1"))
         assert fake.operations == [("unsubscribe", ("ch1",))]
 
-    def test_punsubscribe_passthrough(self):
+    @staticmethod
+    def test_punsubscribe_passthrough():
         handle, fake = make_handle()
         asyncio.run(handle.punsubscribe("ch.*"))
         assert fake.operations == [("punsubscribe", ("ch.*",))]
 
 
 class TestListenMessageMapping:
-    def collect(self, handle: NativePubSubHandle) -> list[PubSubMessage]:
+    @staticmethod
+    def collect(handle: NativePubSubHandle) -> list[PubSubMessage]:
         async def run():
             return [message async for message in handle.listen()]
 
@@ -166,14 +174,16 @@ class TestSpinWait:
 
 
 class TestLifecycle:
-    def test_aclose_idempotent(self):
+    @staticmethod
+    def test_aclose_idempotent():
         handle, fake = make_handle()
         asyncio.run(handle.aclose())
         asyncio.run(handle.aclose())
         assert fake.closed is True
         assert fake.operations.count(("aclose", ())) == 1
 
-    def test_aclose_error_translated(self):
+    @staticmethod
+    def test_aclose_error_translated():
         handle, fake = make_handle(aclose_error=redis_exc.TimeoutError("t/o"))
         with pytest.raises(RedisTimeoutError):
             asyncio.run(handle.aclose())

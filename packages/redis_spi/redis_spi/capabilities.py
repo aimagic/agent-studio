@@ -99,11 +99,11 @@ class SortedSetCapability(Protocol):
         """ZINCRBY：member score 增量，返回增量后的 score。"""
         ...
 
-    async def zcount(self, key: Key, min: ScoreBoundary, max: ScoreBoundary) -> int:
+    async def zcount(self, key: Key, min_value, max_value) -> int:
         """ZCOUNT：闭区间 [min, max] 内的 member 数（开区间用 "(5" 形态）。"""
         ...
 
-    async def zlexcount(self, key: Key, min: ScoreBoundary, max: ScoreBoundary) -> int:
+    async def zlexcount(self, key: Key, min_value, max_value) -> int:
         """ZLEXCOUNT：按字典序计数（要求全部 member 同 score）；边界用 "["/"(" 前缀。"""
         ...
 
@@ -125,8 +125,8 @@ class SortedSetCapability(Protocol):
     async def zrangebyscore(
         self,
         key: Key,
-        min: ScoreBoundary,
-        max: ScoreBoundary,
+        min_value,
+        max_value,
         *,
         withscores: bool = False,
         offset: int = 0,
@@ -142,8 +142,8 @@ class SortedSetCapability(Protocol):
     async def zrangebylex(
         self,
         key: Key,
-        min: ScoreBoundary,
-        max: ScoreBoundary,
+        min_value,
+        max_value,
         *,
         offset: int = 0,
         limit: int | None = None,
@@ -155,11 +155,11 @@ class SortedSetCapability(Protocol):
         """ZREMRANGEBYRANK：按排名区间删除，返回删除数。"""
         ...
 
-    async def zremrangebyscore(self, key: Key, min: ScoreBoundary, max: ScoreBoundary) -> int:
+    async def zremrangebyscore(self, key: Key, min_value, max_value) -> int:
         """ZREMRANGEBYSCORE：按 score 区间删除，返回删除数。"""
         ...
 
-    async def zremrangebylex(self, key: Key, min: ScoreBoundary, max: ScoreBoundary) -> int:
+    async def zremrangebylex(self, key: Key, min_value, max_value) -> int:
         """ZREMRANGEBYLEX：按字典序区间删除，返回删除数。"""
         ...
 

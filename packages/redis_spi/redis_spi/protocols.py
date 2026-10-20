@@ -362,7 +362,7 @@ class ScanCommands(Protocol):
         *,
         match: Value | None = None,
         count: int | None = None,
-        type: Value | None = None,
+        type_name = None,
     ) -> ScanBatch:
         """SCAN：返回单批结果。游标回到 SCAN_START 即遍历结束。
 

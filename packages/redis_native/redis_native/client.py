@@ -66,6 +66,21 @@ class NativeRedisClient(
     def text_mode(self) -> bool:
         return self._text_mode
 
+    @property
+    def redis_client(self) -> Any:
+        """主连接池的只读暴露（capability_view 构造能力视图用，包外只读）。"""
+        return self._redis
+
+    @property
+    def subscriber_client(self) -> Any:
+        """订阅通道连接池（缺省回退主池）的只读暴露。"""
+        return self._subscriber
+
+    @property
+    def blocking_client(self) -> Any:
+        """阻塞命令连接池（缺省回退主池）的只读暴露。"""
+        return self._blocking
+
     @spi_command("ping")
     async def ping(self) -> bool:
         return await self._redis.ping()

@@ -9,6 +9,8 @@
     离线后端（fakeredis/替身）自动 skip（自分类：坏端口装配成功即离线后端）。
 """
 
+import os
+
 import pytest
 
 from redis_spi.capabilities import CounterCapability
@@ -28,7 +30,8 @@ from redis_contract_tests.test_core_contract import run
 
 
 class TestWrongTypeMapping:
-    def test_hash_command_on_string_key(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_hash_command_on_string_key(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}wt-h"
             await provider_client.set(key, b"v")
@@ -37,7 +40,8 @@ class TestWrongTypeMapping:
 
         run(loop, scenario())
 
-    def test_string_command_on_hash_key(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_string_command_on_hash_key(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}wt-s"
             await provider_client.hset(key, field=b"f", value=b"v")
@@ -46,7 +50,8 @@ class TestWrongTypeMapping:
 
         run(loop, scenario())
 
-    def test_list_command_on_set_key(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_list_command_on_set_key(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}wt-l"
             await provider_client.sadd(key, b"m")
@@ -59,14 +64,16 @@ class TestWrongTypeMapping:
 class TestClientSideValidation:
     """客户端侧 fail-fast 校验（不依赖服务端，任何后端一致）。"""
 
-    def test_exists_requires_keys(self, provider_client, loop):
+    @staticmethod
+    def test_exists_requires_keys(provider_client, loop):
         async def scenario():
             with pytest.raises(RedisCommandError):
                 await provider_client.exists()
 
         run(loop, scenario())
 
-    def test_push_and_sadd_require_members(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_push_and_sadd_require_members(provider_client, key_prefix, loop):
         async def scenario():
             with pytest.raises(RedisCommandError):
                 await provider_client.rpush(f"{key_prefix}x")
@@ -77,7 +84,8 @@ class TestClientSideValidation:
 
         run(loop, scenario())
 
-    def test_hset_forms_mutually_exclusive(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_hset_forms_mutually_exclusive(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}hset-v"
             with pytest.raises(RedisCommandError):
@@ -89,7 +97,8 @@ class TestClientSideValidation:
 
         run(loop, scenario())
 
-    def test_set_duration_keep_ttl_mutex(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_set_duration_keep_ttl_mutex(provider_client, key_prefix, loop):
         async def scenario():
             from redis_spi.types import Duration
 
@@ -105,7 +114,8 @@ class TestClientSideValidation:
 
 
 class TestServerSideCommandErrors:
-    def test_lset_missing_key_and_out_of_range(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_lset_missing_key_and_out_of_range(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}lset"
             with pytest.raises(RedisCommandError):
@@ -116,7 +126,8 @@ class TestServerSideCommandErrors:
 
         run(loop, scenario())
 
-    def test_hincrby_non_integer_value(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_hincrby_non_integer_value(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}hincr"
             await provider_client.hset(key, field=b"n", value=b"not-a-number")
@@ -127,7 +138,8 @@ class TestServerSideCommandErrors:
 
 
 class TestErrorContext:
-    def test_wrongtype_carries_operation_and_code(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_wrongtype_carries_operation_and_code(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}ctx"
             await provider_client.set(key, b"v")
@@ -144,7 +156,8 @@ class TestErrorContext:
 
 
 class TestConnectionErrorMapping:
-    def test_bad_port_yields_connection_error(self, loop):
+    @staticmethod
+    def test_bad_port_yields_connection_error(loop):
         """坏端口装配 → 连接族 SPI 异常（真实网络后端）；离线后端自动 skip。
 
         分类学：连接被拒 → RedisConnectionError；连接超时（Windows 防火墙对
@@ -152,7 +165,7 @@ class TestConnectionErrorMapping:
         正确翻译"的期望路径。自分类：离线后端（fakeredis/内存替身）不建连，
         坏端口也能装配成功——skip 而非放行。
         """
-        target = __import__("os").environ.get(TARGET_ENV, "")
+        target = os.environ.get(TARGET_ENV, "")
         settings = RedisProviderSettings(
             REDIS_PROVIDER=target,
             REDIS_MODE="single",
@@ -178,7 +191,8 @@ class TestConnectionErrorMapping:
 
 
 class TestCapabilityGuard:
-    def test_as_capability_unsupported_raises(self, provider_client):
+    @staticmethod
+    def test_as_capability_unsupported_raises(provider_client):
         """未声明能力组：supports()=False 且 as_capability() 抛 CapabilityNotSupportedError。"""
         probe = CounterCapability  # 任意能力组：各目标声明面不同，按 supports 分支断言
         if provider_client.supports(probe):
@@ -188,7 +202,8 @@ class TestCapabilityGuard:
             with pytest.raises(CapabilityNotSupportedError):
                 provider_client.as_capability(probe)
 
-    def test_as_capability_unknown_class_raises(self, provider_client):
+    @staticmethod
+    def test_as_capability_unknown_class_raises(provider_client):
         """完全未知的"能力组"（非协议类）：一律 CapabilityNotSupportedError。"""
         with pytest.raises(CapabilityNotSupportedError):
             provider_client.as_capability(dict)

@@ -86,4 +86,4 @@ async def _cleanup_keys(client) -> None:
             break
     items = list(collected)
     for start in range(0, len(items), _DELETE_BATCH):
-        await client.delete(*items[start : start + _DELETE_BATCH])
+        await client.delete(*items[start:start + _DELETE_BATCH])

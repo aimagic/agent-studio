@@ -17,7 +17,8 @@ from redis_contract_tests.test_core_contract import run
 
 
 class TestPipelineContract:
-    def test_execute_returns_results_in_queue_order(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_execute_returns_results_in_queue_order(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}pipe"
             pipe = provider_client.pipeline(transaction=False)
@@ -46,7 +47,8 @@ class TestPipelineContract:
 
         run(loop, scenario())
 
-    def test_transaction_modes_same_final_state_on_success(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_transaction_modes_same_final_state_on_success(provider_client, key_prefix, loop):
         async def scenario():
             for transaction in (True, False):
                 base = f"{key_prefix}tx-{transaction}"
@@ -61,7 +63,8 @@ class TestPipelineContract:
 
         run(loop, scenario())
 
-    def test_runtime_error_raises_translated_and_keeps_prior_commands(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_runtime_error_raises_translated_and_keeps_prior_commands(provider_client, key_prefix, loop):
         async def scenario():
             # 事务与批量的运行期错误口径一致：execute 抛翻译后异常，
             # 此前命令已生效（Redis 事务无回滚——protocols.Pipeline 契约明示）。
@@ -85,7 +88,8 @@ class TestPipelineContract:
 
         run(loop, scenario())
 
-    def test_enqueue_time_validation_fail_fast(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_enqueue_time_validation_fail_fast(provider_client, key_prefix, loop):
         async def scenario():
             pipe = provider_client.pipeline(transaction=False)
             # hset 两形态同给 / 均空：入队期即抛（不进 execute）
@@ -115,7 +119,8 @@ class TestPipelineContract:
 
         run(loop, scenario())
 
-    def test_expire_then_ttl_executes_in_order(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_expire_then_ttl_executes_in_order(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}pttl"
             await provider_client.set(key, b"v")
@@ -131,7 +136,8 @@ class TestPipelineContract:
 
         run(loop, scenario())
 
-    def test_scan_in_pipeline_returns_batch_tuple(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_scan_in_pipeline_returns_batch_tuple(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}pscan"
             await provider_client.set(key, b"v")

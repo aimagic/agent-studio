@@ -43,7 +43,8 @@ def require(provider_client, capability):
 
 
 class TestCounterCapability:
-    def test_incr_decr_and_float(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_incr_decr_and_float(provider_client, key_prefix, loop):
         async def scenario():
             counter = require(provider_client, CounterCapability)
             key = f"{key_prefix}ctr"
@@ -57,7 +58,8 @@ class TestCounterCapability:
 
         run(loop, scenario())
 
-    def test_incr_non_integer_rejected(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_incr_non_integer_rejected(provider_client, key_prefix, loop):
         async def scenario():
             counter = require(provider_client, CounterCapability)
             key = f"{key_prefix}ctr-bad"
@@ -69,7 +71,8 @@ class TestCounterCapability:
 
 
 class TestSortedSetCapability:
-    def test_zadd_zscore_zcard_zrank(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_zadd_zscore_zcard_zrank(provider_client, key_prefix, loop):
         async def scenario():
             zset = require(provider_client, SortedSetCapability)
             key = f"{key_prefix}z"
@@ -85,7 +88,8 @@ class TestSortedSetCapability:
 
         run(loop, scenario())
 
-    def test_zadd_condition(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_zadd_condition(provider_client, key_prefix, loop):
         async def scenario():
             zset = require(provider_client, SortedSetCapability)
             key = f"{key_prefix}zcond"
@@ -100,7 +104,8 @@ class TestSortedSetCapability:
 
         run(loop, scenario())
 
-    def test_zincrby_zcount_zrange(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_zincrby_zcount_zrange(provider_client, key_prefix, loop):
         async def scenario():
             zset = require(provider_client, SortedSetCapability)
             key = f"{key_prefix}zrange"
@@ -115,7 +120,8 @@ class TestSortedSetCapability:
 
         run(loop, scenario())
 
-    def test_zrangebyscore_and_bylex(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_zrangebyscore_and_bylex(provider_client, key_prefix, loop):
         async def scenario():
             zset = require(provider_client, SortedSetCapability)
             key = f"{key_prefix}zbs"
@@ -134,7 +140,8 @@ class TestSortedSetCapability:
 
         run(loop, scenario())
 
-    def test_zremrange_and_stores(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_zremrange_and_stores(provider_client, key_prefix, loop):
         async def scenario():
             zset = require(provider_client, SortedSetCapability)
             key = f"{key_prefix}zrem"
@@ -155,7 +162,8 @@ class TestSortedSetCapability:
 
         run(loop, scenario())
 
-    def test_zscan_loops_to_start_cursor(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_zscan_loops_to_start_cursor(provider_client, key_prefix, loop):
         async def scenario():
             zset = require(provider_client, SortedSetCapability)
             key = f"{key_prefix}zscan"
@@ -177,7 +185,8 @@ class TestSortedSetCapability:
 
 
 class TestBitmapCapability:
-    def test_bit_operations(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_bit_operations(provider_client, key_prefix, loop):
         async def scenario():
             bitmap = require(provider_client, BitmapCapability)
             key = f"{key_prefix}bm"
@@ -204,7 +213,8 @@ class TestBitmapCapability:
 
 
 class TestHyperLogLogCapability:
-    def test_pf_family(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_pf_family(provider_client, key_prefix, loop):
         async def scenario():
             hll = require(provider_client, HyperLogLogCapability)
             key = f"{key_prefix}hll"
@@ -314,7 +324,8 @@ class TestScriptingCapability:
 
 
 class TestPubSubCapability:
-    def test_subscribe_publish_roundtrip(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_subscribe_publish_roundtrip(provider_client, key_prefix, loop):
         async def scenario():
             pub = require(provider_client, PubSubCapability)
             channel = f"{key_prefix}chan".encode()
@@ -342,7 +353,8 @@ class TestPubSubCapability:
 
         run(loop, scenario())
 
-    def test_psubscribe_pattern_messages(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_psubscribe_pattern_messages(provider_client, key_prefix, loop):
         async def scenario():
             pub = require(provider_client, PubSubCapability)
             pattern = b"contract:*:pat"
@@ -369,7 +381,8 @@ class TestPubSubCapability:
 
         run(loop, scenario())
 
-    def test_subscribe_requires_channel(self, provider_client, loop):
+    @staticmethod
+    def test_subscribe_requires_channel(provider_client, loop):
         async def scenario():
             pub = require(provider_client, PubSubCapability)
             handle = pub.pubsub()
@@ -379,7 +392,8 @@ class TestPubSubCapability:
 
         run(loop, scenario())
 
-    def test_commands_usable_while_subscribed(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_commands_usable_while_subscribed(provider_client, key_prefix, loop):
         """订阅期间业务命令可用（独立订阅池契约：订阅连接不侵蚀命令池）。"""
         async def scenario():
             pub = require(provider_client, PubSubCapability)
@@ -404,7 +418,8 @@ class TestPubSubCapability:
 
 
 class TestBlockingCapability:
-    def test_blpop_immediate_and_timeout(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_blpop_immediate_and_timeout(provider_client, key_prefix, loop):
         async def scenario():
             blocking = require(provider_client, BlockingCommands)
             key = f"{key_prefix}bl"
@@ -422,7 +437,8 @@ class TestBlockingCapability:
 
         run(loop, scenario())
 
-    def test_brpop_and_brpoplpush(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_brpop_and_brpoplpush(provider_client, key_prefix, loop):
         async def scenario():
             blocking = require(provider_client, BlockingCommands)
             key = f"{key_prefix}br"
@@ -439,7 +455,8 @@ class TestBlockingCapability:
 
         run(loop, scenario())
 
-    def test_blpop_requires_keys(self, provider_client, loop):
+    @staticmethod
+    def test_blpop_requires_keys(provider_client, loop):
         async def scenario():
             blocking = require(provider_client, BlockingCommands)
             with pytest.raises(RedisCommandError):

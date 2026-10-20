@@ -15,7 +15,8 @@ from fakes import FakeRedisClient
 
 
 class _WithNativeView:
-    def native_client(self):
+    @staticmethod
+    def native_client():
         return "raw-view"
 
 
@@ -28,23 +29,28 @@ class _NonCallable:
 
 
 class TestAsNativeClient:
-    def test_duck_typed_getter_used(self):
+    @staticmethod
+    def test_duck_typed_getter_used():
         assert as_native_client(_WithNativeView()) == "raw-view"
 
-    def test_native_client_integration(self):
+    @staticmethod
+    def test_native_client_integration():
         fake = FakeRedisClient()
         client = NativeRedisClient(fake)
         assert as_native_client(client) is fake
 
-    def test_plain_object_rejected(self):
+    @staticmethod
+    def test_plain_object_rejected():
         with pytest.raises(RedisConfigError, match="_Plain"):
             as_native_client(_Plain())
 
-    def test_non_callable_attr_rejected(self):
+    @staticmethod
+    def test_non_callable_attr_rejected():
         with pytest.raises(RedisConfigError, match="_NonCallable"):
             as_native_client(_NonCallable())
 
-    def test_error_mentions_transition_scope(self):
+    @staticmethod
+    def test_error_mentions_transition_scope():
         # 自描述：仅 native provider 支持 + 过渡期 API（引导 Phase 4 收口）
         with pytest.raises(RedisConfigError, match="native provider"):
             as_native_client(_Plain())

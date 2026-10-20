@@ -100,20 +100,23 @@ class TestLooksLikePath:
 
 
 class TestCreateWithRegisteredProvider:
-    def test_create_via_registered_name(self):
+    @staticmethod
+    def test_create_via_registered_name():
         registry.register_provider("fake-registered", FakeRedisProvider)
         settings = RedisProviderSettings(REDIS_PROVIDER="fake-registered")
         client = asyncio.run(RedisProviderFactory.create(settings))
         assert isinstance(client, FakeRedisClient)
         assert client.ping_calls == 1  # ping fail-fast 已执行
 
-    def test_create_defaults_reads_env(self, monkeypatch):
+    @staticmethod
+    def test_create_defaults_reads_env(monkeypatch):
         monkeypatch.setenv("REDIS_PROVIDER", "fake-registered")
         registry.register_provider("fake-registered", FakeRedisProvider)
         client = asyncio.run(RedisProviderFactory.create())
         assert isinstance(client, FakeRedisClient)
 
-    def test_unknown_name_error_is_self_describing(self):
+    @staticmethod
+    def test_unknown_name_error_is_self_describing():
         registry.register_provider("known-one", FakeRedisProvider)
         settings = RedisProviderSettings(REDIS_PROVIDER="never-heard-of")
         with pytest.raises(RedisConfigError) as excinfo:
@@ -127,7 +130,8 @@ class TestCreateWithRegisteredProvider:
 
 
 class TestCreateFromFileProvider:
-    def test_explicit_py_suffix_with_provider_class(self, tmp_path):
+    @staticmethod
+    def test_explicit_py_suffix_with_provider_class(tmp_path):
         plugin = tmp_path / "file_provider.py"
         plugin.write_text(PLUGIN_SOURCE, encoding="utf-8")
         settings = RedisProviderSettings(
@@ -136,7 +140,8 @@ class TestCreateFromFileProvider:
         client = asyncio.run(RedisProviderFactory.create(settings))
         assert type(client).__name__ == "FromFileClient"
 
-    def test_inline_class_suffix(self, tmp_path):
+    @staticmethod
+    def test_inline_class_suffix(tmp_path):
         plugin = tmp_path / "file_provider.py"
         plugin.write_text(PLUGIN_SOURCE, encoding="utf-8")
         settings = RedisProviderSettings(
@@ -145,7 +150,8 @@ class TestCreateFromFileProvider:
         client = asyncio.run(RedisProviderFactory.create(settings))
         assert type(client).__name__ == "FromFileClient"
 
-    def test_auto_py_suffix_appended(self, tmp_path):
+    @staticmethod
+    def test_auto_py_suffix_appended(tmp_path):
         # /opt/plugins 约定：插件名不带 .py 时自动补后缀
         tmp_path.joinpath("auto_suffix.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
         settings = RedisProviderSettings(
@@ -155,7 +161,8 @@ class TestCreateFromFileProvider:
         client = asyncio.run(RedisProviderFactory.create(settings))
         assert type(client).__name__ == "FromFileClient"
 
-    def test_bare_relative_file_resolved_from_cwd(self, tmp_path):
+    @staticmethod
+    def test_bare_relative_file_resolved_from_cwd(tmp_path):
         # 裸相对文件名（无目录分隔符）：按 CWD 解析（conftest 已 chdir 到 tmp_path）
         (tmp_path / "my_provider.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
         settings = RedisProviderSettings(
@@ -164,7 +171,8 @@ class TestCreateFromFileProvider:
         client = asyncio.run(RedisProviderFactory.create(settings))
         assert type(client).__name__ == "FromFileClient"
 
-    def test_missing_file_lists_candidates(self, tmp_path):
+    @staticmethod
+    def test_missing_file_lists_candidates(tmp_path):
         settings = RedisProviderSettings(
             REDIS_PROVIDER=str(tmp_path / "ghost"),
             REDIS_PROVIDER_CLASS="Whatever",
@@ -173,7 +181,8 @@ class TestCreateFromFileProvider:
             asyncio.run(RedisProviderFactory.create(settings))
         assert "ghost" in str(excinfo.value)
 
-    def test_missing_class_name_hint(self, tmp_path):
+    @staticmethod
+    def test_missing_class_name_hint(tmp_path):
         plugin = tmp_path / "no_cls.py"
         plugin.write_text(PLUGIN_SOURCE, encoding="utf-8")
         settings = RedisProviderSettings(REDIS_PROVIDER=str(plugin))
@@ -183,7 +192,8 @@ class TestCreateFromFileProvider:
         assert "类名" in message
         assert "REDIS_PROVIDER_CLASS" in message
 
-    def test_class_not_found_in_file(self, tmp_path):
+    @staticmethod
+    def test_class_not_found_in_file(tmp_path):
         plugin = tmp_path / "wrong_cls.py"
         plugin.write_text(PLUGIN_SOURCE, encoding="utf-8")
         settings = RedisProviderSettings(
@@ -193,7 +203,8 @@ class TestCreateFromFileProvider:
             asyncio.run(RedisProviderFactory.create(settings))
         assert "NoSuchClass" in str(excinfo.value)
 
-    def test_class_not_inheriting_base(self, tmp_path):
+    @staticmethod
+    def test_class_not_inheriting_base(tmp_path):
         plugin = tmp_path / "bad_base.py"
         plugin.write_text(
             textwrap.dedent(
@@ -213,7 +224,8 @@ class TestCreateFromFileProvider:
 
 
 class TestCreateFromModule:
-    def test_module_colon_class(self, tmp_path, monkeypatch):
+    @staticmethod
+    def test_module_colon_class(tmp_path, monkeypatch):
         module_name = "_spi_factory_test_plugin"
         (tmp_path / f"{module_name}.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
         monkeypatch.syspath_prepend(str(tmp_path))
@@ -224,7 +236,8 @@ class TestCreateFromModule:
         client = asyncio.run(RedisProviderFactory.create(settings))
         assert type(client).__name__ == "FromFileClient"
 
-    def test_module_name_plus_class_env(self, tmp_path, monkeypatch):
+    @staticmethod
+    def test_module_name_plus_class_env(tmp_path, monkeypatch):
         # OBS 命名对齐：模块名 + 类名分置两个 env
         module_name = "_spi_factory_test_plugin_obs"
         (tmp_path / f"{module_name}.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
@@ -236,7 +249,8 @@ class TestCreateFromModule:
         client = asyncio.run(RedisProviderFactory.create(settings))
         assert type(client).__name__ == "FromFileClient"
 
-    def test_missing_module_error_lists_available(self):
+    @staticmethod
+    def test_missing_module_error_lists_available():
         settings = RedisProviderSettings(
             REDIS_PROVIDER="no_such_module_at_all:Cls"
         )
@@ -244,7 +258,8 @@ class TestCreateFromModule:
             asyncio.run(RedisProviderFactory.create(settings))
         assert "no_such_module_at_all" in str(excinfo.value)
 
-    def test_module_import_crash_wrapped(self, tmp_path, monkeypatch):
+    @staticmethod
+    def test_module_import_crash_wrapped(tmp_path, monkeypatch):
         # 插件模块顶层抛异常（导入期崩溃）必须收口为 RedisConfigError，不得裸抛
         module_name = "_spi_factory_test_crash"
         (tmp_path / f"{module_name}.py").write_text(
@@ -260,7 +275,8 @@ class TestCreateFromModule:
         assert "导入时抛出异常" in message
         assert "boom" in message
 
-    def test_module_class_instantiation_failure(self, tmp_path, monkeypatch):
+    @staticmethod
+    def test_module_class_instantiation_failure(tmp_path, monkeypatch):
         # 错误分列：类定位成功但无参实例化失败
         module_name = "_spi_factory_test_init_fail"
         (tmp_path / f"{module_name}.py").write_text(BAD_INIT_SOURCE, encoding="utf-8")
@@ -277,7 +293,8 @@ class TestCreateFromModule:
 
 
 class TestSpecConflicts:
-    def test_native_with_class_env_rejected(self):
+    @staticmethod
+    def test_native_with_class_env_rejected():
         settings = RedisProviderSettings(
             REDIS_PROVIDER="native", REDIS_PROVIDER_CLASS="Something"
         )
@@ -285,7 +302,8 @@ class TestSpecConflicts:
             asyncio.run(RedisProviderFactory.create(settings))
         assert "互斥" in str(excinfo.value)
 
-    def test_inline_class_conflicts_with_class_env(self):
+    @staticmethod
+    def test_inline_class_conflicts_with_class_env():
         settings = RedisProviderSettings(
             REDIS_PROVIDER="some_module:ClsA", REDIS_PROVIDER_CLASS="ClsB"
         )
@@ -295,7 +313,8 @@ class TestSpecConflicts:
 
 
 class TestNativeShortCircuit:
-    def test_native_missing_package_reports_install_hint(self, monkeypatch):
+    @staticmethod
+    def test_native_missing_package_reports_install_hint(monkeypatch):
         # sys.modules[...] = None 强制 import 抛 ImportError（与是否真实安装无关）
         monkeypatch.setitem(sys.modules, "redis_native", None)
         settings = RedisProviderSettings(REDIS_PROVIDER="native")
@@ -307,7 +326,8 @@ class TestNativeShortCircuit:
 
 
 class TestPingFailFast:
-    def test_ping_failure_stops_provider(self):
+    @staticmethod
+    def test_ping_failure_stops_provider():
         provider = _PingFailProvider()
 
         async def run():
@@ -323,7 +343,8 @@ class TestPingFailFast:
         # fail-fast：ping 失败必须回收 Provider（不留半初始化）
         assert provider.stopped is True
 
-    def test_ping_returning_false_stops_provider(self):
+    @staticmethod
+    def test_ping_returning_false_stops_provider():
         # ping 返回非 True（如 False）同样视为不健康，fail-fast 回收
         provider = _PingFalseProvider()
 
@@ -338,7 +359,8 @@ class TestPingFailFast:
         assert provider.stopped is True
         assert "ping check returned" in str(excinfo.value)
 
-    def test_start_returning_non_client_stops_provider(self):
+    @staticmethod
+    def test_start_returning_non_client_stops_provider():
         provider = _BadStartProvider()
         registry.register_provider("bad-start", lambda: provider)
 

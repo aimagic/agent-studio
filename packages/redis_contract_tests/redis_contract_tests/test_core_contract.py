@@ -21,7 +21,8 @@ def run(loop, coro):
 
 
 class TestStringCommands:
-    def test_get_set_round_trip_and_overwrite(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_get_set_round_trip_and_overwrite(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}kv"
             assert await provider_client.get(key) is None
@@ -32,7 +33,8 @@ class TestStringCommands:
 
         run(loop, scenario())
 
-    def test_set_condition_nx_xx(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_set_condition_nx_xx(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}nx"
             assert await provider_client.set(key, b"first", condition=SetCondition.NX) == b"OK"
@@ -48,7 +50,8 @@ class TestStringCommands:
 
         run(loop, scenario())
 
-    def test_set_nx_with_duration(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_set_nx_with_duration(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}nx-ttl"
             assert await provider_client.set(
@@ -62,7 +65,8 @@ class TestStringCommands:
 
         run(loop, scenario())
 
-    def test_set_keep_ttl_preserves_expiry(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_set_keep_ttl_preserves_expiry(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}keepttl"
             await provider_client.set(key, b"v1", duration=Duration.seconds(100))
@@ -77,7 +81,8 @@ class TestStringCommands:
 
         run(loop, scenario())
 
-    def test_get_set_and_mget_mset(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_get_set_and_mget_mset(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}getset"
             assert await provider_client.get_set(key, b"new") is None
@@ -90,7 +95,8 @@ class TestStringCommands:
 
         run(loop, scenario())
 
-    def test_msetnx_atomic_all_or_nothing(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_msetnx_atomic_all_or_nothing(provider_client, key_prefix, loop):
         async def scenario():
             base = f"{key_prefix}msetnx"
             await provider_client.set(f"{base}-exists", b"v")
@@ -105,7 +111,8 @@ class TestStringCommands:
 
         run(loop, scenario())
 
-    def test_append_strlen_getrange_setrange(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_append_strlen_getrange_setrange(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}str"
             assert await provider_client.append(key, b"hel") == 3
@@ -127,7 +134,8 @@ class TestStringCommands:
 
 
 class TestKeyCommands:
-    def test_exists_delete_counts(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_exists_delete_counts(provider_client, key_prefix, loop):
         async def scenario():
             k1, k2 = f"{key_prefix}d1", f"{key_prefix}d2"
             await provider_client.set(k1, b"v")
@@ -138,7 +146,8 @@ class TestKeyCommands:
 
         run(loop, scenario())
 
-    def test_key_type_by_container(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_key_type_by_container(provider_client, key_prefix, loop):
         async def scenario():
             base = f"{key_prefix}type"
             await provider_client.set(f"{base}-s", b"v")
@@ -153,7 +162,8 @@ class TestKeyCommands:
 
         run(loop, scenario())
 
-    def test_ttl_sentinels_and_expire_family(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_ttl_sentinels_and_expire_family(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}ttl"
             await provider_client.set(key, b"v")
@@ -177,7 +187,8 @@ class TestKeyCommands:
 
         run(loop, scenario())
 
-    def test_expire_at_absolute_timestamps(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_expire_at_absolute_timestamps(provider_client, key_prefix, loop):
         async def scenario():
             import time
 
@@ -192,7 +203,8 @@ class TestKeyCommands:
 
         run(loop, scenario())
 
-    def test_expiration_removes_key(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_expiration_removes_key(provider_client, key_prefix, loop):
         async def scenario():
             import asyncio
 
@@ -207,7 +219,8 @@ class TestKeyCommands:
 
 
 class TestHashCommands:
-    def test_hset_forms_and_validation(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_hset_forms_and_validation(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}h"
             # field/value 形态
@@ -219,7 +232,8 @@ class TestHashCommands:
 
         run(loop, scenario())
 
-    def test_hsetnx_hexists_hlen(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_hsetnx_hexists_hlen(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}hnx"
             assert await provider_client.hsetnx(key, b"f", b"v") is True
@@ -232,7 +246,8 @@ class TestHashCommands:
 
         run(loop, scenario())
 
-    def test_hgetall_hkeys_hvals_hmget_hdel(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_hgetall_hkeys_hvals_hmget_hdel(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}hfull"
             await provider_client.hset(key, {b"a": b"1", b"b": b"2", b"c": b"3"})
@@ -248,7 +263,8 @@ class TestHashCommands:
 
         run(loop, scenario())
 
-    def test_hincr_by_and_float(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_hincr_by_and_float(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}hincr"
             assert await provider_client.hincr_by(key, b"n", 5) == 5
@@ -259,7 +275,8 @@ class TestHashCommands:
 
         run(loop, scenario())
 
-    def test_hscan_loops_to_start_cursor(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_hscan_loops_to_start_cursor(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}hscan"
             mapping = {f"field-{i}".encode(): str(i).encode() for i in range(5)}
@@ -279,7 +296,8 @@ class TestHashCommands:
 
 
 class TestListCommands:
-    def test_push_variants_and_pushx(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_push_variants_and_pushx(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}list"
             assert await provider_client.rpush(key, b"a", b"b") == 2
@@ -294,7 +312,8 @@ class TestListCommands:
 
         run(loop, scenario())
 
-    def test_pop_single_and_count(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_pop_single_and_count(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}pop"
             await provider_client.rpush(key, b"1", b"2", b"3")
@@ -308,7 +327,8 @@ class TestListCommands:
 
         run(loop, scenario())
 
-    def test_lrange_ltrim_boundaries(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_lrange_ltrim_boundaries(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}trim"
             await provider_client.rpush(key, b"a", b"b", b"c", b"d", b"e")
@@ -323,7 +343,8 @@ class TestListCommands:
 
         run(loop, scenario())
 
-    def test_lindex_lset_lrem(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_lindex_lset_lrem(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}lidx"
             await provider_client.rpush(key, b"a", b"b", b"a", b"b", b"a")
@@ -343,7 +364,8 @@ class TestListCommands:
 
         run(loop, scenario())
 
-    def test_rpoplpush_moves_tail_to_head(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_rpoplpush_moves_tail_to_head(provider_client, key_prefix, loop):
         async def scenario():
             src, dst = f"{key_prefix}src", f"{key_prefix}dst"
             await provider_client.rpush(src, b"1", b"2", b"3")
@@ -358,7 +380,8 @@ class TestListCommands:
 
 
 class TestSetCommands:
-    def test_sadd_srem_smembers_scard(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_sadd_srem_smembers_scard(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}set"
             assert await provider_client.sadd(key, b"a", b"b", b"a") == 2
@@ -371,7 +394,8 @@ class TestSetCommands:
 
         run(loop, scenario())
 
-    def test_sismember_returns_bool(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_sismember_returns_bool(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}sism"
             await provider_client.sadd(key, b"m")
@@ -382,7 +406,8 @@ class TestSetCommands:
 
         run(loop, scenario())
 
-    def test_spop_and_srandmember(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_spop_and_srandmember(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}spop"
             await provider_client.sadd(key, b"a", b"b", b"c")
@@ -407,7 +432,8 @@ class TestSetCommands:
 
         run(loop, scenario())
 
-    def test_smove(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_smove(provider_client, key_prefix, loop):
         async def scenario():
             src, dst = f"{key_prefix}mv-src", f"{key_prefix}mv-dst"
             await provider_client.sadd(src, b"a", b"b")
@@ -421,7 +447,8 @@ class TestSetCommands:
 
         run(loop, scenario())
 
-    def test_set_operations_and_stores(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_set_operations_and_stores(provider_client, key_prefix, loop):
         async def scenario():
             base = f"{key_prefix}ops"
             k1, k2, missing = f"{base}-1", f"{base}-2", f"{base}-missing"
@@ -441,7 +468,8 @@ class TestSetCommands:
 
         run(loop, scenario())
 
-    def test_sscan_loops_to_start_cursor(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_sscan_loops_to_start_cursor(provider_client, key_prefix, loop):
         async def scenario():
             key = f"{key_prefix}sscan"
             members = {f"m{i}".encode() for i in range(5)}
@@ -461,7 +489,8 @@ class TestSetCommands:
 
 
 class TestScanCommands:
-    def test_scan_completes_at_start_cursor(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_scan_completes_at_start_cursor(provider_client, key_prefix, loop):
         async def scenario():
             keys = {f"{key_prefix}scan:{i}".encode() for i in range(5)}
             for key in keys:
@@ -479,14 +508,15 @@ class TestScanCommands:
 
         run(loop, scenario())
 
-    def test_scan_type_filter(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_scan_type_filter(provider_client, key_prefix, loop):
         async def scenario():
             s, h = f"{key_prefix}t-s", f"{key_prefix}t-h"
             await provider_client.set(s, b"v")
             await provider_client.hset(h, field=b"f", value=b"v")
             cursor, seen = SCAN_START, set()
             for _ in range(10_000):
-                batch = await provider_client.scan(cursor, match=f"{key_prefix}t-*".encode(), type=b"hash")
+                batch = await provider_client.scan(cursor, match=f"{key_prefix}t-*".encode(), type_name=b"hash")
                 seen.update(batch.items)
                 cursor = batch.cursor
                 if cursor == SCAN_START:
@@ -495,7 +525,8 @@ class TestScanCommands:
 
         run(loop, scenario())
 
-    def test_scan_iter_yields_all_matches(self, provider_client, key_prefix, loop):
+    @staticmethod
+    def test_scan_iter_yields_all_matches(provider_client, key_prefix, loop):
         async def scenario():
             keys = {f"{key_prefix}it:{i}".encode() for i in range(4)}
             for key in keys:

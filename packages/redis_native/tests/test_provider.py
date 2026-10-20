@@ -45,7 +45,8 @@ def created(monkeypatch):
 
 
 class TestStartAssembly:
-    def test_single_builds_three_pools(self, created):
+    @staticmethod
+    def test_single_builds_three_pools(created):
         provider = NativeRedisProvider()
         client = asyncio.run(provider.start(make_settings()))
 
@@ -61,7 +62,8 @@ class TestStartAssembly:
         assert client._subscriber is subscriber  # noqa: SLF001
         assert client._blocking is blocking  # noqa: SLF001
 
-    def test_pool_sizes_from_settings(self, created):
+    @staticmethod
+    def test_pool_sizes_from_settings(created):
         asyncio.run(
             NativeRedisProvider().start(
                 make_settings(subscriber_pool_size=5, blocking_pool_size=7)
@@ -70,7 +72,8 @@ class TestStartAssembly:
         assert created[1][1] == {"max_connections": 5}
         assert created[2][1] == {"max_connections": 7, "socket_timeout": None}
 
-    def test_sentinel_builds_three_pools(self, created):
+    @staticmethod
+    def test_sentinel_builds_three_pools(created):
         asyncio.run(
             NativeRedisProvider().start(
                 make_settings(
@@ -80,7 +83,8 @@ class TestStartAssembly:
         )
         assert len(created) == 3
 
-    def test_cluster_shares_main_pool(self, created):
+    @staticmethod
+    def test_cluster_shares_main_pool(created):
         provider = NativeRedisProvider()
         client = asyncio.run(
             provider.start(
@@ -94,7 +98,8 @@ class TestStartAssembly:
         asyncio.run(client.as_capability(CounterCapability).incr("c"))
         assert [c[0] for c in created[0][0].calls][-1] == "incr"
 
-    def test_text_mode_and_transaction_default_carried(self, created):
+    @staticmethod
+    def test_text_mode_and_transaction_default_carried(created):
         provider = NativeRedisProvider()
         client = asyncio.run(
             provider.start(
@@ -105,14 +110,16 @@ class TestStartAssembly:
         client.pipeline()
         assert created[0][0].calls[0][2]["transaction"] is False
 
-    def test_ping_and_capability_surface(self, created):
+    @staticmethod
+    def test_ping_and_capability_surface(created):
         client = asyncio.run(NativeRedisProvider().start(make_settings()))
         assert asyncio.run(client.ping()) is True
         assert client.supports(CounterCapability) is True
 
 
 class TestStop:
-    def test_stop_closes_all_once_and_idempotent(self, created):
+    @staticmethod
+    def test_stop_closes_all_once_and_idempotent(created):
         provider = NativeRedisProvider()
         asyncio.run(provider.start(make_settings()))
         asyncio.run(provider.stop())
@@ -122,7 +129,8 @@ class TestStop:
         for fake, _ in created:
             assert [c[0] for c in fake.calls] == ["aclose"]
 
-    def test_stop_attempts_all_then_raises_first_translated(self, created):
+    @staticmethod
+    def test_stop_attempts_all_then_raises_first_translated(created):
         provider = NativeRedisProvider()
         client = asyncio.run(provider.start(make_settings()))
         main = client.native_client()
@@ -136,19 +144,23 @@ class TestStop:
         for fake, _ in created:
             assert any(c[0] == "aclose" for c in fake.calls)
 
-    def test_stop_before_start_is_noop(self):
+    @staticmethod
+    def test_stop_before_start_is_noop():
         asyncio.run(NativeRedisProvider().stop())  # 不抛
 
 
 class TestCapabilitiesAndNativeView:
-    def test_capabilities_matches_supported_set(self):
+    @staticmethod
+    def test_capabilities_matches_supported_set():
         assert set(NativeRedisProvider().capabilities()) == set(SUPPORTED_CAPABILITIES)
 
-    def test_native_client_before_start_rejected(self):
+    @staticmethod
+    def test_native_client_before_start_rejected():
         with pytest.raises(RedisConfigError, match="尚未启动"):
             NativeRedisProvider().native_client()
 
-    def test_native_client_after_start_returns_main(self, created):
+    @staticmethod
+    def test_native_client_after_start_returns_main(created):
         provider = NativeRedisProvider()
         asyncio.run(provider.start(make_settings()))
         assert provider.native_client() is created[0][0]

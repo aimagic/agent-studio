@@ -66,7 +66,8 @@ class AcmeDemoClient:
     def text_mode(self) -> bool:
         return self._text_mode
 
-    def supports(self, capability: type) -> bool:
+    @staticmethod
+    def supports(capability: type) -> bool:
         return capability in SUPPORTED_CAPABILITIES
 
     def as_capability(self, capability: type) -> Any:
@@ -418,10 +419,10 @@ class AcmeDemoClient:
         *,
         match: Value | None = None,
         count: int | None = None,
-        type: Value | None = None,
+        type_name = None,
     ) -> ScanBatch:
         next_cursor, items = await self._redis.scan(
-            cursor, match=match, count=count, _type=type
+            cursor, match=match, count=count, _type=type_name
         )
         return ScanBatch(cursor=next_cursor, items=items)
 
