@@ -148,11 +148,15 @@ public class SkillManagementService implements ISkillManagementService {
      * 复用 {@link MgObsService#readObsFileStream(String)} 直接读取 OBS 对象字节流，
      * 由 Controller 层包装为 StreamingResponseBody 流式转发给前端。</p>
      *
-     * <p><b>越权校验</b>：使用 {@link SkillMapper#searchBySkillId(String)}（LEFT JOIN 版本表，
-     * 同时带出 obs_path / workspace_id / project_id / domain_id）一次性拿到完整信息，
-     * 再在 Java 层比对 domainId / workspaceId / projectId 与当前请求上下文一致，
-     * 避免任意用户持 skillId 即可下载他人制品。不直接使用 searchBySkillIdAndDomainId，
-     * 因其 SQL 不 JOIN t_skill_version，无法获取 obs_path。</p>
+     * <p><b>越权校验</b>：与 {@link #deleteStudioSkill} 对齐，仅校验 domainId 归属。
+     * 不额外比对 workspaceId / projectId——详情页 skill-single-editor 对自有 skill 与
+     * skill 市场已发布/共享资源都会渲染，跨工作区/跨项目的预览能力属于既有契约，
+     * 收紧会破坏既有功能（详见检视意见 High Priority #127）。</p>
+     *
+     * <p>实现说明：不使用 {@link SkillMapper#searchBySkillIdAndDomainId(String, String)}，
+     * 因其 SQL 不 JOIN t_skill_version，无法获取 obs_path；
+     * 改用 {@link SkillMapper#searchBySkillId(String)}（LEFT JOIN 版本表）一次性拿完整信息，
+     * 再在 Java 层比对 domainId。</p>
      *
      * <p>返回的 InputStream 由调用方（Controller）负责关闭。</p>
      */
@@ -166,13 +170,12 @@ public class SkillManagementService implements ISkillManagementService {
             log.error("Skill not exists or obs path is empty, skillId: {}", skillId);
             throw new AgentStudioException(StudioError.SKILL_NOT_EXISTS);
         }
-        // 越权校验：domainId / workspaceId / projectId 必须与当前请求上下文一致
+        // 越权校验：仅校验 domainId 归属，与 deleteStudioSkill 对齐
+        // （workspaceId / projectId 不参与访问控制，以保留跨工作区/跨项目预览的既有契约）
         String requestDomainId = RequestContextUtils.getRequestUserDomainId();
-        if (!Objects.equals(skill.getDomainId(), requestDomainId)
-                || !Objects.equals(skill.getWorkspaceId(), workspaceId)
-                || !Objects.equals(skill.getProjectId(), projectId)) {
-            log.error("Skill does not belong to the current context, skillId: {}, domainId: {}, workspaceId: {}, projectId: {}",
-                    skillId, requestDomainId, workspaceId, projectId);
+        if (!Objects.equals(skill.getDomainId(), requestDomainId)) {
+            log.error("Skill does not belong to the current domain, skillId: {}, domainId: {}, requestDomainId: {}",
+                    skillId, skill.getDomainId(), requestDomainId);
             throw new AgentStudioException(StudioError.SKILL_NOT_EXISTS);
         }
         return mgObsService.readObsFileStream(skill.getObsPath());

@@ -956,6 +956,35 @@ public class ZipValidationUtilsTest {
         assertEquals(StudioError.NAME_FORMAT_MISMATCH, exception.getErrorCode());
     }
 
+    /**
+     * 边缘场景：单字符 skillName（如 "a"）→ tempPrefix = "a-" 长度 2 < 3
+     * → repackIfFlat 补足到 "skill-a-" 后正常创建临时文件，重打包成功。
+     * 覆盖意见 Medium Priority #123：Files.createTempFile 前缀长度要求 ≥ 3 字符。
+     */
+    @Test
+    public void testRepackIfFlat_FlatLayout_SingleCharName() throws IOException {
+        File zip = tempDir.resolve("repack-single-char.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry skillMd = new ZipEntry("SKILL.md");
+            zos.putNextEntry(skillMd);
+            zos.write("---\nname: a\ndescription: single char\n---\n# Single".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        File repacked = ZipValidationUtils.repackIfFlat(zip, "a");
+        try {
+            assertNotNull(repacked);
+            assertTrue(repacked.exists());
+            List<String> entries = listZipEntries(repacked);
+            assertTrue(entries.contains("a/SKILL.md"));
+        } finally {
+            if (repacked != zip && repacked.exists()) {
+                repacked.delete();
+            }
+        }
+    }
+
     // ==================== repackIfFlat 方法测试用例 ====================
 
     /**

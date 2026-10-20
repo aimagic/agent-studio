@@ -735,7 +735,13 @@ public class ZipValidationUtils {
             }
 
             // 重新打包为 zip：使用唯一临时文件，避免并发导入同名 skill 时互相覆盖
-            repackedZip = Files.createTempFile(skillName + "-", ".zip").toFile();
+            // Files.createTempFile 要求 prefix 长度 >= 3，NAME_PATTERN 允许单字符 name（如 "a"），
+            // 因此对 prefix 补足到至少 3 字符，避免 IllegalArgumentException 冒泡为未受控 500。
+            String tempPrefix = skillName + "-";
+            if (tempPrefix.length() < 3) {
+                tempPrefix = "skill-" + tempPrefix;
+            }
+            repackedZip = Files.createTempFile(tempPrefix, ".zip").toFile();
             zipDirectory(targetDir, repackedZip, skillName);
             log.info("Repacked flat skill package to {}/ structure: {}", skillName, repackedZip.getName());
             return repackedZip;
@@ -748,6 +754,10 @@ public class ZipValidationUtils {
                 }
             }
             log.error("Failed to repack flat skill: {}", e.getMessage(), e);
+            throw new AgentStudioException(StudioError.RESOURCE_READER_ERROR);
+        } catch (IllegalArgumentException e) {
+            // 兜底：即使 prefix 规则变化导致 IllegalArgumentException，也转为受控错误码
+            log.error("Invalid temp file prefix for skillName: {}", skillName, e);
             throw new AgentStudioException(StudioError.RESOURCE_READER_ERROR);
         } finally {
             if (tempDir != null) {
