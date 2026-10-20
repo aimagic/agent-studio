@@ -30,7 +30,7 @@ from redis_spi.exceptions import (
 )
 from redis_spi.types import Duration, ScanBatch, SetCondition
 
-from fakes import FakePipeline, FakeRedisClient
+from redis_native_test_fakes import FakePipeline, FakeRedisClient
 
 
 def make_client(results=None, exceptions=None, **kwargs):

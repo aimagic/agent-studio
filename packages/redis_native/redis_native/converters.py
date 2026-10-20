@@ -48,11 +48,16 @@ def condition_options(condition: SetCondition | None) -> dict:
     return {}
 
 
-def blocking_timeout(timeout: Duration | None) -> float:
-    """阻塞命令超时：Duration → 秒（redis-py 0 = 无限阻塞；None = 无限阻塞）。"""
+def blocking_timeout(timeout: Duration | None) -> int:
+    """阻塞命令超时：Duration → 整数秒（redis-py 0 = 无限阻塞；None = 无限阻塞）。
+
+    真实 Redis 要求阻塞超时为整数秒（非整数报 "timeout is not an integer
+    or out of range"）——正毫秒向上取整（1500ms→2s，宁可多等不提前醒），
+    避免浮点经 redis-py 编码成 1.0 形态。
+    """
     if timeout is None:
-        return 0.0
-    return timeout.total_seconds
+        return 0
+    return -(-timeout.milliseconds // 1000)
 
 
 def validate_range_paired(command: str, start: object, end: object) -> None:

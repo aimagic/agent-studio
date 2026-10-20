@@ -23,7 +23,7 @@ from redis_spi.exceptions import (
 )
 from redis_spi.types import PubSubMessage
 
-from fakes import FakePubSub
+from redis_native_test_fakes import FakePubSub
 
 
 def make_handle(

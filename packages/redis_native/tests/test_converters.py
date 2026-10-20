@@ -93,15 +93,15 @@ class TestConditionOptions:
 class TestBlockingTimeout:
     @staticmethod
     def test_none_blocks_forever():
-        assert blocking_timeout(None) == 0.0
+        assert blocking_timeout(None) == 0
 
     @staticmethod
     def test_seconds():
-        assert blocking_timeout(Duration.seconds(2)) == 2.0
+        assert blocking_timeout(Duration.seconds(2)) == 2
 
     @staticmethod
     def test_sub_second():
-        assert blocking_timeout(Duration.milliseconds(500)) == 0.5
+        assert blocking_timeout(Duration.milliseconds(500)) == 1  # 向上取整：真实 Redis 要求整数秒
 
 
 class TestValidateRangePaired:

@@ -166,6 +166,10 @@ class TestConnectionErrorMapping:
         坏端口也能装配成功——skip 而非放行。
         """
         target = os.environ.get(TARGET_ENV, "")
+        if not target:
+            # 无契约目标：默认解析为 native 并真实连接 127.0.0.1:1——对齐
+            # conftest "未设置目标时全部 skip" 的承诺，不产生真实建连
+            pytest.skip(f"{TARGET_ENV} not set; connection-error mapping needs a real backend")
         settings = RedisProviderSettings(
             REDIS_PROVIDER=target,
             REDIS_MODE="single",

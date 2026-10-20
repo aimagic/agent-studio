@@ -36,11 +36,11 @@ def set_options(
     return options
 
 
-def blocking_timeout(timeout: Duration | None) -> float:
-    """阻塞命令超时：Duration → 秒；None → 0（redis-py 0 = 无限阻塞）。"""
+def blocking_timeout(timeout: Duration | None) -> int:
+    """阻塞命令超时：Duration → 整数秒（真实 Redis 拒绝非整数）；None → 0（无限阻塞）。"""
     if timeout is None:
-        return 0.0
-    return timeout.total_seconds
+        return 0
+    return -(-timeout.milliseconds // 1000)
 
 
 def validate_hset_args(mapping: dict | None, field: object, value: object) -> None:

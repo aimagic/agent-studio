@@ -14,7 +14,7 @@ from redis_spi.exceptions import RedisConfigError, RedisConnectionError
 from redis_spi.factory import RedisProviderFactory, _looks_like_path
 from redis_spi.protocols import RedisClient
 
-from fakes import FakeRedisClient, FakeRedisProvider, FullSurfaceFakeClient
+from redis_spi_test_fakes import FakeRedisClient, FakeRedisProvider, FullSurfaceFakeClient
 
 # ---------------------------------------------------------------- 协议可 fake（Phase 1 验收点）
 

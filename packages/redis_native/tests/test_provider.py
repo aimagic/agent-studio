@@ -23,7 +23,7 @@ from redis_spi.capabilities import CounterCapability, PubSubCapability
 from redis_spi.config import RedisMode, RedisProviderSettings
 from redis_spi.exceptions import RedisConfigError, RedisConnectionError
 
-from fakes import FakeRedisClient
+from redis_native_test_fakes import FakeRedisClient
 
 
 def make_settings(**overrides) -> RedisProviderSettings:

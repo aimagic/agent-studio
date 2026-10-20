@@ -42,7 +42,12 @@ public interface RedisClient {
      * @param key 键
      * @return 存储原文；key 不存在时返回 null
      */
-    String getRaw(String key);
+    default String getRaw(String key) {
+        // default 回退 get：本方法为 PR 内新增，不带 default 会破坏按旧接口
+        // 编译的存量实现（legacy RedisClient3rd）二进制兼容——未覆写时首次
+        // 调用抛 AbstractMethodError，该 Error 会击穿 catch(Exception) 防线
+        return get(key);
+    }
 
     /**
      * 将字符串值 value 关联到 key

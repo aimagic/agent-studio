@@ -105,10 +105,19 @@ class StubPipeline:
         return enqueue
 
     async def execute(self) -> list:
+        # redis-py 语义：整批执行后才抛首个错误（错误前已入队命令照常
+        # 执行）——与 native/真实后端一致，首错即中止会掩盖后续命令回归
         results: list = []
+        first_error: Optional[BaseException] = None
         for name, args, kwargs in self._ops:
             method = getattr(self._stub, name)
-            results.append(await method(*args, **kwargs))
+            try:
+                results.append(await method(*args, **kwargs))
+            except Exception as exc:  # noqa: BLE001
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
         return results
 
     async def aclose(self) -> None:
@@ -714,8 +723,9 @@ class InMemoryRedisPyStub:
             if not container:
                 return None
             return container.pop()
-        popped = set(random.sample(sorted(container), min(count, len(container))))
-        container -= popped
+        # redis-py / fakeredis 语义：带 count 的 spop 返回 list（非 set）
+        popped = random.sample(sorted(container), min(count, len(container)))
+        container -= set(popped)
         if not container:
             self._delete_key(store_key)
         return popped

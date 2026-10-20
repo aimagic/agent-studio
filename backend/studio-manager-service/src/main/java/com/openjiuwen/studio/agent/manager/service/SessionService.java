@@ -5,6 +5,7 @@
 package com.openjiuwen.studio.agent.manager.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -38,10 +39,14 @@ public class SessionService {
 
     private static final String REDIS_SESSION_PREFIX = "session:";
 
-    /** 会话用户 JSON 序列化器（User 含 LocalDateTime 字段，需 JavaTimeModule） */
+    /** 会话用户 JSON 序列化器（User 含 LocalDateTime 字段，需 JavaTimeModule）
+     *  宽容未知字段：旧 RedisTemplate Jackson 默认类型的存量缓存条目含
+     *  @class 等额外属性，FAIL_ON_UNKNOWN_PROPERTIES 会让解析失败→按
+     *  cache miss 处理，升级瞬间存量会话全部失效（用户被登出）。 */
     private static final ObjectMapper SESSION_MAPPER = new ObjectMapper()
         .registerModule(new JavaTimeModule())
-        .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+        .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
 
     private final SessionRepository sessionRepository;
 

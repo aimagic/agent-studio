@@ -19,7 +19,6 @@
 from __future__ import annotations
 
 import logging
-import ssl
 from typing import Any, Optional, Union
 
 from redis.asyncio import Redis
@@ -99,7 +98,7 @@ def _build_single(
     if settings.password:
         connection_kwargs["password"] = settings.password
     if settings.ssl_enabled:
-        connection_kwargs["ssl"] = _create_ssl_context(settings)
+        connection_kwargs.update(_ssl_params(settings))
 
     redis_cls = Redis if settings.redis_transaction_enabled else _NonTransactionRedis
     return redis_cls(**connection_kwargs)
@@ -148,10 +147,11 @@ def _build_sentinel(
     }
     if socket_timeout is not _UNSET:
         master_kwargs["socket_timeout"] = socket_timeout
+    if settings.ssl_enabled:
+        master_kwargs.update(_ssl_params(settings))
     return sentinel.master_for(
         settings.sentinel_master,
         redis_cls,
-        ssl=_create_ssl_context(settings) if settings.ssl_enabled else None,
         **master_kwargs,
     )
 
@@ -191,11 +191,14 @@ def _parse_sentinel_nodes(sentinel_nodes: str) -> list[tuple[str, int]]:
     return parsed
 
 
-def _create_ssl_context(settings: RedisProviderSettings) -> ssl.SSLContext:
-    """创建 SSL 上下文（与 RedisClientManager._create_ssl_context 对齐）。"""
-    ctx = ssl.create_default_context()
+def _ssl_params(settings: RedisProviderSettings) -> dict:
+    """SSL 参数组：redis-py 的 ssl 形参仅是开关（SSLContext 传入会被真值
+    化丢弃，证书不生效）——私有 CA / mTLS 必须经专用形参传递。"""
+    params: dict = {"ssl": True}
     if settings.ssl_ca_cert:
-        ctx.load_verify_locations(settings.ssl_ca_cert)
-    if settings.ssl_cert_file and settings.ssl_key_file:
-        ctx.load_cert_chain(settings.ssl_cert_file, settings.ssl_key_file)
-    return ctx
+        params["ssl_ca_certs"] = settings.ssl_ca_cert
+    if settings.ssl_cert_file:
+        params["ssl_certfile"] = settings.ssl_cert_file
+    if settings.ssl_key_file:
+        params["ssl_keyfile"] = settings.ssl_key_file
+    return params

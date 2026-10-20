@@ -35,7 +35,7 @@ from redis_spi.capabilities import (
 from redis_spi.exceptions import RedisCommandError, RedisTimeoutError
 from redis_spi.types import Duration, GeoMember, GeoUnit, SetCondition
 
-from fakes import FakePubSub, FakeRedisClient
+from redis_native_test_fakes import FakePubSub, FakeRedisClient
 
 
 class TestCounter:
@@ -469,7 +469,7 @@ class TestBlocking:
                 ["a", "b"], Duration.milliseconds(1500)
             )
         )
-        assert fake.calls == [("blpop", (["a", "b"], 1.5), {})]
+        assert fake.calls == [("blpop", (["a", "b"], 2), {})]
 
     @staticmethod
     def test_blpop_empty_rejected():

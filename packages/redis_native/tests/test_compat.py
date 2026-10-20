@@ -11,7 +11,7 @@ from redis_native.compat import as_native_client
 
 from redis_spi.exceptions import RedisConfigError
 
-from fakes import FakeRedisClient
+from redis_native_test_fakes import FakeRedisClient
 
 
 class _WithNativeView:

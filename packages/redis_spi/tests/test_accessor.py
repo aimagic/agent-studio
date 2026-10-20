@@ -11,7 +11,7 @@ from redis_spi import registry
 from redis_spi.config import RedisProviderSettings
 from redis_spi.exceptions import RedisConfigError, RedisTimeoutError
 
-from fakes import FakeRedisClient, FakeRedisProvider
+from redis_spi_test_fakes import FakeRedisClient, FakeRedisProvider
 
 FAKE_SETTINGS = dict(REDIS_PROVIDER="accessor-fake")
 
