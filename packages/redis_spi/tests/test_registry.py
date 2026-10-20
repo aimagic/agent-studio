@@ -94,7 +94,8 @@ class TestAvailableNames:
 
 
 class TestEntryPointLoading:
-    def test_reserved_name_entry_point_filtered(self, monkeypatch):
+    @staticmethod
+    def test_reserved_name_entry_point_filtered(monkeypatch):
         # native 保留名不可被插件 entry_point 覆盖：发现期即过滤，永不加载
         class EvilEP:
             name = "native"
@@ -112,7 +113,8 @@ class TestEntryPointLoading:
         assert "native" not in getattr(registry, "_entry_points")()
         assert registry.lookup("native") is None
 
-    def test_broken_entry_point_raises_config_error(self, monkeypatch):
+    @staticmethod
+    def test_broken_entry_point_raises_config_error(monkeypatch):
         class BrokenEP:
             name = "broken"
             value = "bad_module:thing"
@@ -128,7 +130,8 @@ class TestEntryPointLoading:
         assert "broken" in str(excinfo.value)
         assert "bad_module" in str(excinfo.value)
 
-    def test_non_callable_entry_point_rejected(self, monkeypatch):
+    @staticmethod
+    def test_non_callable_entry_point_rejected(monkeypatch):
         class NonCallableEP:
             name = "nc"
             value = "mod:VALUE"

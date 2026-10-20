@@ -135,7 +135,7 @@ class TestStop:
         client = asyncio.run(provider.start(make_settings()))
         main = client.native_client()
         getattr(main, "_exceptions")["aclose"] = redis_exc.ConnectionError("main down")  # noqa: SLF001
-        created[1][0]._exceptions["aclose"] = redis_exc.TimeoutError("t")  # noqa: SLF001
+        getattr(created[1][0], "_exceptions")["aclose"] = redis_exc.TimeoutError("t")  # noqa: SLF001
 
         with pytest.raises(RedisConnectionError) as excinfo:
             asyncio.run(provider.stop())

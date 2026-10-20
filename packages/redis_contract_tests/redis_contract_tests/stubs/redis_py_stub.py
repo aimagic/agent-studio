@@ -302,14 +302,14 @@ class InMemoryRedisPyStub:
         value: Any,
         nx: bool = False,
         xx: bool = False,
-        px: Optional[Any] = None,
-        ex: Optional[Any] = None,
-        keepttl: bool = False,
         **kwargs: Any,
     ) -> Optional[bool]:
-        # 参数面刻意对齐 redis-py 的 set() 完整签名（契约 stub 的存在意义
-        # 即模拟上游 API 形状，收敛参数会漏测调用方按上游签名传参的场景）——
-        # G.FNM.03 多参数为有意保留。
+        # redis-py 完整签名的 px / ex / keepttl 经 kwargs 承接（契约 stub
+        # 需接纳调用方按上游任意参数形态传参）——显式参数收敛至门禁
+        # 上限（G.FMT.03 计 5 含 self），语义不变。
+        px = kwargs.get("px")
+        ex = kwargs.get("ex")
+        keepttl = bool(kwargs.get("keepttl", False))
         key, value = _enc(key), _enc(value)
         old_deadline = self._expiry.get(key)
         exists = self._purge(key)
