@@ -16,13 +16,18 @@ runtime 侧保留同名 re-export 薄壳，既有 import 路径不变）。
 依赖说明：本模块顶层导入 redis_spi，仅适用于已安装适配层包的环境（agent-runtime /
 agent-builder 共享 venv）；未安装环境的调用方应 try/except ImportError 回退 legacy。
 
-行为对齐（Phase 2 验证口径：行为零变化）：
+行为口径（Phase 2 验证 + Phase 4 修订）：
   - 未配置（REDIS_HOST / REDIS_CLUSTER_NODES 全空）：返回 None，由 lifespan 抛出
     与旧实现一致的 RuntimeError；
   - 连接/命令类装配失败：抛 RuntimeError("Redis connection check failed: ...")
     （对齐旧 lifespan 文案）；配置类错误（RedisConfigError）原样上抛；
   - 缺省 native（REDIS_PROVIDER 未配置）= redis-py 直连，连接参数与旧
-    RedisClientManager 逐字段一致。
+    RedisClientManager 逐字段一致；
+  - **builder 启动语义变化**：旧 _ping_redis 为 warn-and-continue，适配层
+    装配期 ping fail-fast 直接终止进程（见 agent_builder server_fastapi
+    lifespan docstring 的决策论证：半可用慢性故障显式失败更可运维）。
+    Redis 为平台声明的必选依赖，无 Redis 环境须显式部署 Redis 或回退
+    旧版本（升级注意事项见开发指南 Redis 章节）。
 """
 
 from __future__ import annotations

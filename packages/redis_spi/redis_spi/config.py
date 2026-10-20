@@ -83,6 +83,11 @@ class RedisProviderSettings(BaseSettings):
         default="mymaster", validation_alias="REDIS_SENTINEL_MASTER"
     )
     sentinel_nodes: str = Field(default="", validation_alias="REDIS_SENTINEL_NODES")
+    # 哨兵节点自身的认证密码（与数据节点 password 独立——哨兵集群启用
+    # requirepass 时必填；沿用旧 DATASOURCE_REDIS 体系同名环境变量）
+    sentinel_password: str | None = Field(
+        default=None, validation_alias="REDIS_SENTINEL_PASSWORD"
+    )
 
     # 连接池
     max_connections: int = Field(default=50, ge=1, validation_alias="REDIS_MAX_CONNECTIONS")

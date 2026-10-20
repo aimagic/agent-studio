@@ -26,6 +26,7 @@ from redis.asyncio.cluster import ClusterNode, RedisCluster
 from redis.asyncio.sentinel import Sentinel
 
 from redis_spi.config import RedisMode, RedisProviderSettings
+from redis_spi.exceptions import RedisConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -134,11 +135,14 @@ def _build_sentinel(
     None）时才注入——保证缺省路径产物与旧客户端参数级相同。
     """
     sentinel_nodes = _parse_sentinel_nodes(settings.sentinel_nodes)
-    sentinel = Sentinel(
-        sentinel_nodes,
-        socket_timeout=settings.socket_timeout,
-        socket_connect_timeout=settings.socket_connect_timeout,
-    )
+    sentinel_kwargs: dict = {
+        "socket_timeout": settings.socket_timeout,
+        "socket_connect_timeout": settings.socket_connect_timeout,
+    }
+    # 哨兵节点自身认证（与数据节点密码独立；哨兵集群 requirepass 场景）
+    if settings.sentinel_password:
+        sentinel_kwargs["sentinel_password"] = settings.sentinel_password
+    sentinel = Sentinel(sentinel_nodes, **sentinel_kwargs)
     redis_cls = Redis if settings.redis_transaction_enabled else _NonTransactionRedis
     master_kwargs: dict = {
         "password": settings.password,
@@ -157,37 +161,43 @@ def _build_sentinel(
 
 
 def _parse_cluster_nodes(cluster_nodes: str) -> list[ClusterNode]:
-    """解析 "host:port,host:port" 形态的集群节点列表。"""
+    """解析 "host:port,host:port" 形态的集群节点列表（非法形态归入配置错误族）。"""
     nodes: list[ClusterNode] = []
-    for node_str in cluster_nodes.split(","):
-        node_str = node_str.strip()
-        if not node_str:
-            continue
-        if ":" in node_str:
-            host, port = node_str.split(":", 1)
-            node = ClusterNode(host=host, port=int(port))
-        else:
-            node = ClusterNode(host=node_str, port=6379)
-        nodes.append(node)
+    try:
+        for node_str in cluster_nodes.split(","):
+            node_str = node_str.strip()
+            if not node_str:
+                continue
+            if ":" in node_str:
+                host, port = node_str.split(":", 1)
+                node = ClusterNode(host=host, port=int(port))
+            else:
+                node = ClusterNode(host=node_str, port=6379)
+            nodes.append(node)
+    except ValueError as exc:
+        raise RedisConfigError(f"REDIS_CLUSTER_NODES 非法（需 host:port 列表）: {exc}") from exc
     if not nodes:
-        raise ValueError("REDIS_CLUSTER_NODES not configured")
+        raise RedisConfigError("REDIS_CLUSTER_NODES not configured")
     return nodes
 
 
 def _parse_sentinel_nodes(sentinel_nodes: str) -> list[tuple[str, int]]:
     """解析 "host:port,host:port" 形态的哨兵节点列表（缺省端口 26379）。"""
     parsed: list[tuple[str, int]] = []
-    for node_str in sentinel_nodes.split(","):
-        node_str = node_str.strip()
-        if not node_str:
-            continue
-        if ":" in node_str:
-            host, port = node_str.split(":", 1)
-            parsed.append((host, int(port)))
-        else:
-            parsed.append((node_str, 26379))
+    try:
+        for node_str in sentinel_nodes.split(","):
+            node_str = node_str.strip()
+            if not node_str:
+                continue
+            if ":" in node_str:
+                host, port = node_str.split(":", 1)
+                parsed.append((host, int(port)))
+            else:
+                parsed.append((node_str, 26379))
+    except ValueError as exc:
+        raise RedisConfigError(f"REDIS_SENTINEL_NODES 非法（需 host:port 列表）: {exc}") from exc
     if not parsed:
-        raise ValueError("REDIS_SENTINEL_NODES not configured")
+        raise RedisConfigError("REDIS_SENTINEL_NODES not configured")
     return parsed
 
 

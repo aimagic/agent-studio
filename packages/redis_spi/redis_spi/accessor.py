@@ -8,8 +8,11 @@
     不静默回退默认实现）；
   - 全生命周期单例，不支持热切换（重启进程换 Provider）。
 
-线程/协程模型：initialize/await_provider_ready 可并发调用（首个装配胜出，
-其余等待复用同一实例）；get_redis_or_none/is_initialized 纯读。
+线程/协程模型：initialize/await_provider_ready 在**同一事件循环内**可并发
+调用（首个装配胜出，其余等待复用同一实例）；跨线程并发 initialize 仍可能
+各自建连（后到者被关闭，短暂双池）——跨线程场景由调用方自行串行化，或
+装配线程完成后其它线程改用 await_provider_ready；get_redis_or_none/
+is_initialized 纯读。
 """
 
 from __future__ import annotations

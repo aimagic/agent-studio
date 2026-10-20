@@ -37,6 +37,10 @@ class NativeRedisProvider(RedisProvider):
         self._underlying: list[Any] = []
 
     async def start(self, settings: RedisProviderSettings) -> RedisClient:
+        # 二次调用守卫：静默覆盖会泄漏旧连接池（旧 client/underlying 被
+        # 引用替换后无人关闭）——幂等返回既有客户端，语义与 stop 后重启一致
+        if self._client is not None and self._underlying:
+            return self._client
         main = build_async_client(settings)
         underlying = [main]
         subscriber = blocking = None

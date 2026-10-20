@@ -19,6 +19,7 @@ from redis_native.connection import (
     build_async_client,
     should_use_independent_pool,
 )
+from redis_spi.exceptions import RedisConfigError
 
 from redis_spi.config import RedisMode, RedisProviderSettings
 
@@ -139,7 +140,7 @@ class TestParseClusterNodes:
 
     @staticmethod
     def test_empty_raises():
-        with pytest.raises(ValueError, match="REDIS_CLUSTER_NODES"):
+        with pytest.raises(RedisConfigError, match="REDIS_CLUSTER_NODES"):  # S6: 配置错误族（原裸 ValueError）
             _parse_cluster_nodes("  ")
 
 
@@ -157,5 +158,5 @@ class TestParseSentinelNodes:
 
     @staticmethod
     def test_empty_raises():
-        with pytest.raises(ValueError, match="REDIS_SENTINEL_NODES"):
+        with pytest.raises(RedisConfigError, match="REDIS_SENTINEL_NODES"):  # S6: 配置错误族（原裸 ValueError）
             _parse_sentinel_nodes("")
