@@ -533,12 +533,27 @@ public class AgentServiceProxyService {
         responseBody.setRawRequestBody(
             SensitiveTextMasker.mask(responseBody.getRawRequestBody(), secretValues, true));
         responseBody.setErrorMessage(SensitiveTextMasker.mask(responseBody.getErrorMessage(), secretValues, false));
-        responseBody.setRawResponse(SensitiveTextMasker.mask(responseBody.getRawResponse(), secretValues, true));
+        // 响应体不保证是 JSON（如下游返回纯文本），按内容形态选择脱敏策略：非 JSON 文本中的数字/布尔密钥不补引号，
+        // 避免改变展示内容
+        String rawResponse = responseBody.getRawResponse();
+        responseBody.setRawResponse(SensitiveTextMasker.mask(rawResponse, secretValues, isJsonLike(rawResponse)));
         if (responseBody.getRawRequestHeaders() != null) {
             Map<String, String> maskedHeaders = new LinkedHashMap<>(responseBody.getRawRequestHeaders());
             maskedHeaders.replaceAll((key, value) -> SensitiveTextMasker.mask(value, secretValues, false));
             responseBody.setRawRequestHeaders(maskedHeaders);
         }
+    }
+
+    /**
+     * 判断回显文本是否形如 JSON 对象/数组。响应体不保证是 JSON（如下游返回纯文本），
+     * 需据此选择脱敏策略：非 JSON 文本中不对数字/布尔密钥补引号，避免改变展示内容。
+     */
+    private boolean isJsonLike(String text) {
+        if (StringUtils.isEmpty(text)) {
+            return false;
+        }
+        String trimmed = text.trim();
+        return trimmed.startsWith("{") || trimmed.startsWith("[");
     }
 
     /**
@@ -1019,6 +1034,8 @@ public class AgentServiceProxyService {
             return loaded;
         }
         String envId = defaultEnvs.get(0).getId();
+        // 说明：workspaceId 是该调测接口的调用前提；为空时缓存与 DB 查询都被跳过，
+        // 相关变量按"不存在"处理且不标记加载失败，由调用方按字段必填性决定拦截或放行
         // 缓存只是快路径、且可能陈旧，读取异常不致命（DB 为权威来源），仅记录日志
         if (StringUtils.hasText(workspaceId)) {
             try {

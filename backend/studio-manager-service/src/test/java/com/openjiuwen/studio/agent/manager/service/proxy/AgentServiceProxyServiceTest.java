@@ -1,11 +1,14 @@
 /* Copyright (c) Huawei Technologies Co., Ltd. 2024-2026. All rights reserved. */
 package com.openjiuwen.studio.agent.manager.service.proxy;
 
+import com.alibaba.fastjson.JSONArray;
+import com.alibaba.fastjson.JSONObject;
 import com.openjiuwen.studio.agent.common.dto.ErrorRsp;
 import com.openjiuwen.studio.agent.common.entity.RouterStrategyEntity;
 import com.openjiuwen.studio.agent.common.enums.StudioError;
 import com.openjiuwen.studio.agent.common.exception.AgentStudioException;
 import com.openjiuwen.studio.agent.common.redis.RedisClient;
+import com.openjiuwen.studio.agent.common.utils.CryptoUtils;
 import com.openjiuwen.studio.agent.common.utils.OkHttpClientUtils;
 import com.openjiuwen.studio.agent.common.utils.RequestContextUtils;
 import com.openjiuwen.studio.agent.common.utils.SensitiveLogContext;
@@ -17,6 +20,7 @@ import com.openjiuwen.studio.agent.manager.dto.runtime.EmbeddingRequest;
 import com.openjiuwen.studio.agent.manager.dto.runtime.RankDocumentsRequest;
 import com.openjiuwen.studio.agent.manager.entity.Agent;
 import com.openjiuwen.studio.agent.manager.entity.EnvironmentManagerEntity;
+import com.openjiuwen.studio.agent.manager.entity.EnvironmentVariableEntity;
 import com.openjiuwen.studio.agent.manager.entity.ReleaseChannel;
 import com.openjiuwen.studio.agent.manager.entity.ToolEntity;
 import com.openjiuwen.studio.agent.manager.entity.WorkflowEntity;
@@ -60,6 +64,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -1168,6 +1173,155 @@ class AgentServiceProxyServiceTest {
             SensitiveLogContext.clear();
         }
         assertEquals("https://host/S3cretValue", SensitiveLogContext.mask("https://host/S3cretValue"));
+    }
+
+    // ---------- resolveEnvVarParams（环境变量绑定回填 / 缺失拦截） ----------
+
+    private static final String SCHEMA_HOST_REQUIRED =
+        "{\"properties\":{\"host\":{\"type\":\"string\",\"env_var_ref\":\"HOST\"}},\"required\":[\"host\"]}";
+
+    private static final String SCHEMA_OTHER_REQUIRED =
+        "{\"properties\":{\"other\":{\"type\":\"string\",\"env_var_ref\":\"OTHER\"}},\"required\":[\"other\"]}";
+
+    private static final String SCHEMA_HOST_REQUIRED_OPTIONAL =
+        "{\"properties\":{\"host\":{\"type\":\"string\",\"env_var_ref\":\"HOST\"},"
+            + "\"opt\":{\"type\":\"string\",\"env_var_ref\":\"OPT\"}},\"required\":[\"host\"]}";
+
+    /**
+     * 安全边界：占位符引用的变量名与字段绑定变量不一致时不解析，原样下发，防止套取其它环境变量明文。
+     */
+    @Test
+    void testResolveEnvVarParams_PlaceholderNameMismatch_NotResolved() {
+        when(pluginBase.buildToolByPlugin("proj-1", "ws-1", "plugin-1", "1"))
+            .thenReturn(toolWithInputSchema(SCHEMA_HOST_REQUIRED));
+        String parameter = "{\"host\":\"${_env.plugin_url_params.OTHER}\"}";
+
+        Object result = resolveEnvVarParams(parameter);
+
+        assertTrue(missingVarsOf(result).isEmpty());
+        assertFalse(loadFailedOf(result));
+        assertEquals(parameter, parameterOf(result), "未绑定的占位符应原样下发");
+    }
+
+    /**
+     * 必填绑定参数为空且变量缺失时计入缺失（拦截）；非必填留空放行。
+     */
+    @Test
+    void testResolveEnvVarParams_RequiredMissingBlockedOptionalAllowed() {
+        when(pluginBase.buildToolByPlugin("proj-1", "ws-1", "plugin-1", "1"))
+            .thenReturn(toolWithInputSchema(SCHEMA_HOST_REQUIRED_OPTIONAL));
+        stubDefaultEnvWithVariables("[]");
+
+        Object result = resolveEnvVarParams("{}");
+
+        assertTrue(missingVarsOf(result).contains("HOST"), "必填绑定参数缺失应计入缺失");
+        assertFalse(missingVarsOf(result).contains("OPT"), "非必填绑定参数留空应放行");
+        assertFalse(loadFailedOf(result));
+    }
+
+    /**
+     * 用户手填的值优先：手填的 ****** 字面量不再当作回填信号，原样下发。
+     */
+    @Test
+    void testResolveEnvVarParams_UserFilledMaskLiteralPreserved() {
+        when(pluginBase.buildToolByPlugin("proj-1", "ws-1", "plugin-1", "1"))
+            .thenReturn(toolWithInputSchema(SCHEMA_HOST_REQUIRED));
+        String parameter = "{\"host\":\"******\"}";
+
+        Object result = resolveEnvVarParams(parameter);
+
+        assertEquals(parameter, parameterOf(result), "用户手填的 ****** 不应被回填覆盖");
+        assertTrue(missingVarsOf(result).isEmpty());
+    }
+
+    /**
+     * 数组格式 input_schema 按当前调测工具过滤，不注入同插件其它工具的绑定。
+     */
+    @Test
+    void testResolveEnvVarParams_ArraySchemaFilteredByToolId() {
+        when(pluginBase.buildToolByPlugin("proj-1", "ws-1", "plugin-1", "1")).thenReturn(toolWithInputSchema(
+            arrayInputSchema(new String[][]{{"1", SCHEMA_HOST_REQUIRED}, {"2", SCHEMA_OTHER_REQUIRED}})));
+        stubDefaultEnvWithVariables("[]");
+
+        Object result = resolveEnvVarParams("{}");
+
+        assertTrue(missingVarsOf(result).contains("HOST"));
+        assertFalse(missingVarsOf(result).contains("OTHER"), "其它工具的绑定不应注入当前调测");
+    }
+
+    /**
+     * 缓存中加密变量解密失败，但 DB 回退成功解析同一变量 → 不误判为加载失败。
+     */
+    @Test
+    void testResolveEnvVarParams_CacheDecryptFailDbSuccess_NotLoadFailed() {
+        when(pluginBase.buildToolByPlugin("proj-1", "ws-1", "plugin-1", "1"))
+            .thenReturn(toolWithInputSchema(SCHEMA_HOST_REQUIRED));
+        EnvironmentManagerEntity env = new EnvironmentManagerEntity();
+        env.setId("env-1");
+        when(environmentManagerMapper.findByProjectIdAndIsDefaultTrue("proj-1")).thenReturn(List.of(env));
+        when(environmentCacheUtil.getEnvironmentCache("env-1", "ws-1"))
+            .thenReturn("[{\"name\":\"HOST\",\"value\":{\"content\":\"ENCRYPTED\",\"secret\":true}}]");
+        EnvironmentVariableEntity entity = new EnvironmentVariableEntity();
+        entity.setEnvVariable("[{\"name\":\"HOST\",\"value\":{\"content\":\"real-host\",\"secret\":false}}]");
+        when(environmentVariableMapper.findByProjectIdAndWorkspaceIdAndEnvId("proj-1", "ws-1", "env-1"))
+            .thenReturn(entity);
+
+        try (MockedStatic<CryptoUtils> crypto = mockStatic(CryptoUtils.class)) {
+            crypto.when(() -> CryptoUtils.decrypt("ENCRYPTED")).thenThrow(new RuntimeException("bad key"));
+
+            Object result = resolveEnvVarParams("{}");
+
+            assertFalse(loadFailedOf(result), "缓存解密失败但 DB 回退成功不应误判加载失败");
+            assertTrue(missingVarsOf(result).isEmpty());
+            assertTrue(parameterOf(result).contains("real-host"));
+        }
+    }
+
+    /** 反射调用私有 resolveEnvVarParams（固定 proj-1/ws-1/plugin-1，toolId=1）。 */
+    private Object resolveEnvVarParams(String parameter) {
+        return ReflectionTestUtils.invokeMethod(proxyService, "resolveEnvVarParams", "proj-1", "ws-1", "plugin-1", "1",
+            parameter);
+    }
+
+    private Set<String> missingVarsOf(Object result) {
+        return ReflectionTestUtils.invokeMethod(result, "getMissingVars");
+    }
+
+    private boolean loadFailedOf(Object result) {
+        return Boolean.TRUE.equals(ReflectionTestUtils.invokeMethod(result, "isLoadFailed"));
+    }
+
+    private String parameterOf(Object result) {
+        return ReflectionTestUtils.invokeMethod(result, "getParameter");
+    }
+
+    private ToolEntity toolWithInputSchema(String inputSchema) {
+        ToolEntity tool = new ToolEntity();
+        tool.setInputSchema(inputSchema);
+        return tool;
+    }
+
+    /** 默认环境存在 + DB 环境变量为该 JSON（缓存未命中） */
+    private void stubDefaultEnvWithVariables(String envVariableJson) {
+        EnvironmentManagerEntity env = new EnvironmentManagerEntity();
+        env.setId("env-1");
+        when(environmentManagerMapper.findByProjectIdAndIsDefaultTrue("proj-1")).thenReturn(List.of(env));
+        EnvironmentVariableEntity entity = new EnvironmentVariableEntity();
+        entity.setEnvVariable(envVariableJson);
+        when(environmentVariableMapper.findByProjectIdAndWorkspaceIdAndEnvId("proj-1", "ws-1", "env-1"))
+            .thenReturn(entity);
+    }
+
+    /** 构造数组格式 input_schema：[{tool_id, input_schema}]，input_schema 为内层 schema 字符串。 */
+    private static String arrayInputSchema(String[][] toolIdAndSchema) {
+        JSONArray array = new JSONArray();
+        for (String[] pair : toolIdAndSchema) {
+            JSONObject item = new JSONObject();
+            item.put("tool_id", pair[0]);
+            item.put("input_schema", pair[1]);
+            array.add(item);
+        }
+        return array.toJSONString();
     }
 
     /**

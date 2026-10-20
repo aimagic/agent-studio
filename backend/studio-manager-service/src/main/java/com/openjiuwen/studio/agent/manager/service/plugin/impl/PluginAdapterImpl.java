@@ -1110,10 +1110,8 @@ public class PluginAdapterImpl implements IPlugin {
         } catch (MalformedURLException e) {
             throw new AgentStudioException(StudioError.INVALID_URL);
         } catch (Exception e) {
-            // 捕获其他异常，防止程序崩溃；异常消息可能带上原始 url/host，脱敏后再记录，避免明文落日志
-            log.error("Error while checking swagger URL: {}, type: {}, message: {}",
-                SensitiveLogContext.mask(swaggerUrl), e.getClass().getSimpleName(),
-                SensitiveLogContext.mask(e.getMessage()));
+            // 捕获其他异常，防止程序崩溃；url 脱敏后输出，并保留完整堆栈（堆栈本身不含敏感值）
+            log.error("Error while checking swagger URL: {}", SensitiveLogContext.mask(swaggerUrl), e);
             throw new AgentStudioException(StudioError.INVALID_URL);
         }
         log.info("End: check url from black list.");

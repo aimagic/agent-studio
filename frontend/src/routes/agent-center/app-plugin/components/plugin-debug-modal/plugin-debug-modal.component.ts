@@ -127,8 +127,8 @@ export class PluginDebugModalComponent {
     //插件路径参数
     let pluginPathArgs = pluginSchemaStr2Path(this.pluginBodyParams?.request_info?.basic_info?.input_schema)
     pluginPathArgs = pluginPathArgs.map((item) => initializeReqItem(item))
-    // requestArgs 为 @Input（与父组件共享引用），这里深拷贝一份再回填环境变量，
-    // 避免直接修改 item.value/controlValue 污染父组件状态（影响父组件展示、保存或再次打开弹窗的初始值）
+    // requestArgs 为 @Input（与父组件共享引用）：浅拷贝每项并单独复制 value，回填环境变量时
+    // 不会污染父组件状态（避免影响父组件展示、保存或再次打开弹窗的初始值）
     const requestArgToDynamicForm = [...this.requestArgs, ...pluginPathArgs].map((item) => ({
       ...item,
       value: { ...(item?.value || {}) },
@@ -410,9 +410,9 @@ export class PluginDebugModalComponent {
         params[item.name] = `${ENV_VAR_PLACEHOLDER_PREFIX}${item.env_var_ref}}`;
         return;
       }
-      // 变量缺失的绑定字段：动态表单会把空默认值强转为 0/false，或保留脱敏显示值 ******；
-      // 未手动修改时不提交该字段，让后端按"空值"走缺失拦截（必填报错）/放行（非必填）逻辑
-      if (this.isMissingBoundVar(item.name) && this.isUntouchedMissingValue(item, params[item.name])) {
+      // 变量缺失的绑定字段：未手动修改时字段值只可能来自 schema 默认值 / 表单强转的 0/false / 脱敏掩码，
+      // 均不代表用户输入，提交时剔除该字段，交后端按必填性走缺失拦截（报错）或放行（非必填）
+      if (this.isMissingBoundVar(item.name) && this.isUntouchedMissingValue(item)) {
         delete params[item.name];
       }
     });
@@ -425,31 +425,13 @@ export class PluginDebugModalComponent {
   }
 
   /**
-   * 判断变量缺失的绑定字段是否仍为「未手动修改」的动态表单默认态。
-   * 动态表单会把空默认值强制转换（integer/number → 0，boolean → false），或保留脱敏显示值 ******；
-   * 用户未编辑（pristine）时这些值不代表用户输入；用户手输的值（含手输的 ******，控件已 dirty）原样提交。
+   * 判断变量缺失的绑定字段是否「未手动修改」。
+   * 变量缺失时字段值只可能来自 schema 显式默认值、动态表单强转出的 0/false、或脱敏显示掩码 ******，
+   * 均不代表用户输入（且会干扰后端"变量缺失"判定）；未编辑（pristine）时一律不提交该字段，
+   * 交后端按必填性走缺失拦截/放行，与弹窗的缺失警示保持一致；用户手输的值（控件已 dirty）原样提交。
    */
-  private isUntouchedMissingValue(item: any, submitted: any): boolean {
-    if (this.dynamicFormIns?.isControlPristine(item?.name) !== true) {
-      return false;
-    }
-    // 脱敏显示掩码：未手动修改时不应作为用户值提交（后端不再把 ****** 当作回填信号）
-    if (submitted === ENV_VAR_SECRET_MASK) {
-      return true;
-    }
-    // 插件 schema 显式声明了默认值时，表单提交的就是该默认值（如显式默认 0/false），不应作为"空默认被强转"剔除；
-    // 这里用 schema 原始默认值 item.default 判断，避免 value.default 被 parseInt/parseFloat/布尔转换后的产物造成误判
-    const rawDefault = item?.default;
-    if (rawDefault !== undefined && rawDefault !== null && rawDefault !== '') {
-      return false;
-    }
-    if (item?.type === 'integer' || item?.type === 'number') {
-      return typeof submitted === 'number' && (Number.isNaN(submitted) || submitted === 0);
-    }
-    if (item?.type === 'boolean') {
-      return submitted === false;
-    }
-    return false;
+  private isUntouchedMissingValue(item: any): boolean {
+    return this.dynamicFormIns?.isControlPristine(item?.name) === true;
   }
 
   /**
