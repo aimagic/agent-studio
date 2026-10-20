@@ -156,6 +156,7 @@ const commonLogic = {
       Start: cdnAssetUrl('assets/agent-center/flow/Start.svg'),
       LLM: cdnAssetUrl('assets/agent-center/flow/LLM.svg'),
       Code: cdnAssetUrl('assets/agent-center/flow/Code.svg'),
+      TemplateTransform: cdnAssetUrl('assets/agent-center/flow/Code.svg'),
       Branch: cdnAssetUrl('assets/agent-center/flow/Branch.svg'),
       IntentDetection: cdnAssetUrl('assets/agent-center/flow/Intent.svg'),
       Questioner: cdnAssetUrl('assets/agent-center/flow/Questioner.svg'),

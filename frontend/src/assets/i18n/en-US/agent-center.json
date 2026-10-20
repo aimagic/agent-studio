@@ -3080,5 +3080,9 @@
   "wordwrap": "Word wrap",
   "nowrap": "No wrap",
   "previous_diff": "Previous",
-  "next_diff": "Next"
+  "next_diff": "Next",
+  "template_transform": "Template",
+  "template_transform_output": "Rendered text",
+  "template_transform_jinja_tip": "Jinja2 only. This is full Jinja2 ({{ data.get('field') }}, {% for %}, {% if %}), not the simple {{var}} replacement used by LLM, End, and Message nodes.",
+  "template_transform_default_template": "User name: {{ data.get('customerName') }}"
 }
