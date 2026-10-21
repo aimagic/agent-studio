@@ -156,7 +156,7 @@ class SecuritySandboxSettings(BaseSettings):
         default=600, validation_alias="SECURITY_SANDBOX_IDLE_TTL"
     )
     timeout_seconds: int = Field(
-        default=300, validation_alias="SECURITY_SANDBOX_TIMEOUT"
+        default=900, validation_alias="SECURITY_SANDBOX_TIMEOUT"
     )
     sandbox_type: str = Field(
         default="aio", validation_alias="SECURITY_SANDBOX_TYPE"

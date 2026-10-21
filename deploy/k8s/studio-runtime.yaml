@@ -125,7 +125,7 @@ spec:
             - name: SECURITY_SANDBOX_IDLE_TTL
               value: '600'
             - name: SECURITY_SANDBOX_TIMEOUT
-              value: '300'
+              value: '900'
             - name: SECURITY_SANDBOX_SCOPE
               value: 'system'
             # ======== [选填] OpenSearch（启用记忆库时必填） ========

@@ -21,7 +21,7 @@ class SandboxCodeRunner(CodeRunner):
         self._sys_operation = sys_operation
         self.function_log: str = ""
 
-    async def run(self, user_code: str, inputs: dict, timeout: int = 300) -> dict:
+    async def run(self, user_code: str, inputs: dict, timeout: int = 900) -> dict:
         wrapped_code = build_wrapped_code(user_code, inputs)
         workflow_logger.warning("[SandboxCodeRunner] Executing code in sandbox mode")
         result = await self._execute_wrapped_code(wrapped_code, timeout)
