@@ -201,7 +201,7 @@ function start_nginx_process() {
     OLD_PID=$(cat ${NGINX_PID} 2>/dev/null)
     # 校验目标进程真的是 nginx master，避免残留 pid 文件 + PID 复用导致
     # 误向无辜进程（curl、worker 等）发 SIGHUP，从而误判 "reload 成功"
-    # 却从未真正启动 nginx。详见工行问题分析报告。
+    # 却从未真正启动 nginx。
     if [[ -n "${OLD_PID}" ]] && kill -0 ${OLD_PID} 2>/dev/null \
        && [[ -r "/proc/${OLD_PID}/cmdline" ]] \
        && tr '\0' ' ' < "/proc/${OLD_PID}/cmdline" 2>/dev/null | grep -q "nginx: master process"; then
@@ -264,7 +264,6 @@ function cleanup_previous() {
   # 跨容器重建会残留上次容器的 nginx.pid。新容器 PID namespace 重置后，
   # 残留 PID 可能被复用为无辜进程（curl、worker 等），导致 start_nginx_process
   # 误走 reload 分支并向无辜进程发 SIGHUP，从而从未真正启动 nginx。
-  # 详见工行问题分析报告。
   if [[ -f "${NGINX_PID}" ]]; then
     echo "Removing stale nginx.pid before start."
     rm -f "${NGINX_PID}" 2>/dev/null || true
