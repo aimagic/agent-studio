@@ -157,6 +157,7 @@ vi .env
 
 - 将 `IMAGE_SOURCE` 改为 `offline`
 - 取消 `STUDIO_*_IMAGE` 四行的注释（删除行首 `#`，**变量名须顶格，不能有前导空格**），并将 `TAG_PLACEHOLDER` 替换为实际版本号和架构
+- 将 `MINIO_IMAGE`、`MINIO_MC_IMAGE` 改为上方表格中的固定 tag（如 `pgsty/silo:RELEASE.2026-10-18T00-00-00Z`），与 `dep-images/` 加载进来的镜像保持一致；否则 compose 会按默认值解析为 `latest`，离线环境下拉取失败
 - 镜像名格式：`<服务>:<版本号>.<架构>`，以下为示例，**版本号和架构需参考下载的离线镜像包名称和实际进行修改**
 
 ```bash
