@@ -260,14 +260,14 @@ function cleanup_previous() {
   pkill -9 -f "EIStart" 2>/dev/null || true
   sleep 1
 
-  # 清理残留 nginx.pid：/opt/cloud/logs 挂在持久卷 runtime_logs 上，
-  # 跨容器重建会残留上次容器的 nginx.pid。新容器 PID namespace 重置后，
-  # 残留 PID 可能被复用为无辜进程（curl、worker 等），导致 start_nginx_process
-  # 误走 reload 分支并向无辜进程发 SIGHUP，从而从未真正启动 nginx。
-  if [[ -f "${NGINX_PID}" ]]; then
-    echo "Removing stale nginx.pid before start."
-    rm -f "${NGINX_PID}" 2>/dev/null || true
-  fi
+  # NOTE: Do NOT remove ${NGINX_PID} here. start_nginx_process() already
+  # validates the pid file via /proc/<pid>/cmdline — if the PID belongs to a
+  # live nginx master (same-container re-run), it reloads without releasing
+  # the port; if the PID is stale (cross-container, PID reuse), it removes
+  # the pid file and starts fresh. Removing it here would break the reload
+  # path: start_nginx_process would skip the reload branch entirely, start a
+  # second nginx, and fail with "address already in use" because the old
+  # nginx is still holding SERVER_PORT.
 }
 
 function main() {
