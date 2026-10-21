@@ -20,7 +20,7 @@ class LocalCodeRunner(CodeRunner):
         self._code_operation = code_operation
         self.function_log: str = ""
 
-    async def run(self, user_code: str, inputs: dict, timeout: int = 300) -> dict:
+    async def run(self, user_code: str, inputs: dict, timeout: int = 900) -> dict:
         wrapped_code = build_wrapped_code(user_code, inputs)
         result = await self._execute_wrapped_code(wrapped_code, timeout)
         result_dict, self.function_log = parse_execution_result(result, runner_name="Code")

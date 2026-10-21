@@ -46,7 +46,7 @@ class InprocessCodeRunner(CodeRunner):
         self._os_system_patcher = mock.patch('os.system', return_value=-1)
         self._exec_lock = threading.Lock()
 
-    async def run(self, user_code: str, inputs: dict, timeout: int = 300) -> dict:
+    async def run(self, user_code: str, inputs: dict, timeout: int = 900) -> dict:
         """在进程内执行用户代码
 
         Args:

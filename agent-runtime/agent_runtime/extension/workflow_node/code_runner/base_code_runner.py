@@ -16,7 +16,7 @@ class CodeRunner(ABC):
     """
 
     @abstractmethod
-    async def run(self, user_code: str, inputs: dict, timeout: int = 300) -> dict:
+    async def run(self, user_code: str, inputs: dict, timeout: int = 900) -> dict:
         """
         执行用户代码并返回结果
 

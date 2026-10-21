@@ -174,7 +174,7 @@ class SecuritySandboxSettings(BaseSettings):
         default=600, validation_alias="SECURITY_SANDBOX_IDLE_TTL"
     )
     # 沙箱内层超时：与代码节点异常处理外层超时（exceptionProcess.timeout）取小生效；
-    # 节点级配置值大于此处时会被沙箱截断，需联动调大本值才可生效
+    # 节点级配置值大于此处时会被沙箱在本值处截断，需联动调大本值才可生效
     timeout_seconds: int = Field(
         default=900, validation_alias="SECURITY_SANDBOX_TIMEOUT"
     )
