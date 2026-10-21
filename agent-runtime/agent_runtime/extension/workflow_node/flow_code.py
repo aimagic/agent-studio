@@ -457,6 +457,8 @@ class FlowCode(WorkflowComponent):
             # 4. 执行代码（带 sandbox 失败 fallback 到 local）
             from agent_runtime.common.config import settings
 
+            # 沙箱内层超时，与代码节点异常处理外层超时（exceptionProcess.timeout）取小生效：
+            # 本值先到 → 抛超时异常，被上层 _do_invoke_with_exception_handle 按 handleType 兜底
             exec_timeout = settings.security_sandbox.timeout_seconds
             workflow_logger.info(
                 "[FlowCode] exec_timeout=%s (from SECURITY_SANDBOX_TIMEOUT)",
