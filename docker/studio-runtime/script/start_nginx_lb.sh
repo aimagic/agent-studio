@@ -199,7 +199,12 @@ function start_nginx_process() {
   # change (the whole point of restarting here).
   if [[ -f ${NGINX_PID} ]]; then
     OLD_PID=$(cat ${NGINX_PID} 2>/dev/null)
-    if [[ -n "${OLD_PID}" ]] && kill -0 ${OLD_PID} 2>/dev/null; then
+    # 校验目标进程真的是 nginx master，避免残留 pid 文件 + PID 复用导致
+    # 误向无辜进程（curl、worker 等）发 SIGHUP，从而误判 "reload 成功"
+    # 却从未真正启动 nginx。详见工行问题分析报告。
+    if [[ -n "${OLD_PID}" ]] && kill -0 ${OLD_PID} 2>/dev/null \
+       && [[ -r "/proc/${OLD_PID}/cmdline" ]] \
+       && tr '\0' ' ' < "/proc/${OLD_PID}/cmdline" 2>/dev/null | grep -q "nginx: master process"; then
       echo "Reloading existing nginx (PID ${OLD_PID})..."
       if nginx -c ${NGINX_CONF} -s reload 2>/dev/null; then
         # Keep NGINX_PID pointing at the live master so the while[1] loop
@@ -211,6 +216,9 @@ function start_nginx_process() {
       kill ${OLD_PID} 2>/dev/null || true
       sleep 2
       kill -9 ${OLD_PID} 2>/dev/null || true
+    else
+      echo "Stale nginx.pid found (PID=${OLD_PID}, not a running nginx master), removing and starting fresh."
+      rm -f "${NGINX_PID}" 2>/dev/null || true
     fi
   fi
 
@@ -251,6 +259,16 @@ function cleanup_previous() {
   # This runs BEFORE any new worker is started, so it cannot touch the new ones.
   pkill -9 -f "EIStart" 2>/dev/null || true
   sleep 1
+
+  # 清理残留 nginx.pid：/opt/cloud/logs 挂在持久卷 runtime_logs 上，
+  # 跨容器重建会残留上次容器的 nginx.pid。新容器 PID namespace 重置后，
+  # 残留 PID 可能被复用为无辜进程（curl、worker 等），导致 start_nginx_process
+  # 误走 reload 分支并向无辜进程发 SIGHUP，从而从未真正启动 nginx。
+  # 详见工行问题分析报告。
+  if [[ -f "${NGINX_PID}" ]]; then
+    echo "Removing stale nginx.pid before start."
+    rm -f "${NGINX_PID}" 2>/dev/null || true
+  fi
 }
 
 function main() {
