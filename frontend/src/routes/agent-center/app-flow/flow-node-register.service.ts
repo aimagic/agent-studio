@@ -15,6 +15,7 @@ import { AggregationNodeComponent } from './components/aggregation-node/aggregat
 import { BranchNodeComponent } from './components/branch-node/branch-node.component';
 import { ChildFlowComponent } from './components/child-flow-node/child-flow.component';
 import { CodeNodeComponent } from './components/code-node/code-node.component';
+import { TemplateTransformNodeComponent } from './components/template-transform-node/template-transform-node.component';
 import { CommentNodeComponent } from './components/comment-node/comment-node.component';
 import { ControllerNodeComponent } from './components/controller-node/controller-node.component';
 import { EmptyNodeComponent } from './components/empty-node/empty-node.component';
@@ -69,6 +70,7 @@ export class FlowNodeRegisterService {
     this.registerEmptyNode(injector);
     this.registerBranchNode(injector);
     this.registerCodeNode(injector);
+    this.registerTemplateTransformNode(injector);
     this.registerChildFlow(injector);
     this.registerQuestionerNode(injector);
     this.registerIntentNode(injector);
@@ -255,6 +257,16 @@ export class FlowNodeRegisterService {
   private registerPluginNode(injector: Injector) {
     register(
       this.commonRegisterNode('op-plugin-node', injector, PluginNodeComponent),
+    );
+  }
+
+  private registerTemplateTransformNode(injector: Injector) {
+    register(
+      this.commonRegisterNode(
+        'op-templatetransform-node',
+        injector,
+        TemplateTransformNodeComponent,
+      ),
     );
   }
 

@@ -84,6 +84,7 @@ import { AggregationModalComponent } from '../components/aggregation-modal/aggre
 import { BranchModalComponent } from '../components/branch-modal/branch-modal.component';
 import { ChildFlowModalComponent } from '../components/child-flow-modal/child-flow-modal.component';
 import { CodeModalComponent } from '../components/code-modal/code-modal.component';
+import { TemplateTransformModalComponent } from '../components/template-transform-modal/template-transform-modal.component';
 import { ControllerModalComponent } from '../components/controller-modal/controller-modal.component';
 import { DialogHalfmodalComponent } from '../components/dialog-halfmodal/dialog-halfmodal.component';
 import { EndModalComponent } from '../components/end-modal/end-modal.component';
@@ -233,6 +234,7 @@ const NodeMap = {
   Mcp: MCPServiceModalComponent,
   Branch: BranchModalComponent,
   Code: CodeModalComponent,
+  TemplateTransform: TemplateTransformModalComponent,
   IntentDetection: IntentModalComponent,
   ComplexIntentDetection: IntentModalComponent,
   Questioner: QuestionerModalComponent,
@@ -1302,7 +1304,10 @@ export class FlowComponent implements OnInit, OnDestroy, AfterViewInit {
         }
       });
     this.modelManagementService
-      .getAvailableModelList({with_router: true, publish_status: 'online'})
+      // model_type 必须显式传入（与 llm-select 默认拉取参数一致）：后端缺省仅返回 LLM，
+      // 会导致 llm-modal 的 isVisionModel 对 IMAGE-TO-TEXT（视觉）模型恒为 false，
+      // 大模型节点的「视觉理解输入」引用区无法渲染。
+      .getAvailableModelList({with_router: true, publish_status: 'online', model_type: 'LLM,IMAGE-TO-TEXT'})
       .then((res) => {
         this.availableModelList = res.data.map((item: any) => ({
           ...item,

@@ -110,9 +110,15 @@ else:
 # 注册工作流组件到组件池
 from jiuwen.orchestration.flow.component_class_pool import component_class_pool
 from agent_runtime.extension.workflow_node.flow_code import FlowCode, JIUWEN_CODE_TYPE
+from agent_runtime.extension.workflow_node.flow_template_transform import (
+    FlowTemplateTransform,
+    JIUWEN_TEMPLATE_TRANSFORM_TYPE,
+)
 
 component_class_pool.register_component_class(JIUWEN_CODE_TYPE, FlowCode)
 logger.info("Registered workflow component: jiuwen.code")
+component_class_pool.register_component_class(JIUWEN_TEMPLATE_TRANSFORM_TYPE, FlowTemplateTransform)
+logger.info("Registered workflow component: jiuwen.templateTransform")
 
 # 加载自定义插件组件
 from jiuwen.common.init import load_components

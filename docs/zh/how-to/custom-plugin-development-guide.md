@@ -67,7 +67,7 @@ agent-runtime/extensions/components/
 | `init.sql` | 固定 | 插件定义写入 `t_tool` 表的标准 INSERT 语句 | 是 | [2.4](#24-initsql) |
 | `requirements.txt` | 固定 | 声明插件第三方 Python 依赖 | 是 | [2.5](#25-依赖声明) |
 
-> `component.json` 推荐固定命名。runtime 启动时扫描插件目录下的 `.json` 文件加载组件声明，每个插件目录只应有一个 `.json` 文件。
+> `component.json` 文件名固定。runtime 启动时固定读取插件目录下的 `component.json` 加载组件声明，文件名不可自定义。
 
 ### 2.2 component.json
 
@@ -178,15 +178,15 @@ INSERT INTO t_tool (tool_id, project_id, tool_display_name, tool_chinese_name, t
 VALUES (
     'draw-box',
     '',
-    '框选插件',
-    '框选插件',
-    '画布框选交互插件，支持区域面积计算、重叠检测和框选合并操作',
+    '框选与标注插件',
+    '框选与标注插件',
+    '画布框选交互插件，支持区域面积计算、重叠检测、框选合并、图像边界框绘制操作',
     'data:image/svg+xml;base64,PHN2ZyB3...',
     'inner',
     '{"component_type": "custom.draw_box"}',
     'custom',
-    '{"type":"object","properties":{"operation":{"type":"string","enum":["calculate_area","find_overlaps","merge_boxes"],"description":"框选数据操作类型：calculate_area=计算面积, find_overlaps=检测重叠, merge_boxes=合并框选","default":"calculate_area"},"coordinates":{"type":"array","description":"坐标点列表（calculate_area 操作时为坐标点数组 [{x,y},...]；find_overlaps/merge_boxes 操作时为多组坐标点数组的数组 [[{x,y},...],...]）","items":{"type":"object","properties":{"x":{"type":"number","description":"X坐标"},"y":{"type":"number","description":"Y坐标"}},"required":["x","y"]}}},"required":["coordinates"]}',
-    '{"type":"object","properties":{"output":{"type":"object","description":"处理结果","properties":{"operation":{"type":"string","description":"执行的操作类型"},"area":{"type":"number","description":"框选区域面积（calculate_area）"},"center":{"type":"object","description":"中心点坐标（calculate_area）","properties":{"x":{"type":"number","description":"X坐标"},"y":{"type":"number","description":"Y坐标"}}},"bounds":{"type":"object","description":"边界范围（calculate_area）","properties":{"min_x":{"type":"number","description":"最小X坐标"},"max_x":{"type":"number","description":"最大X坐标"},"min_y":{"type":"number","description":"最小Y坐标"},"max_y":{"type":"number","description":"最大Y坐标"}}},"point_count":{"type":"integer","description":"坐标点数量（calculate_area）"},"overlap_pairs":{"type":"array","description":"重叠对列表（find_overlaps）","items":{"type":"object","properties":{"box_a":{"type":"integer","description":"框选组A序号"},"box_b":{"type":"integer","description":"框选组B序号"}}}},"overlap_count":{"type":"integer","description":"重叠对数量（find_overlaps）"},"merged_boxes":{"type":"array","description":"合并后的框选区域列表（merge_boxes）","items":{"type":"object","properties":{"min_x":{"type":"number","description":"最小X坐标"},"max_x":{"type":"number","description":"最大X坐标"},"min_y":{"type":"number","description":"最小Y坐标"},"max_y":{"type":"number","description":"最大Y坐标"}}}},"box_count":{"type":"integer","description":"合并后框选区域数量（merge_boxes）"}}}}}',
+    '{"type":"object","properties":{"operation":{"type":"string","enum":["calculate_area","find_overlaps","merge_boxes","draw_boxes"],"description":"框选数据操作类型：calculate_area=计算面积, find_overlaps=检测重叠, merge_boxes=合并框选, draw_boxes=在图像上绘制边界框和标签","default":"calculate_area"},"coordinates":{"type":"array","description":"坐标点列表（calculate_area/find_overlaps/merge_boxes 操作必填）。calculate_area 时为 [{x,y},...]；find_overlaps/merge_boxes 时为 [[{x,y},...],...]","items":{"type":"object","properties":{"x":{"type":"number","description":"X坐标"},"y":{"type":"number","description":"Y坐标"}},"required":["x","y"]}},"image":{"type":"string","description":"图像输入（draw_boxes 操作必填）。兼容多种格式：文件对象 JSON 字符串、HTTP URL、本地文件路径、base64 字符串"},"annotations":{"type":"string","description":"标注数据 JSON 字符串（draw_boxes 操作必填）。格式：{\"annotations\":[{\"bbox\":[x1,y1,x2,y2],\"label\":\"类别名\",\"confidence\":0.95}]}"},"box_color":{"type":"string","default":"#ff0000","description":"边界框颜色（draw_boxes），十六进制色值"},"text_color":{"type":"string","default":"#ffffff","description":"文本颜色（draw_boxes），十六进制色值"},"line_width":{"type":"integer","default":2,"description":"边界框线宽（draw_boxes），范围 1-20"},"font_size":{"type":"integer","default":16,"description":"标签字号（draw_boxes），范围 8-72"},"coordinate_type":{"type":"string","enum":["relative","absolute"],"default":"relative","description":"坐标类型（draw_boxes）：relative=相对坐标(0-1000)，absolute=绝对像素坐标"}},"required":[]}',
+    '{"type":"object","properties":{"output":{"type":"object","description":"处理结果","properties":{"operation":{"type":"string","description":"执行的操作类型"},"area":{"type":"number","description":"框选区域面积（calculate_area）"},"center":{"type":"object","description":"中心点坐标（calculate_area）","properties":{"x":{"type":"number","description":"X坐标"},"y":{"type":"number","description":"Y坐标"}}},"bounds":{"type":"object","description":"边界范围（calculate_area）","properties":{"min_x":{"type":"number","description":"最小X坐标"},"max_x":{"type":"number","description":"最大X坐标"},"min_y":{"type":"number","description":"最小Y坐标"},"max_y":{"type":"number","description":"最大Y坐标"}}},"point_count":{"type":"integer","description":"坐标点数量（calculate_area）"},"overlap_pairs":{"type":"array","description":"重叠对列表（find_overlaps）","items":{"type":"object","properties":{"box_a":{"type":"integer","description":"框选组A序号"},"box_b":{"type":"integer","description":"框选组B序号"}}}},"overlap_count":{"type":"integer","description":"重叠对数量（find_overlaps）"},"merged_boxes":{"type":"array","description":"合并后的框选区域列表（merge_boxes）","items":{"type":"object","properties":{"min_x":{"type":"number","description":"最小X坐标"},"max_x":{"type":"number","description":"最大X坐标"},"min_y":{"type":"number","description":"最小Y坐标"},"max_y":{"type":"number","description":"最大Y坐标"}}}},"box_count":{"type":"integer","description":"合并后框选区域数量（merge_boxes）"},"success":{"type":"boolean","description":"draw_boxes 操作是否成功"},"annotation_count":{"type":"integer","description":"实际绘制标注数量（draw_boxes）"},"image_size":{"type":"object","description":"原图尺寸（draw_boxes）","properties":{"width":{"type":"integer","description":"图像宽度"},"height":{"type":"integer","description":"图像高度"}}},"image_base64":{"type":"string","description":"标注后图像的 base64 字符串（draw_boxes）"},"message":{"type":"string","description":"操作结果描述（draw_boxes）"},"error":{"type":"string","description":"错误信息（draw_boxes 失败时）"},"error_code":{"type":"integer","description":"错误码（draw_boxes 失败时）：400=参数错误, 404=图像加载失败, 413=图像过大, 422=标注格式无效, 500=内部错误"}}}}}',
     'global',
     1,
     1,
@@ -279,7 +279,7 @@ pandas>=1.5.0
 
 | 插件 | component_type | 说明 | 实现文档 |
 |------|----------------|------|----------|
-| DrawBox | `custom.draw_box` | 画布框选交互插件，支持区域面积计算、重叠检测和框选合并操作。Schema 驱动表单 + 非 HTTP 执行 + 端到端完整链路验证 | `agent-runtime/extensions/components/draw-box/` |
+| DrawBox | `custom.draw_box` | 画布框选交互插件，支持区域面积计算、重叠检测、框选合并，以及在图像上绘制边界框和标签。Schema 驱动表单 + 非 HTTP 执行 + 端到端完整链路验证 | `agent-runtime/extensions/components/draw-box/` |
 
 > 新增插件实现后，在此表追加一行并链接到对应的实现文档。
 

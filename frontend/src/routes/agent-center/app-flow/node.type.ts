@@ -126,6 +126,7 @@ export type INodeType =
   | 'End'
   | 'LLM'
   | 'Code'
+  | 'TemplateTransform'
   | 'Plugin'
   | 'Branch'
   | 'Workflow'
@@ -747,6 +748,16 @@ export interface ICodeNode extends INodeBase {
   };
 }
 
+export interface ITemplateTransformNode extends INodeBase {
+  inputs: IWorkflowField[];
+  outputs: IWorkflowField[];
+  configs: {
+    template: string;
+    descriptionText?: string;
+    isDefaultName?: boolean;
+  };
+}
+
 export interface IFlowNode extends INodeBase {
   inputs: IWorkflowField[];
   outputs: IWorkflowField[];
@@ -1160,6 +1171,7 @@ export type NodeInfo =
   | IBranchNode
   | IQuestionerNode
   | ICodeNode
+  | ITemplateTransformNode
   | IIntentNode
   | IMessageNode
   | IAggregationNode
@@ -1182,7 +1194,8 @@ export type HasOutputsNode =
   | ILLMNode
   | IPluginNode
   | IQuestionerNode
-  | ICodeNode;
+  | ICodeNode
+  | ITemplateTransformNode;
 
 export type HasInputsNode =
   | IEndNode
@@ -1190,6 +1203,7 @@ export type HasInputsNode =
   | IPluginNode
   | IQuestionerNode
   | ICodeNode
+  | ITemplateTransformNode
   | IIntentNode
   | IKnowledgeRepo
   | IMessageNode;
@@ -1199,6 +1213,7 @@ export type IsolatedTestableNode =
   | IPluginNode
   | IQuestionerNode
   | ICodeNode
+  | ITemplateTransformNode
   | IIntentNode;
 
 export type MidNode = ILLMNode | IPluginNode;

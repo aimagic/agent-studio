@@ -56,6 +56,7 @@ import {
   IBranchNode,
   ICardNode,
   ICodeNode,
+  ITemplateTransformNode,
   ICommentNode,
   IDataQueryNode,
   IEndNode,
@@ -305,6 +306,7 @@ export class AppFlowService {
       i18next.t(`${I18nNamespace.AGENT_CENTER}:intentDetection`),
     ],
     ['Code', i18next.t(`${I18nNamespace.AGENT_CENTER}:code`)],
+    ['TemplateTransform', i18next.t(`${I18nNamespace.AGENT_CENTER}:template_transform`)],
     [
       'ComplexIntentDetection',
       i18next.t(`${I18nNamespace.AGENT_CENTER}:complexIntentDetection`),
@@ -1100,6 +1102,40 @@ export class AppFlowService {
         code: DEFAULT_CODE,
         isDefaultName: true,
         exec_env: codeOptions?.length > 0 ? codeOptions[0] : 'fg', //默认值区取数组的第一个
+      },
+    };
+  }
+
+  public getInitTemplateTransformNodeData(): ITemplateTransformNode {
+    const id = `node_${Date.now()}`;
+    return {
+      id,
+      type: 'TemplateTransform',
+      name: this.i18n.transform('template_transform'),
+      inputs: [
+        {
+          ...getInitInputParamRefConfig(),
+          name: 'data',
+          type: 'object',
+        },
+      ],
+      outputs: [
+        {
+          name: 'output',
+          type: 'string',
+          description: this.i18n.transform('template_transform_output'),
+          required: true,
+          value: {
+            type: 'generated',
+            content: '',
+            hint: '',
+          },
+          source: 'user',
+        },
+      ],
+      configs: {
+        isDefaultName: true,
+        template: this.i18n.transform('template_transform_default_template'),
       },
     };
   }

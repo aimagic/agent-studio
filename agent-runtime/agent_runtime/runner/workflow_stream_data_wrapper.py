@@ -898,9 +898,11 @@ class WorkflowStreamDataWrapper:
                     memory = last_item.get("memory")
             computed_status = "running"
         else:
+            # pre_invoke 帧统一下发 start 状态（含恢复请求中被恢复的提问器）：
+            # 前端调用链每轮清空后仅凭 node_started 帧追加节点，若恢复轮中
+            # 被恢复节点不下发 start，该轮调用链将缺失该节点（如仅剩结果
+            # 节点）；多轮 start/finish 配对由前端与历史回显侧专门处理。
             computed_status = "start"
-            if self._is_resuming and payload.get("componentType", "") == "Questioner":
-                computed_status = "running"
 
         end_time_override = None
         if inner_error is not None:

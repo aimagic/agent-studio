@@ -109,6 +109,7 @@ export class NodesGroupModalComponent implements OnChanges, OnInit {
         { data: this.appFlowServ.getInitBranchNodeData() },
         { data: this.appFlowServ.getInitIntentNodeData() },
         { data: this.appFlowServ.getInitCodeNodeData() },
+        { data: this.appFlowServ.getInitTemplateTransformNodeData() },
         { data: this.appFlowServ.getInitComplexIntentDetectionNodeData() },
         { data: this.appFlowServ.getInitLoopNodeData() },
       ],
