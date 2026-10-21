@@ -39,8 +39,10 @@ class RedisClient:
       - 值形态：text_mode=True 视图（str 出入，与旧 decode_responses=True 一致）；
       - 同步版 redis_util.py 已删除（服务内零调用方；SPI 无同步面）；
       - flush_db 已删除（服务内零调用方；SPI 核心面无 FLUSHDB，管理操作走运维通道）；
-      - 哨兵模式的 sentinel 节点独立密码（REDIS_SENTINEL_PASSWORD）暂不支持
-        （RedisProviderSettings 未建模；单机/集群/无密码哨兵不受影响）；
+      - 哨兵模式的 sentinel 节点独立密码（REDIS_SENTINEL_PASSWORD）已建模
+        （RedisProviderSettings.sentinel_password，经 native 哨兵构造透传）；
+        注意：新路径按环境变量原值透传，不做 crypto 解密——若部署以密文
+        形态存储该变量，装配期将得到明确连接错误（fail-fast，非静默）；
       - 装配惰性：initialize() 仅固化配置（同步），首个命令时经工厂建连并 ping 首检。
     """
 

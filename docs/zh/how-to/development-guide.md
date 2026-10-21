@@ -743,7 +743,7 @@ class RedisProvider(ABC):
 |-------|--------|--------|---------|
 | **配置面合并** | 意图识别/记忆走独立的 `DATASOURCE_REDIS_*`（可指向独立实例/db） | 统一并入 `REDIS_*`（同一 `RedisProviderSettings`） | 原本 `DATASOURCE_REDIS_HOST` 与 `REDIS_HOST` **指向不同实例/db** 的部署，升级后这些数据将读空（按默认值降级）——须把数据迁入统一实例，或将 `REDIS_*` 指向原独立实例 |
 | **builder 启动语义** | Redis ping 失败 warn-and-continue | 装配期 ping fail-fast 终止进程（半可用慢性故障显式失败更可运维，与 runtime 一致） | 无 Redis 的 builder 环境须先部署 Redis（平台声明的必选依赖）或保持旧版本 |
-| **哨兵节点密码** | `REDIS_SENTINEL_PASSWORD`（哨兵自身认证，与数据节点密码独立） | 已建模为 `RedisProviderSettings.sentinel_password`（同名环境变量） | 哨兵集群启用 requirepass 的部署确认该变量已透传到新配置面 |
+| **哨兵节点密码** | `REDIS_SENTINEL_PASSWORD`（哨兵自身认证，与数据节点密码独立；旧体系对该值走 crypto 解密） | 已建模为 `RedisProviderSettings.sentinel_password`（同名环境变量）；**按原值透传，不做解密** | 哨兵集群启用 requirepass 的部署确认该变量已透传，且**存储形态须为明文**——若以密文存储，装配期将得到明确连接错误（fail-fast，非静默） |
 
 ### 回退与关闭
 

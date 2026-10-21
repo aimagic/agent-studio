@@ -746,7 +746,7 @@ class RedisProvider(ABC):
 |--------|--------------|--------------|----------------|
 | **Config surface merge** | Intent detection / memory used the separate `DATASOURCE_REDIS_*` vars (could point to a dedicated instance/db) | Merged into the unified `REDIS_*` surface (single `RedisProviderSettings`) | Deployments where `DATASOURCE_REDIS_HOST` differed from `REDIS_HOST` will read empty after the upgrade (values degrade to defaults) — migrate the data into the unified instance, or point `REDIS_*` at the previously dedicated instance |
 | **Builder startup semantics** | Redis ping failure: warn-and-continue | Assembly-time ping fail-fast terminates the process (a half-available chronic failure is better surfaced explicitly, matching runtime) | Builder environments without Redis must deploy one first (Redis is a declared required dependency) or stay on the previous version |
-| **Sentinel node password** | `REDIS_SENTINEL_PASSWORD` (sentinel-node auth, independent of the data-node password) | Modeled as `RedisProviderSettings.sentinel_password` (same env var name) | Sentinel clusters with requirepass should verify the variable is carried into the new config surface |
+| **Sentinel node password** | `REDIS_SENTINEL_PASSWORD` (sentinel-node auth, independent of the data-node password; the legacy scheme crypto-decrypted this value) | Modeled as `RedisProviderSettings.sentinel_password` (same env var name); **passed through verbatim, no decryption** | Sentinel clusters with requirepass should verify the variable is carried into the new config surface **and stored in plaintext** — an encrypted value will fail assembly with an explicit connection error (fail-fast, not silent) |
 
 ### Rollback and Disable
 
