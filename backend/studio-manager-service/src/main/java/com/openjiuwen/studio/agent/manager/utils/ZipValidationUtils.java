@@ -60,11 +60,6 @@ public class ZipValidationUtils {
 
     private static final int MAX_DEPTH = 10;
 
-    private static final Set<String> ALLOWED_FRONTMATTER_FIELDS = Set.of(
-            "name", "description", "license", "allowed-tools", "metadata", "compatibility"
-            , "version", "category", "sources", "- https"
-    );
-
     private static final Pattern NAME_PATTERN = Pattern.compile("^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$");
 
     private static final Pattern DESCRIPTION_PATTERN = Pattern.compile("^[^<]+$");
@@ -539,14 +534,6 @@ public class ZipValidationUtils {
     private static void validateFrontmatter(Map<String, Object> frontmatterYaml,
                                             Path skillMdFile,
                                             Path extractionRoot) {
-
-        // 检查白名单字段
-        for (String field : frontmatterYaml.keySet()) {
-            if (!ALLOWED_FRONTMATTER_FIELDS.contains(field)) {
-                log.error("Invalid frontmatter field: {}", field);
-                throw new AgentStudioException(StudioError.SKILL_MD_INVALID_FIELD);
-            }
-        }
 
         // 检查必填字段
         Object name = frontmatterYaml.get("name");
