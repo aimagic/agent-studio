@@ -2,36 +2,10 @@
  * 变量引用下拉高亮：按 ref 匹配，且克隆树不污染共享 options。
  * 覆盖 bug 5142625 / versatile_variable_Reference_2002 的核心判定。
  */
-
-function isNodeSelected(value: any, node: any): boolean {
-  const selected = value?.[0];
-  if (!selected || !node) {
-    return false;
-  }
-  return selected.ref_node_id === node.ref_node_id && selected.ref_var_name === node.ref_var_name;
-}
-
-function cloneTreeWithSelection(
-  nodes: any[],
-  value: any,
-  selectedKeys: string[] = [],
-): { tree: any[]; selectedKeys: string[] } {
-  const keys = [...selectedKeys];
-  const tree = (nodes || []).map(node => {
-    const selected = isNodeSelected(value, node);
-    const cloned: any = {
-      ...node,
-      selected,
-      expanded: true,
-      children: node.children ? cloneTreeWithSelection(node.children, value, keys).tree : undefined,
-    };
-    if (selected && cloned.key != null) {
-      keys.push(String(cloned.key));
-    }
-    return cloned;
-  });
-  return { tree, selectedKeys: keys };
-}
+import {
+  cloneTreeWithSelection,
+  isNodeSelected,
+} from '../routes/agent-center/app-flow/components/input-tree-select/input-tree-select.utils';
 
 describe('input-tree-select highlight helpers', () => {
   const sharedOptions = [
@@ -78,5 +52,11 @@ describe('input-tree-select highlight helpers', () => {
     const second = cloneTreeWithSelection(sharedOptions[0].children, v2);
     expect(first.tree.filter((n: any) => n.selected).map((n: any) => n.key)).toEqual(['q1']);
     expect(second.tree.filter((n: any) => n.selected).map((n: any) => n.key)).toEqual(['s1']);
+  });
+
+  it('isNodeSelected 按 ref 匹配', () => {
+    const value = [{ ref_node_id: 'node_start', ref_var_name: 'query' }];
+    expect(isNodeSelected(value, sharedOptions[0].children[0])).toBe(true);
+    expect(isNodeSelected(value, sharedOptions[0].children[1])).toBe(false);
   });
 });

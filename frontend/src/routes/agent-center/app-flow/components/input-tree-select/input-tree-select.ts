@@ -11,6 +11,13 @@ import { NodeUtils } from 'src/routes/agent-center/app-flow/components/utils';
 import { WORKFLOW_SVGS } from 'src/routes/agent-center/app-flow/flow.const';
 import type { INodeType, IWorkflowFieldType } from 'src/routes/agent-center/app-flow/node.type';
 import { CdkConnectedOverlay, CdkOverlayOrigin, ConnectedPosition } from '@angular/cdk/overlay';
+import {
+  cloneTreeWithSelection,
+  getCompatibleTypes,
+  isNodeRefSelectable,
+  isNodeSelected as matchSelectedRef,
+  setDifferentTypeDisabledEacl,
+} from './input-tree-select.utils';
 
 @Component({
   selector: 'input-tree-select',
@@ -165,11 +172,7 @@ export class InputTreeSelect implements ControlValueAccessor {
 
   /** 当前节点是否为已选引用（按 ref_node_id + ref_var_name，不依赖对象引用） */
   isNodeSelected(node: any): boolean {
-    const selected = this._value?.[0];
-    if (!selected || !node) {
-      return false;
-    }
-    return selected.ref_node_id === node.ref_node_id && selected.ref_var_name === node.ref_var_name;
+    return matchSelectedRef(this._value, node);
   }
 
   private closeSelectPanel() {
@@ -177,28 +180,6 @@ export class InputTreeSelect implements ControlValueAccessor {
     this.treeSelectIndexList = [];
     this.treeSelectIndex = -1;
     this.selectedTreeKeys = [];
-  }
-
-  /**
-   * 克隆二级树并只在本实例副本上打 selected/expanded，避免多个引用下拉共享 options 时互相污染高亮。
-   */
-  private cloneTreeWithSelection(nodes: any[]): any[] {
-    if (!nodes?.length) {
-      return [];
-    }
-    return nodes.map(node => {
-      const selected = this.isNodeSelected(node);
-      const cloned: any = {
-        ...node,
-        selected,
-        expanded: true,
-        children: node.children ? this.cloneTreeWithSelection(node.children) : undefined,
-      };
-      if (selected && cloned.key != null) {
-        this.selectedTreeKeys.push(String(cloned.key));
-      }
-      return cloned;
-    });
   }
 
   /** 仅计算二级面板滚动位置，不写共享 options */
@@ -227,55 +208,15 @@ export class InputTreeSelect implements ControlValueAccessor {
   }
 
   setDifferentTypeDisabled() {
-    let type: string = this.specifyType;
+    const type: string = this.specifyType;
     if (type) {
-      const compatible = this.getCompatibleTypes(type);
+      const compatible = getCompatibleTypes(type);
       this.options.forEach(item => {
         if (item.children) {
-          item.children = this.setDifferentTypeDisabledEacl(item.children, compatible);
+          item.children = setDifferentTypeDisabledEacl(item.children, compatible);
         }
       });
     }
-  }
-
-  /**
-   * 叶子按兼容类型禁用；中间 object 节点保持可展开，以便选到嵌套同类型字段。
-   * 覆盖插件等入参「引用类型不一致应不可选」场景（bug 5142740）。
-   */
-  setDifferentTypeDisabledEacl(list, compatible: string[]) {
-    return list.map(item => {
-      const hasChildren = !!item.children?.length;
-      if (hasChildren) {
-        item.disabled = false;
-        item.children = this.setDifferentTypeDisabledEacl(item.children, compatible);
-      } else {
-        const itemType = String(item.type ?? '').toLowerCase();
-        item.disabled = itemType.length > 0 && !compatible.includes(itemType);
-      }
-      return item;
-    });
-  }
-
-  /** 与 modal-base.getCompatibleTypes 对齐：string 可引用 file/* 等 */
-  private getCompatibleTypes(type: string): string[] {
-    const t = type?.toLowerCase();
-    if (!t) {
-      return [];
-    }
-    const fileSubTypes = ['default', 'doc', 'txt', 'excel', 'ppt', 'image', 'audio'];
-    if (t === 'string') {
-      return ['string', ...fileSubTypes.map(s => `file/${s}`)];
-    }
-    if (t === 'array<string>') {
-      return ['array<string>', ...fileSubTypes.map(s => `array<file/${s}>`)];
-    }
-    if (t === 'file/default') {
-      return fileSubTypes.map(s => `file/${s}`);
-    }
-    if (t === 'array<file/default>') {
-      return fileSubTypes.map(s => `array<file/${s}>`);
-    }
-    return [t];
   }
 
   onSearch(val) {
@@ -317,7 +258,8 @@ export class InputTreeSelect implements ControlValueAccessor {
     this.cScrollTop = 0;
     this.collectScrollOffset(this.options);
     // 用副本渲染二级树，并带上 selected / nzSelectedKeys
-    this.treeSelectIndexList = this.cloneTreeWithSelection(this.options[i]?.children || []);
+    const cloned = cloneTreeWithSelection(this.options[i]?.children || [], this._value, this.selectedTreeKeys);
+    this.treeSelectIndexList = cloned.tree;
     this.selectDivDom.nativeElement.scrollTop = i * 32;
 
     const searchItems = this.selectDivDom.nativeElement.querySelectorAll('.search-item');
@@ -453,7 +395,7 @@ export class InputTreeSelect implements ControlValueAccessor {
         childItem = this.treeToList(tree[i].children, treeItemText, val);
       }
 
-      if (index >= 0 && tree[i].disabled !== true && text.length > 0) {
+      if (index >= 0 && isNodeRefSelectable(tree[i]) && text.length > 0) {
         list.push({ item: tree[i], text: treeItemText });
       }
       list = [...list, ...childItem];
@@ -463,6 +405,9 @@ export class InputTreeSelect implements ControlValueAccessor {
   }
 
   selectItem(item) {
+    if (!isNodeRefSelectable(item?.item)) {
+      return;
+    }
     this.closeSelectPanel();
     this.value = [item.item];
     setTimeout(() => {
@@ -474,7 +419,8 @@ export class InputTreeSelect implements ControlValueAccessor {
     this.treeSelectIndex = i;
     this.selectedTreeKeys = [];
     // 悬停切换一级时也用副本 + 当前值高亮，避免多个引用字段残留 checked
-    this.treeSelectIndexList = this.cloneTreeWithSelection(this.options[i]?.children || []);
+    const cloned = cloneTreeWithSelection(this.options[i]?.children || [], this._value, this.selectedTreeKeys);
+    this.treeSelectIndexList = cloned.tree;
     const isTop = window.innerHeight - e.clientY < 300;
     if (isTop) {
       this.treeDivPosition = {
@@ -494,7 +440,8 @@ export class InputTreeSelect implements ControlValueAccessor {
   treeNodeLeave(e) {}
 
   onTreeSelect(e) {
-    if (e.node.origin?.disabled) {
+    // 中间节点可展开但类型不兼容时 selectDisabled=true，禁止选中（仍可展开嵌套）
+    if (!isNodeRefSelectable(e.node.origin)) {
       return;
     }
     this.closeSelectPanel();

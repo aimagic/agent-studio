@@ -1335,15 +1335,18 @@ public class WorkflowValidationService {
         }
     }
 
+    /** 路径段：字段名，可选数组下标，如 sys / items[0] */
+    private static final Pattern REF_PATH_SEGMENT = Pattern.compile("^([^\\[\\]]+)(?:\\[(\\d+)\\])?$");
+
     /**
-     * 校验引用变量类型与当前入参声明类型是否兼容。仅处理顶层引用（无 . / []），
-     * 嵌套路径解析失败时跳过，避免误报。
+     * 校验引用变量类型与当前入参声明类型是否兼容。
+     * 支持顶层与嵌套路径（a.b、a[0].b）；路径解析失败时跳过，避免误报。
      */
     private void validateRefTypeMatch(Map<String, Node> nodeMap, Map<String, String> refMap, Node currentNode,
         WorkflowFieldVO field, Set<WorkflowValidationVOErrors> errors) {
         String refNodeId = refMap.get(CommonConstant.Workflow.REF_NODE_ID);
         String refVarName = refMap.get(CommonConstant.Workflow.REF_VAR_NAME);
-        if (StringUtils.isAnyBlank(refNodeId, refVarName) || refVarName.contains(".") || refVarName.contains("[")) {
+        if (StringUtils.isAnyBlank(refNodeId, refVarName)) {
             return;
         }
         Node refNode = nodeMap.get(refNodeId);
@@ -1351,10 +1354,7 @@ public class WorkflowValidationService {
             || CollectionUtils.isEmpty(refNode.getNodeInfo().getOutputs())) {
             return;
         }
-        WorkflowFieldVO refOutput = refNode.getNodeInfo().getOutputs().stream()
-            .filter(out -> Strings.CS.equals(out.getName(), refVarName))
-            .findFirst()
-            .orElse(null);
+        WorkflowFieldVO refOutput = resolveOutputFieldByRefPath(refNode.getNodeInfo().getOutputs(), refVarName);
         if (refOutput == null) {
             return;
         }
@@ -1367,6 +1367,168 @@ public class WorkflowValidationService {
             .setType(currentNode.getType())
             .setReason(MessageFormat.format(i18nUtil.getMessage("workflow.validate.input.type.mismatch"),
                 field.getName(), expected, actual)));
+    }
+
+    /**
+     * 按 ref_var_name 路径解析到具体输出字段（与前端 fields2RefParams 的 names.join('.') 对齐）。
+     * 解析失败返回 null。
+     */
+    private WorkflowFieldVO resolveOutputFieldByRefPath(List<WorkflowFieldVO> outputs, String refVarName) {
+        if (CollectionUtils.isEmpty(outputs) || StringUtils.isBlank(refVarName)) {
+            return null;
+        }
+        String[] segments = refVarName.split("\\.");
+        List<WorkflowFieldVO> currentLevel = outputs;
+        WorkflowFieldVO current = null;
+        for (int i = 0; i < segments.length; i++) {
+            Matcher matcher = REF_PATH_SEGMENT.matcher(segments[i]);
+            if (!matcher.matches()) {
+                return null;
+            }
+            String fieldName = matcher.group(1);
+            boolean hasIndex = matcher.group(2) != null;
+            current = findFieldByName(currentLevel, fieldName);
+            if (current == null) {
+                return null;
+            }
+            boolean isLast = i == segments.length - 1;
+            if (hasIndex) {
+                WorkflowFieldVO elementField = arrayElementAsField(current);
+                if (elementField == null) {
+                    return null;
+                }
+                if (isLast) {
+                    return elementField;
+                }
+                if (!Strings.CI.equals(elementField.getType(), TypeEnum.OBJECT.toString())) {
+                    return null;
+                }
+                currentLevel = schemaAsFieldList(elementField.getSchema());
+                if (currentLevel == null) {
+                    return null;
+                }
+            } else if (!isLast) {
+                if (!Strings.CI.equals(current.getType(), TypeEnum.OBJECT.toString())) {
+                    return null;
+                }
+                currentLevel = schemaAsFieldList(current.getSchema());
+                if (currentLevel == null) {
+                    return null;
+                }
+            }
+        }
+        return current;
+    }
+
+    private WorkflowFieldVO findFieldByName(List<WorkflowFieldVO> fields, String name) {
+        if (CollectionUtils.isEmpty(fields) || StringUtils.isBlank(name)) {
+            return null;
+        }
+        return fields.stream()
+            .filter(f -> f != null && Strings.CS.equals(f.getName(), name))
+            .findFirst()
+            .orElse(null);
+    }
+
+    /**
+     * 将 schema（子字段列表）转为 WorkflowFieldVO 列表；解析失败返回 null。
+     */
+    private List<WorkflowFieldVO> schemaAsFieldList(Object schema) {
+        if (schema == null) {
+            return null;
+        }
+        if (schema instanceof List<?> list) {
+            List<WorkflowFieldVO> result = new ArrayList<>();
+            for (Object item : list) {
+                WorkflowFieldVO vo = coerceToFieldVo(item);
+                if (vo != null) {
+                    result.add(vo);
+                }
+            }
+            return result;
+        }
+        try {
+            List<Object> subFields = JsonUtils.objectToClass(schema);
+            if (subFields == null) {
+                return null;
+            }
+            List<WorkflowFieldVO> result = new ArrayList<>();
+            for (Object item : subFields) {
+                WorkflowFieldVO vo = coerceToFieldVo(item);
+                if (vo != null) {
+                    result.add(vo);
+                }
+            }
+            return result;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private WorkflowFieldVO coerceToFieldVo(Object item) {
+        if (item instanceof WorkflowFieldVO vo) {
+            return vo;
+        }
+        if (item instanceof Map<?, ?> map) {
+            WorkflowFieldVO vo = new WorkflowFieldVO();
+            Object name = map.get("name");
+            Object type = map.get("type");
+            if (name == null || type == null) {
+                return null;
+            }
+            vo.setName(String.valueOf(name));
+            vo.setType(String.valueOf(type));
+            vo.setSchema(map.get("schema"));
+            return vo;
+        }
+        return JsonUtils.objectToClassTypeQuiet(item, WorkflowFieldVO.class);
+    }
+
+    /**
+     * 数组字段的元素描述转为 WorkflowFieldVO，用于 items[0] 路径段。
+     * 支持 type=array + schema 元素描述，或 type=array&lt;T&gt;。
+     */
+    private WorkflowFieldVO arrayElementAsField(WorkflowFieldVO arrayField) {
+        if (arrayField == null || StringUtils.isBlank(arrayField.getType())) {
+            return null;
+        }
+        String type = arrayField.getType().toLowerCase(Locale.ROOT);
+        if (Strings.CS.equals(type, TypeEnum.ARRAY.toString())) {
+            Object elementDesc = arrayField.getSchema();
+            WorkflowFieldVO fromSchema = coerceToFieldVo(elementDesc);
+            if (fromSchema != null && StringUtils.isNotBlank(fromSchema.getType())) {
+                return fromSchema;
+            }
+            String elementType = schemaFieldType(elementDesc);
+            if (StringUtils.isBlank(elementType)) {
+                return null;
+            }
+            WorkflowFieldVO vo = new WorkflowFieldVO();
+            vo.setName(arrayField.getName());
+            vo.setType(elementType);
+            vo.setSchema(schemaFieldSchema(elementDesc));
+            return vo;
+        }
+        if (type.startsWith("array<") && type.endsWith(">")) {
+            String elementType = type.substring(6, type.length() - 1).trim();
+            WorkflowFieldVO vo = new WorkflowFieldVO();
+            vo.setName(arrayField.getName());
+            vo.setType(elementType);
+            // array<object> 时 schema 常为子字段列表；array + 元素描述时取内层 schema
+            Object schema = arrayField.getSchema();
+            if (Strings.CS.equals(elementType, TypeEnum.OBJECT.toString())) {
+                String schemaType = schemaFieldType(schema);
+                if (Strings.CS.equals(schemaType, TypeEnum.OBJECT.toString())) {
+                    vo.setSchema(schemaFieldSchema(schema));
+                } else {
+                    vo.setSchema(schema);
+                }
+            } else {
+                vo.setSchema(schemaFieldSchema(schema));
+            }
+            return vo;
+        }
+        return null;
     }
 
     /**
