@@ -549,10 +549,25 @@
                 </exclusion>
             </exclusions>
         </dependency>
+        <!-- Redis Provider SPI 契约测试基类（studio-manager-api test-jar） -->
         <dependency>
             <groupId>com.openjiuwen</groupId>
-            <artifactId>studio-redis-redisson</artifactId>
+            <artifactId>studio-manager-api</artifactId>
             <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <!-- Redis 默认实现（Redisson）与单点装配 -->
+        <dependency>
+            <artifactId>redisson</artifactId>
+            <groupId>org.redisson</groupId>
+            <version>${redisson.version}</version>
+            <exclusions>
+                <exclusion>
+                    <artifactId>snakeyaml</artifactId>
+                    <groupId>org.yaml</groupId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.httpcomponents.client5</groupId>

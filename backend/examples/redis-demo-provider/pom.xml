@@ -22,14 +22,15 @@
     </properties>
 
     <dependencies>
+        <!-- Redis Provider SPI（studio-manager-api 的 common.redis 包，零 Redisson） -->
         <dependency>
             <groupId>com.openjiuwen</groupId>
-            <artifactId>studio-redis-spi</artifactId>
+            <artifactId>studio-manager-api</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.openjiuwen</groupId>
-            <artifactId>studio-redis-spi</artifactId>
+            <artifactId>studio-manager-api</artifactId>
             <version>${project.version}</version>
             <type>test-jar</type>
             <scope>test</scope>
