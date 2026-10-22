@@ -58,13 +58,22 @@ describe('plugin ref type filter helpers', () => {
     expect(tree[0].children[0].children[0].disabled).toBe(false);
   });
 
-  it('string 入参可兼容 file/image', () => {
+  it('string 入参可兼容 file/image 与 file/video', () => {
     const compatible = getCompatibleTypes('string');
     expect(compatible).toContain('string');
     expect(compatible).toContain('file/image');
-    const tree = setDifferentTypeDisabledEacl([{ type: 'file/image', name: 'img', key: 'i1' }], compatible);
+    expect(compatible).toContain('file/video');
+    const tree = setDifferentTypeDisabledEacl(
+      [
+        { type: 'file/image', name: 'img', key: 'i1' },
+        { type: 'file/video', name: 'vid', key: 'v1' },
+      ],
+      compatible,
+    );
     expect(tree[0].disabled).toBe(false);
     expect(isNodeRefSelectable(tree[0])).toBe(true);
+    expect(tree[1].disabled).toBe(false);
+    expect(isNodeRefSelectable(tree[1])).toBe(true);
   });
 
   it('object 入参可选中同类型中间节点', () => {

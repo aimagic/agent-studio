@@ -1561,7 +1561,7 @@ public class WorkflowValidationService {
     }
 
     private List<String> getCompatibleRefTypes(String type) {
-        List<String> fileSubTypes = List.of("default", "doc", "txt", "excel", "ppt", "image", "audio");
+        List<String> fileSubTypes = List.of("default", "doc", "txt", "excel", "ppt", "image", "audio", "video");
         if (Strings.CS.equals(type, TypeEnum.STRING.toString())) {
             List<String> result = new ArrayList<>();
             result.add("string");

@@ -445,6 +445,12 @@ class WorkflowValidationServiceTest {
     }
 
     @Test
+    void isRefTypeCompatible_stringVsFileVideo_shouldBeTrue() {
+        Boolean ok = (Boolean) invoke("isRefTypeCompatible", "string", "file/video");
+        assertTrue(ok, "string 入参可兼容 file/video");
+    }
+
+    @Test
     void normalizeWorkflowFieldType_arrayWithSchema_shouldExpand() {
         WorkflowFieldVO field = buildField("array", Map.of("type", "string"));
         String normalized = (String) invoke("normalizeWorkflowFieldType", field);

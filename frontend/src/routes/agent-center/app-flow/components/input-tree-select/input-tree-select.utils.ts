@@ -9,7 +9,7 @@ export function getCompatibleTypes(type: string): string[] {
   if (!t) {
     return [];
   }
-  const fileSubTypes = ['default', 'doc', 'txt', 'excel', 'ppt', 'image', 'audio'];
+  const fileSubTypes = ['default', 'doc', 'txt', 'excel', 'ppt', 'image', 'audio', 'video'];
   if (t === 'string') {
     return ['string', ...fileSubTypes.map(s => `file/${s}`)];
   }
