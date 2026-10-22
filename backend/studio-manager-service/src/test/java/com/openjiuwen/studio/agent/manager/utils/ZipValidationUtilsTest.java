@@ -475,7 +475,7 @@ public class ZipValidationUtilsTest {
     }
 
     /**
-     * 测试SKILL.md文件无效字段
+     * 测试SKILL.md文件额外字段被忽略（白名单已移除）
      */
     @Test
     public void testValidateZipFile_InvalidSkillMdFields() throws IOException {
@@ -485,15 +485,14 @@ public class ZipValidationUtilsTest {
 
             ZipEntry skillMdEntry = new ZipEntry("invalid-fields/SKILL.md");
             zos.putNextEntry(skillMdEntry);
-            String invalidContent = "---\nname: test\ninvalid-field: not-allowed\nanother-bad-field: value\n---";
-            zos.write(invalidContent.getBytes(StandardCharsets.UTF_8));
+            String content = "---\nname: invalid-fields\ninvalid-field: not-allowed\nanother-bad-field: value\ndescription: test\n---";
+            zos.write(content.getBytes(StandardCharsets.UTF_8));
             zos.closeEntry();
         }
 
-        AgentStudioException exception = assertThrows(AgentStudioException.class, () -> {
-            ZipValidationUtils.validateZipFile(invalidFields);
-        });
-        assertEquals(StudioError.SKILL_MD_INVALID_FIELD, exception.getErrorCode());
+        Map<String, Object> frontmatter = assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(invalidFields));
+        assertNotNull(frontmatter);
+        assertEquals("invalid-fields", frontmatter.get("name"));
     }
 
     /**
