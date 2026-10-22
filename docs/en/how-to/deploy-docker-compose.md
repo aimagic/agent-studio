@@ -157,7 +157,6 @@ vi .env
 
 - Set `IMAGE_SOURCE=offline`
 - Uncomment the four `STUDIO_*_IMAGE` lines (remove leading `#`; **variable names must start at column 0, no leading spaces**), and replace `TAG_PLACEHOLDER` with the actual version and arch
-- Change `MINIO_IMAGE` and `MINIO_MC_IMAGE` to the fixed tags listed in the table above (e.g. `pgsty/silo:RELEASE.2026-10-18T00-00-00Z`) so they match the images loaded from `dep-images/`; otherwise compose resolves them to the default `latest`, and the pull fails in an offline environment
 - Image name format: `<service>:<version>.<arch>`, the following is an example; **version and arch must be updated according to the downloaded offline image package name and actual setup**
 
 ```bash

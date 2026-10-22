@@ -52,7 +52,7 @@ services:
 
   minio:
     logging: *default-logging
-    image: ${MINIO_IMAGE:-pgsty/silo:latest}
+    image: ${MINIO_IMAGE:-pgsty/silo:RELEASE.2026-10-18T00-00-00Z}
     pull_policy: if_not_present
     restart: always
     ports:
@@ -82,7 +82,7 @@ services:
 
   minio-init:
     logging: *default-logging
-    image: ${MINIO_MC_IMAGE:-pgsty/mc:latest}
+    image: ${MINIO_MC_IMAGE:-pgsty/mc:RELEASE.2026-10-18T00-00-00Z}
     pull_policy: if_not_present
     depends_on:
       minio:
