@@ -320,7 +320,7 @@ jobs:
             echo "     并将 STUDIO_*_IMAGE 填为已加载镜像的完整名称 (docker images 可查)"
             echo "  4. 执行 ./deploy.sh all"
             echo
-            echo "注意: 基础设施镜像 (mysql/redis/minio/minio-mc) 不在本包内, 完全离线部署需自行准备到 deploy/dep-images/"
+            echo "注意: 基础设施镜像 (mysql/redis/pgsty-silo/pgsty-mc) 不在本包内, 完全离线部署需自行准备到 deploy/dep-images/"
           } > README.txt
 
           EXPORTED=0
