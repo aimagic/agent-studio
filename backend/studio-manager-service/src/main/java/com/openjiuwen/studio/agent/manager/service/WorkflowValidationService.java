@@ -1326,8 +1326,99 @@ public class WorkflowValidationService {
                 // 若引用节点存在，增加判断引用节点从属关系
                 validateReference(nodeMap, refMap, node,
                     field.getName(), errors);
+                // 插件 / MCP：引用类型须与入参声明类型兼容（bug 5142740）
+                if (NodeType.PLUGIN.getType().equalsIgnoreCase(node.getType())
+                    || NodeType.MCP.getType().equalsIgnoreCase(node.getType())) {
+                    validateRefTypeMatch(nodeMap, refMap, node, field, errors);
+                }
             }
         }
+    }
+
+    /**
+     * 校验引用变量类型与当前入参声明类型是否兼容。仅处理顶层引用（无 . / []），
+     * 嵌套路径解析失败时跳过，避免误报。
+     */
+    private void validateRefTypeMatch(Map<String, Node> nodeMap, Map<String, String> refMap, Node currentNode,
+        WorkflowFieldVO field, Set<WorkflowValidationVOErrors> errors) {
+        String refNodeId = refMap.get(CommonConstant.Workflow.REF_NODE_ID);
+        String refVarName = refMap.get(CommonConstant.Workflow.REF_VAR_NAME);
+        if (StringUtils.isAnyBlank(refNodeId, refVarName) || refVarName.contains(".") || refVarName.contains("[")) {
+            return;
+        }
+        Node refNode = nodeMap.get(refNodeId);
+        if (refNode == null || refNode.getNodeInfo() == null
+            || CollectionUtils.isEmpty(refNode.getNodeInfo().getOutputs())) {
+            return;
+        }
+        WorkflowFieldVO refOutput = refNode.getNodeInfo().getOutputs().stream()
+            .filter(out -> Strings.CS.equals(out.getName(), refVarName))
+            .findFirst()
+            .orElse(null);
+        if (refOutput == null) {
+            return;
+        }
+        String expected = normalizeWorkflowFieldType(field);
+        String actual = normalizeWorkflowFieldType(refOutput);
+        if (StringUtils.isAnyBlank(expected, actual) || isRefTypeCompatible(expected, actual)) {
+            return;
+        }
+        errors.add(new WorkflowValidationVOErrors().setId(currentNode.getId())
+            .setType(currentNode.getType())
+            .setReason(MessageFormat.format(i18nUtil.getMessage("workflow.validate.input.type.mismatch"),
+                field.getName(), expected, actual)));
+    }
+
+    /**
+     * 将 DSL 字段类型规范为前端一致的展示类型（如 array + schema.string → array&lt;string&gt;）。
+     */
+    private String normalizeWorkflowFieldType(WorkflowFieldVO field) {
+        if (field == null || StringUtils.isBlank(field.getType())) {
+            return "";
+        }
+        String type = field.getType().toLowerCase(Locale.ROOT);
+        if (Strings.CS.equals(type, TypeEnum.ARRAY.toString())) {
+            String elementType = schemaFieldType(field.getSchema());
+            if (StringUtils.isNotBlank(elementType)) {
+                return "array<" + elementType + ">";
+            }
+        }
+        return type;
+    }
+
+    /**
+     * 期望类型与引用类型是否兼容（与前端 input-tree-select 兼容表对齐）。
+     */
+    private boolean isRefTypeCompatible(String expectedType, String actualType) {
+        if (StringUtils.isAnyBlank(expectedType, actualType)) {
+            return true;
+        }
+        String expected = expectedType.toLowerCase(Locale.ROOT);
+        String actual = actualType.toLowerCase(Locale.ROOT);
+        return getCompatibleRefTypes(expected).contains(actual);
+    }
+
+    private List<String> getCompatibleRefTypes(String type) {
+        List<String> fileSubTypes = List.of("default", "doc", "txt", "excel", "ppt", "image", "audio");
+        if (Strings.CS.equals(type, TypeEnum.STRING.toString())) {
+            List<String> result = new ArrayList<>();
+            result.add("string");
+            fileSubTypes.forEach(s -> result.add("file/" + s));
+            return result;
+        }
+        if (Strings.CS.equals(type, "array<string>")) {
+            List<String> result = new ArrayList<>();
+            result.add("array<string>");
+            fileSubTypes.forEach(s -> result.add("array<file/" + s + ">"));
+            return result;
+        }
+        if (Strings.CS.equals(type, "file/default")) {
+            return fileSubTypes.stream().map(s -> "file/" + s).toList();
+        }
+        if (Strings.CS.equals(type, "array<file/default>")) {
+            return fileSubTypes.stream().map(s -> "array<file/" + s + ">").toList();
+        }
+        return List.of(type);
     }
 
     private void validateConfig(Object element, IRConfig irConfig, ValidateConfigWrapper ValidateConfigData) {

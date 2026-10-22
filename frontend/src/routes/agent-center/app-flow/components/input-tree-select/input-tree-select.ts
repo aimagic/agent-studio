@@ -60,6 +60,8 @@ export class InputTreeSelect implements ControlValueAccessor {
     tr: '',
   };
   searchVal = '';
+  /** 二级树当前选中 key，避免污染共享 options 上的 checked/selected */
+  selectedTreeKeys: string[] = [];
   @ViewChild('selectDivDom') selectDivDom: ElementRef;
   @ViewChild('selectTreeDom') selectTreeDom: ElementRef;
   @ViewChild('inputDom') inputDom: ElementRef;
@@ -146,39 +148,134 @@ export class InputTreeSelect implements ControlValueAccessor {
   selectClick(event: Event) {
     event.stopPropagation();
     if (this.showSelectDiv) {
-      this.showSelectDiv = false;
-      this.treeSelectIndexList = [];
-      this.treeSelectIndex = -1;
+      this.closeSelectPanel();
       this.control?.controls?.[this.name]?.markAsDirty();
       this.vInvalid = !!this.control?.controls?.[this.name]?.errors && this.control?.controls?.[this.name]?.dirty;
     } else {
       this.showSelectDiv = true;
       this.searchVal = '';
       this.setDifferentTypeDisabled();
+      // 先按当前值算 path，再定位高亮（重开页面 / 多次换引用后必走）
+      this.setShowValRoute();
       setTimeout(() => {
         this.findTreeSelectIndex();
       }, 0);
     }
   }
 
+  /** 当前节点是否为已选引用（按 ref_node_id + ref_var_name，不依赖对象引用） */
+  isNodeSelected(node: any): boolean {
+    const selected = this._value?.[0];
+    if (!selected || !node) {
+      return false;
+    }
+    return selected.ref_node_id === node.ref_node_id && selected.ref_var_name === node.ref_var_name;
+  }
+
+  private closeSelectPanel() {
+    this.showSelectDiv = false;
+    this.treeSelectIndexList = [];
+    this.treeSelectIndex = -1;
+    this.selectedTreeKeys = [];
+  }
+
+  /**
+   * 克隆二级树并只在本实例副本上打 selected/expanded，避免多个引用下拉共享 options 时互相污染高亮。
+   */
+  private cloneTreeWithSelection(nodes: any[]): any[] {
+    if (!nodes?.length) {
+      return [];
+    }
+    return nodes.map(node => {
+      const selected = this.isNodeSelected(node);
+      const cloned: any = {
+        ...node,
+        selected,
+        expanded: true,
+        children: node.children ? this.cloneTreeWithSelection(node.children) : undefined,
+      };
+      if (selected && cloned.key != null) {
+        this.selectedTreeKeys.push(String(cloned.key));
+      }
+      return cloned;
+    });
+  }
+
+  /** 仅计算二级面板滚动位置，不写共享 options */
+  private collectScrollOffset(list: any[]) {
+    if (!list?.length || !this.path?.[0] || !this._value?.[0]) {
+      return;
+    }
+    for (const value of list) {
+      if (this.path[0].ref_node_id === value.ref_node_id && this.path[0].ref_var_name === value.ref_var_name) {
+        this.cScrollStartCt = true;
+        this.cScrollTop = 0;
+      }
+      if (
+        this.cScrollStartCt &&
+        (this.path[0].ref_node_id !== value.ref_node_id || this.path[0].ref_var_name !== value.ref_var_name)
+      ) {
+        this.cScrollTop += 1;
+      }
+      if (this.isNodeSelected(value)) {
+        this.cScrollStartCt = false;
+      }
+      if (value.children?.length) {
+        this.collectScrollOffset(value.children);
+      }
+    }
+  }
+
   setDifferentTypeDisabled() {
     let type: string = this.specifyType;
     if (type) {
+      const compatible = this.getCompatibleTypes(type);
       this.options.forEach(item => {
         if (item.children) {
-          item.children = this.setDifferentTypeDisabledEacl(item.children, type);
+          item.children = this.setDifferentTypeDisabledEacl(item.children, compatible);
         }
       });
     }
   }
-  setDifferentTypeDisabledEacl(list, type) {
+
+  /**
+   * 叶子按兼容类型禁用；中间 object 节点保持可展开，以便选到嵌套同类型字段。
+   * 覆盖插件等入参「引用类型不一致应不可选」场景（bug 5142740）。
+   */
+  setDifferentTypeDisabledEacl(list, compatible: string[]) {
     return list.map(item => {
-      item.disabled = item.type !== type;
-      if (item.children) {
-        item.children = this.setDifferentTypeDisabledEacl(item.children, type);
+      const hasChildren = !!item.children?.length;
+      if (hasChildren) {
+        item.disabled = false;
+        item.children = this.setDifferentTypeDisabledEacl(item.children, compatible);
+      } else {
+        const itemType = String(item.type ?? '').toLowerCase();
+        item.disabled = itemType.length > 0 && !compatible.includes(itemType);
       }
       return item;
     });
+  }
+
+  /** 与 modal-base.getCompatibleTypes 对齐：string 可引用 file/* 等 */
+  private getCompatibleTypes(type: string): string[] {
+    const t = type?.toLowerCase();
+    if (!t) {
+      return [];
+    }
+    const fileSubTypes = ['default', 'doc', 'txt', 'excel', 'ppt', 'image', 'audio'];
+    if (t === 'string') {
+      return ['string', ...fileSubTypes.map(s => `file/${s}`)];
+    }
+    if (t === 'array<string>') {
+      return ['array<string>', ...fileSubTypes.map(s => `array<file/${s}>`)];
+    }
+    if (t === 'file/default') {
+      return fileSubTypes.map(s => `file/${s}`);
+    }
+    if (t === 'array<file/default>') {
+      return fileSubTypes.map(s => `array<file/${s}>`);
+    }
+    return [t];
   }
 
   onSearch(val) {
@@ -198,8 +295,8 @@ export class InputTreeSelect implements ControlValueAccessor {
         this.cdr.markForCheck();
       }, 200);
     } else {
-      this.treeSelectIndexList = [];
-      this.treeSelectIndex = -1;
+      // 清空搜索后恢复当前值的一二级高亮
+      this.findTreeSelectIndex();
     }
   }
 
@@ -215,7 +312,12 @@ export class InputTreeSelect implements ControlValueAccessor {
     }
     const i = this.path[0].treeIndex;
     this.treeSelectIndex = i;
-    this.treeSelectIndexList = this.options[i]?.children || [];
+    this.selectedTreeKeys = [];
+    this.cScrollStartCt = false;
+    this.cScrollTop = 0;
+    this.collectScrollOffset(this.options);
+    // 用副本渲染二级树，并带上 selected / nzSelectedKeys
+    this.treeSelectIndexList = this.cloneTreeWithSelection(this.options[i]?.children || []);
     this.selectDivDom.nativeElement.scrollTop = i * 32;
 
     const searchItems = this.selectDivDom.nativeElement.querySelectorAll('.search-item');
@@ -239,32 +341,13 @@ export class InputTreeSelect implements ControlValueAccessor {
         tr: 'translateY(0%)',
       };
     }
-    this.options.forEach(this.foreachOption);
     setTimeout(() => {
-      this.selectTreeDom.nativeElement.scrollTop = (this.cScrollTop - 3) * 32;
+      if (this.selectTreeDom?.nativeElement) {
+        this.selectTreeDom.nativeElement.scrollTop = Math.max(0, (this.cScrollTop - 3) * 32);
+      }
+      this.cdr.markForCheck();
     }, 10);
-    return;
   }
-
-  foreachOption = (value, index) => {
-    if (this.path[0].ref_node_id === value.ref_node_id && this.path[0].ref_var_name === value.ref_var_name) {
-      this.cScrollStartCt = true;
-      this.cScrollTop = 0;
-    }
-    if (this.cScrollStartCt && (this.path[0].ref_node_id !== value.ref_node_id || this.path[0].ref_var_name !== value.ref_var_name)) {
-      this.cScrollTop += 1;
-    }
-    if (this._value[0].ref_node_id === value.ref_node_id && this._value[0].ref_var_name === value.ref_var_name) {
-      value.checked = true;
-      this.cScrollStartCt = false;
-    } else {
-      value.checked = false;
-    }
-    value.expanded = true;
-    if (value.children) {
-      value.children.forEach(this.foreachOption);
-    }
-  };
 
   @HostListener('document:click', ['$event'])
   onClick(event: MouseEvent) {
@@ -277,9 +360,7 @@ export class InputTreeSelect implements ControlValueAccessor {
     if (!isInside && !isOwnOverlay) {
       this.control?.controls?.[this.name]?.markAsDirty();
       this.vInvalid = !!this.control?.controls?.[this.name]?.errors && this.control?.controls?.[this.name]?.dirty;
-      this.showSelectDiv = false;
-      this.treeSelectIndexList = [];
-      this.treeSelectIndex = -1;
+      this.closeSelectPanel();
     }
   }
 
@@ -382,9 +463,7 @@ export class InputTreeSelect implements ControlValueAccessor {
   }
 
   selectItem(item) {
-    this.showSelectDiv = false;
-    this.treeSelectIndexList = [];
-    this.treeSelectIndex = -1;
+    this.closeSelectPanel();
     this.value = [item.item];
     setTimeout(() => {
       this.select.emit();
@@ -393,7 +472,9 @@ export class InputTreeSelect implements ControlValueAccessor {
 
   treeNodeEnter(e, i) {
     this.treeSelectIndex = i;
-    this.treeSelectIndexList = this.options[i].children || [];
+    this.selectedTreeKeys = [];
+    // 悬停切换一级时也用副本 + 当前值高亮，避免多个引用字段残留 checked
+    this.treeSelectIndexList = this.cloneTreeWithSelection(this.options[i]?.children || []);
     const isTop = window.innerHeight - e.clientY < 300;
     if (isTop) {
       this.treeDivPosition = {
@@ -416,9 +497,7 @@ export class InputTreeSelect implements ControlValueAccessor {
     if (e.node.origin?.disabled) {
       return;
     }
-    this.showSelectDiv = false;
-    this.treeSelectIndexList = [];
-    this.treeSelectIndex = -1;
+    this.closeSelectPanel();
     this.value = [e.node.origin];
     setTimeout(() => {
       this.select.emit();
