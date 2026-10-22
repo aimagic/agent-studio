@@ -20,9 +20,9 @@
 
 | 位置 | 角色 | 依赖 |
 |---|---|---|
-| `studio-manager-api` 内 `common.redis` 包 | SPI：`RedisClient` 接口（零 Redisson）+ `RedisLock` + `spi/`（Factory/Context/Exception）+ Wrapper + 契约基类（test-jar） | 无 Redisson |
-| `studio-manager-service` 内 `common.redis` 包 | 缺省实现（Redisson）+ 单点装配 `RedisProviderAutoConfig` / `RedisProviderResolver` / `RedisClientConfig` | api + redisson |
-| `examples/redis-demo-provider` | 接入示例（`-Pexamples` 门控，不进产品 reactor） | manager-api |
+| `studio-manager-api` 内 `common.redis` 包 | SPI：`RedisClient` 接口（零 Redisson）+ `RedisLock` + `spi/`（Factory/Context/Exception）+ Wrapper | 无 Redisson |
+| `studio-manager-service` 内 `common.redis` 包 | 缺省实现（Redisson）+ 单点装配 `RedisProviderAutoConfig` / `RedisProviderResolver` / `RedisClientConfig` + 契约基类 `RedisContractTestBase`（测试树） | api + redisson |
+| `examples/redis-demo-provider` | 接入示例（`-Pexamples` 门控，不进产品 reactor；契约基类为测试源自带副本，与 manager-service 同源） | manager-api |
 
 ## 2. 核心契约（Python 协议面）
 
@@ -132,7 +132,7 @@ REDIS_CONTRACT_TARGET=native REDIS_HOST=127.0.0.1 REDIS_PORT=6379 REDIS_PASSWORD
   python -m pytest --pyargs redis_contract_tests -q
 ```
 
-### 5.2 Java（studio-manager-api test-jar：`RedisContractTestBase`，17 用例）
+### 5.2 Java（`RedisContractTestBase`，17 用例；基类位于 studio-manager-service 测试树，demo 工程自带同源副本）
 
 String/Key 语义、真实 TTL 过期、返回哨兵、锁互斥与等待超时、List 边界（负索引/lTrim）、
 计数器、`setAndKeepTtl` 保留剩余 TTL、`getRaw`、每用例独立前缀 + 清理。

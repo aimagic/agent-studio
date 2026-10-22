@@ -21,9 +21,10 @@ mvn -Pexamples -pl examples/redis-demo-provider -am package
 
 ## 契约验收
 
-`DemoProviderContractTest` 继承 `studio-manager-api`（`common.redis` 包）的契约基类 `RedisContractTestBase`，
-与默认 Redisson 实现跑同一套用例（String/Key、TTL、返回哨兵、锁互斥/超时、List 边界、计数器、
-setAndKeepTtl、原文读取）。企业接入时照此提供自己实现的子类即可复用全部验收用例。
+`DemoProviderContractTest` 继承契约基类 `RedisContractTestBase`（本工程测试源自带副本，
+与 studio-manager-service 测试树同源），与默认 Redisson 实现跑同一套用例（String/Key、TTL、返回哨兵、
+锁互斥/超时、List 边界、计数器、setAndKeepTtl、原文读取）。企业接入时连同基类副本一起拷贝、
+提供自己实现的子类即可复用全部验收用例。
 
 ## 接入 manager（两种注入方式）
 
