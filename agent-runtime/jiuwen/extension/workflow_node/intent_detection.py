@@ -979,7 +979,8 @@ class IntentDetection(WorkflowComponent):
             current_inputs.update({CHAT_HISTORY: chat_history_str})
 
         if self.intent_config.enable_input:
-            current_inputs.update({INPUT: inputs.get(INPUT)})
+            user_fields = inputs.get("userFields", {}) if isinstance(inputs, dict) else {}
+            current_inputs.update({INPUT: user_fields.get(INPUT)})
 
         current_inputs["global_intent_map"] = global_intent_map
         return current_inputs
