@@ -575,7 +575,7 @@ class WorkflowRunner:
             if not is_resuming:
                 yield {
                     "event": "workflow_start",
-                    "data": {},
+                    "data": {"workflow_id": workflow_id} if workflow_id else {},
                     "index": 0,
                     "executionId": exec_id,
                     "createdTime": wf_start_time,

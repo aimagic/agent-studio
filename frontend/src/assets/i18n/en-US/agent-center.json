@@ -1382,6 +1382,8 @@
   "feedback_empty_tips": "Please select or fill in the problem you have encountered",
   "stream_output": "Streaming Output",
   "stream_output_tips": "Foundation model node. Streaming or non-streaming output can be configured independently. Default: streaming output.",
+  "allow_literal_braces": "Allow Literal Braces",
+  "allow_literal_braces_tips": "When enabled, only declared input parameters are treated as variables. Other {{...}} in the prompt are sent to the model as plain text. Off by default to keep legacy behavior.",
   "content_review_configuration": "Content Moderation Settings",
   "content_review_configuration_tips": "Specific LLM output fields are filtered out before being returned to users.",
   "keywords": "Sensitive Words",

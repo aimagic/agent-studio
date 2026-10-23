@@ -510,6 +510,24 @@
             </div>
           </div>
           <div class="llm-modal-block mt-[16px]">
+            <div class="mt-4 flex items-center justify-between w-full">
+              <div class="flex items-center gap-1">
+                <div class="flex items-center gap-1">
+                  <div>{{ 'allow_literal_braces' | i18nextEager }}</div>
+                  <span
+                    nz-tooltip
+                    [nzTooltipTitle]="'allow_literal_braces_tips' | i18nextEager"
+                    nzTooltipMaxWidth="420px"
+                    nz-icon
+                    nzType="question-circle"
+                    nzTheme="outline"
+                  ></span>
+                </div>
+              </div>
+              <nz-switch class="ml-1" formControlName="allowLiteralBraces"></nz-switch>
+            </div>
+          </div>
+          <div class="llm-modal-block mt-[16px]">
             <div>
               <div class="mb-2 flex justify-between">
                 <div>
@@ -576,6 +594,7 @@
                 class="block w-full"
                 [(ngModel)]="systemPrompt"
                 [variants]="tipVals"
+                [highlightKnownOnly]="modelFormGroup.controls.allowLiteralBraces.value"
                 [ngModelOptions]="{ standalone: true }"
                 (ngModelChange)="changeUpdateTime()"
                 (blur)="inputOnSave()"
@@ -652,6 +671,7 @@
                 class="block w-full"
                 [(ngModel)]="prompt"
                 [variants]="tipVals"
+                [highlightKnownOnly]="modelFormGroup.controls.allowLiteralBraces.value"
                 [ngModelOptions]="{ standalone: true }"
                 (ngModelChange)="changeUpdateTime()"
                 (blur)="inputOnSave()"

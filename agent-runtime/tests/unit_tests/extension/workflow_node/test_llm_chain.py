@@ -544,3 +544,23 @@ class TestRenderPromptWithWhitespace:
         chain = LLMChain(conf=_make_llm_chain_conf())
         with pytest.raises(ExecutionError, match="Error parsing the placeholder"):
             chain._render_prompt("{{query.aa}}", {"query": "你好"})
+
+    def test_render_keeps_literal_braces_when_enabled(self):
+        chain = LLMChain(conf=_make_llm_chain_conf())
+        chain._conf["allowLiteralBraces"] = True
+        result = chain._render_prompt(
+            "你好{{query}}，示例：{{中文示例}}",
+            {"query": "世界"},
+        )
+        assert result == "你好世界，示例：{{中文示例}}"
+
+    def test_validate_allows_non_safe_placeholder_when_literal_enabled(self):
+        chain = LLMChain(conf=_make_llm_chain_conf())
+        chain._conf["allowLiteralBraces"] = True
+        chain._validate_prompt_template("保留 {{中文}} 与 {{query}}")
+
+    def test_validate_still_blocks_dangerous_when_literal_enabled(self):
+        chain = LLMChain(conf=_make_llm_chain_conf())
+        chain._conf["allowLiteralBraces"] = True
+        with pytest.raises(ValueError, match="dangerous placeholder"):
+            chain._validate_prompt_template("{{query.__class__}}")

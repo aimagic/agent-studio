@@ -1032,6 +1032,7 @@ export class AppFlowService {
         stream: true,
         response_format: 'text',
         system_prompt: '',
+        allow_literal_braces: false,
       },
     };
   }

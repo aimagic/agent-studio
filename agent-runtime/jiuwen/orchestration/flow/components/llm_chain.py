@@ -859,10 +859,15 @@ class LLMChain(Invokable):
             tools=inputs.get("tools", []),
         )
 
+    def _allow_literal_braces(self) -> bool:
+        """节点开关：未声明/非安全名的 {{...}} 按字面量保留，默认关闭。"""
+        return bool(self._conf.get("allowLiteralBraces", False))
+
     def _validate_prompt_instance(self, prompt_instance: Prompt) -> None:
         """
         在 invoke 之前校验模板源，拦截危险占位符（如 query.__class__、表达式等）。
         只依赖模板字符串，不依赖运行时 inputs。
+        allowLiteralBraces=True 时仅对合法标识符占位符做危险校验。
         """
         template = getattr(prompt_instance, "template", None)
         if template is None:
@@ -883,10 +888,20 @@ class LLMChain(Invokable):
         placeholder_safe_pattern = re.compile(
             r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$"
         )
+        allow_literal = self._allow_literal_braces()
 
         for text in texts:
             for match in placeholder_find_pattern.finditer(text):
                 placeholder = match.group(1).strip()
+
+                if allow_literal:
+                    if not placeholder_safe_pattern.fullmatch(placeholder):
+                        continue
+                    if "__" in placeholder:
+                        raise ValueError(
+                            f"Invalid or dangerous placeholder: '{placeholder}'"
+                        )
+                    continue
 
                 if (
                     not placeholder

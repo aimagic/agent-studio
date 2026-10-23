@@ -88,7 +88,14 @@ class WorkflowEventsProcessor(BaseEventsProcessor):
 
     @classmethod
     def process_workflow_start(cls, full_data: Dict[str, Any], trace: Trace = None) -> Any:
+        src = full_data.get("data") or {}
         data = {"start_time": full_data.get("createdTime")}
+        # 透传 workflow_id / workflow_name，便于多工作流/子工作流区分
+        if isinstance(src, dict):
+            if src.get("workflow_id"):
+                data["workflow_id"] = src["workflow_id"]
+            if src.get("workflow_name"):
+                data["workflow_name"] = src["workflow_name"]
         return EventField(
             event=EventMapping.WORKFLOW_START.value,
             data=data,
