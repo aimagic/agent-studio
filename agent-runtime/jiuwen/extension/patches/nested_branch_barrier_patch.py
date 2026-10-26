@@ -123,11 +123,13 @@ def _build_branch_parent_patched(self) -> dict[str, str]:
             else:
                 reachable = self._forward_reachable(target)
                 for inner_bn in nested_branch_nodes:
-                    if inner_bn != branch_node_id and inner_bn in reachable:
-                        if inner_bn not in parent and not _would_create_cycle(
-                            parent, inner_bn, branch_node_id
-                        ):
-                            parent[inner_bn] = branch_node_id
+                    if (
+                        inner_bn != branch_node_id
+                        and inner_bn in reachable
+                        and inner_bn not in parent
+                        and not _would_create_cycle(parent, inner_bn, branch_node_id)
+                    ):
+                        parent[inner_bn] = branch_node_id
     return parent
 
 

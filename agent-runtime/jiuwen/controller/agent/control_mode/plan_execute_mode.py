@@ -1169,16 +1169,7 @@ class PlanExecuteMode(BaseMode):
                 execution_id=self.task_id,
             )
 
-        elif event_type == "api_exec_data":
-            yield StreamData(
-                code=StreamCode.PE_API_EXEC_DATA.value,
-                msg="api_exec_data",
-                data={"answer": normalized_data},
-                execution_id=self.task_id,
-            )
-
-        elif event_type == "error":
-            # 插件执行错误
+        elif event_type in ("api_exec_data", "error"):
             yield StreamData(
                 code=StreamCode.PE_API_EXEC_DATA.value,
                 msg="api_exec_data",

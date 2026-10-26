@@ -539,16 +539,13 @@ class WorkflowWrapper:
     def _is_skip_component(chunk: Any) -> bool:
         """检查 chunk 是否来自内部控制流节点（_parallel_done 等），命中则跳过。"""
         comp_id = ""
-        if isinstance(chunk, TraceSchema):
+        if isinstance(chunk, (TraceSchema, OutputSchema)):
             payload = chunk.payload if isinstance(chunk.payload, dict) else {}
             comp_id = payload.get("componentId", "")
         elif isinstance(chunk, CustomSchema):
             comp_id = getattr(chunk, "componentId", "") or ""
             if not comp_id and isinstance(getattr(chunk, "data", None), dict):
                 comp_id = chunk.data.get("componentId", "")
-        elif isinstance(chunk, OutputSchema):
-            payload = chunk.payload if isinstance(chunk.payload, dict) else {}
-            comp_id = payload.get("componentId", "")
         if not comp_id:
             return False
         return any(key in comp_id for key in _SKIP_COMPONENT_KEY)
