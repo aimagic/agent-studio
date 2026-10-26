@@ -32,7 +32,7 @@ class I18nUtilTest {
 
     @Test
     void testGetMessage_ByCode() {
-        when(messageSource.getMessage(eq("test.code"), any(Object[].class), any(Locale.class)))
+        when(messageSource.getMessage(eq("test.code"), any(Object[].class), eq("test.code"), any(Locale.class)))
                 .thenReturn("Test Message");
         String result = i18nUtil.getMessage("test.code");
         assertEquals("Test Message", result);
@@ -40,7 +40,7 @@ class I18nUtilTest {
 
     @Test
     void testGetMessage_ByStudioError() {
-        when(messageSource.getMessage(any(String.class), any(Object[].class), any(Locale.class)))
+        when(messageSource.getMessage(any(String.class), any(Object[].class), any(String.class), any(Locale.class)))
                 .thenReturn("Error Message");
         String result = i18nUtil.getMessage(StudioError.UNEXPECTED_ERROR);
         assertNotNull(result);
@@ -65,7 +65,7 @@ class I18nUtilTest {
     @Test
     void testGetMessage_ByException() {
         AgentStudioException exception = new AgentStudioException(StudioError.UNEXPECTED_ERROR, "detail");
-        when(messageSource.getMessage(any(String.class), any(Object[].class), any(Locale.class)))
+        when(messageSource.getMessage(any(String.class), any(Object[].class), any(String.class), any(Locale.class)))
                 .thenReturn("msg");
         ErrorInfo result = i18nUtil.getMessage(exception);
         assertNotNull(result);
