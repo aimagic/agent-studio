@@ -798,7 +798,7 @@
                 agent_variables = #{agentInfo.agentVariables,typeHandler=com.openjiuwen.studio.agent.manager.mapper.handler.AgentVariableArrayHandler},
             </if>
             <if test="agentInfo.inputVariables != null">
-                agent_variables = #{agentInfo.inputVariables,typeHandler=com.openjiuwen.studio.agent.manager.mapper.handler.AgentInputVariableArrayHandler},
+                input_variables = #{agentInfo.inputVariables,typeHandler=com.openjiuwen.studio.agent.manager.mapper.handler.AgentInputVariableArrayHandler},
             </if>
             <if test="agentInfo.memoryConfig != null">
                 memory_config = #{agentInfo.memoryConfig,typeHandler=com.openjiuwen.studio.agent.manager.mapper.handler.ModelConfigHandler},
