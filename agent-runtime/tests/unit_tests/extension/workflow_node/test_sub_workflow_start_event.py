@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""SubWorkflow 子工作流 workflow_start / workflow_id 打标。"""
+"""SubWorkflow：嵌套子图不向外透出 workflow_start / 子 workflow_id。"""
 
 from __future__ import annotations
 
@@ -37,86 +37,45 @@ def _make_sub_workflow(workflow_id: str = "child-wf-uuid") -> SubWorkflow:
     return sw
 
 
-class TestChildWorkflowMeta:
-    @staticmethod
-    def test_reads_reference_id_and_name():
-        sw = _make_sub_workflow("75ae9255-121d-4bf2-ab95-915e8ef48416")
-        meta = getattr(sw, "_child_workflow_meta")()
-        assert meta["workflow_id"] == "75ae9255-121d-4bf2-ab95-915e8ef48416"
-        assert meta["workflow_name"] == "子流程A"
+class TestNestedWorkflowLifecycleFiltered:
+    """多控制器只需挂载工作流的一条 start；嵌套 SubWorkflow lifecycle 应被丢弃。"""
 
-
-class TestEnrichChildWorkflowId:
     @staticmethod
-    def test_fills_missing_workflow_id():
-        sw = _make_sub_workflow("child-1")
-        out = getattr(sw, "_enrich_child_workflow_id")(
-            {"answer": "hi", "node_id": "n1"}
+    def test_drops_workflow_start_without_forwarding():
+        sw = _make_sub_workflow("child-wf-uuid")
+        session = MagicMock()
+        session.write_stream = AsyncMock()
+        chunk = OutputSchema(
+            type="workflow_start",
+            index=1,
+            payload={"workflow_id": "from-nested-child"},
         )
-        assert out["workflow_id"] == "child-1"
-        assert out["workflow_name"] == "子流程A"
-        assert out["answer"] == "hi"
+        result = asyncio.run(
+            getattr(sw, "_process_stream_chunk")(chunk, session, MagicMock(), {})
+        )
+        assert result is None
+        session.write_stream.assert_not_called()
 
     @staticmethod
-    def test_keeps_existing_workflow_id():
-        sw = _make_sub_workflow("child-1")
-        out = getattr(sw, "_enrich_child_workflow_id")(
-            {"answer": "hi", "workflow_id": "already-set"}
-        )
-        assert out["workflow_id"] == "already-set"
-
-
-def test_emit_child_workflow_start_writes_stream():
-    sw = _make_sub_workflow("child-wf-uuid")
-    session = MagicMock()
-    session.get_component_id.return_value = "node_sub"
-    session.write_stream = AsyncMock()
-
-    asyncio.run(getattr(sw, "_emit_child_workflow_start")(session))
-
-    session.write_stream.assert_awaited_once()
-    chunk = session.write_stream.await_args.args[0]
-    assert isinstance(chunk, OutputSchema)
-    assert chunk.type == "workflow_start"
-    assert chunk.payload["workflow_id"] == "child-wf-uuid"
-    assert chunk.payload["parentNodeId"] == "node_sub"
-
-
-def test_process_stream_chunk_forwards_workflow_start():
-    sw = _make_sub_workflow("child-wf-uuid")
-    session = MagicMock()
-    session.get_component_id.return_value = "node_sub"
-    session.write_stream = AsyncMock()
-
-    chunk = OutputSchema(
-        type="workflow_start",
-        index=1,
-        payload={"workflow_id": "from-child"},
-    )
-    result = asyncio.run(
-        getattr(sw, "_process_stream_chunk")(chunk, session, MagicMock(), {})
-    )
-    assert result is None
-    session.write_stream.assert_awaited_once()
-    written = session.write_stream.await_args.args[0]
-    assert written.type == "workflow_start"
-    assert written.payload["workflow_id"] == "from-child"
-    assert written.payload["parentNodeId"] == "node_sub"
-
-
-def test_process_stream_chunk_still_drops_start_and_end():
-    sw = _make_sub_workflow()
-    session = MagicMock()
-    session.write_stream = AsyncMock()
-    process = getattr(sw, "_process_stream_chunk")
-    for t in ("start", "workflow_end"):
-        r = asyncio.run(
-            process(
-                OutputSchema(type=t, index=0, payload={}),
-                session,
-                MagicMock(),
-                {},
+    def test_drops_start_and_workflow_end():
+        sw = _make_sub_workflow()
+        session = MagicMock()
+        session.write_stream = AsyncMock()
+        process = getattr(sw, "_process_stream_chunk")
+        for t in ("start", "workflow_start", "workflow_end"):
+            r = asyncio.run(
+                process(
+                    OutputSchema(type=t, index=0, payload={}),
+                    session,
+                    MagicMock(),
+                    {},
+                )
             )
-        )
-        assert r is None
-    session.write_stream.assert_not_called()
+            assert r is None
+        session.write_stream.assert_not_called()
+
+    @staticmethod
+    def test_no_emit_helper_for_nested_start():
+        sw = _make_sub_workflow()
+        assert not hasattr(sw, "_emit_child_workflow_start")
+        assert not hasattr(sw, "_enrich_child_workflow_id")

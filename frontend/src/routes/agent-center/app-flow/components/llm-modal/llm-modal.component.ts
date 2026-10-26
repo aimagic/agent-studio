@@ -216,7 +216,6 @@ export class LLMModalComponent extends ModalBaseComponent implements OnInit, OnD
     enableHistory: [false],
     enableMemory: [false],
     stream: [true],
-    allowLiteralBraces: [false],
   });
 
   public showModelSetRef = false;
@@ -367,7 +366,6 @@ export class LLMModalComponent extends ModalBaseComponent implements OnInit, OnD
       enableHistory: this.nodeInfo.configs.enable_history ?? false,
       stream: this.nodeInfo.configs?.stream ?? true,
       enableMemory: Boolean(this.nodeInfo.configs?.enable_memory),
-      allowLiteralBraces: Boolean(this.nodeInfo.configs?.allow_literal_braces),
     });
 
     this.prompt = this.nodeInfo.configs.template_content;
@@ -872,7 +870,6 @@ export class LLMModalComponent extends ModalBaseComponent implements OnInit, OnD
         ...this.nodeInfo.configs,
         enable_history: this.modelFormGroup.controls.enableHistory.value,
         stream: this.modelFormGroup.controls.stream.value,
-        allow_literal_braces: !!this.modelFormGroup.controls.allowLiteralBraces.value,
         template_content: this.prompt,
         system_prompt: this.systemPrompt,
         model: {

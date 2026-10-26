@@ -1402,8 +1402,6 @@
   "feedback_empty_tips": "请选择或填写您遇到的问题",
   "stream_output": "流式输出",
   "stream_output_tips": "大模型节点，支持独立配置流式或非流式输出。默认为流式输出。",
-  "allow_literal_braces": "允许字面量花括号",
-  "allow_literal_braces_tips": "开启后，仅节点已声明的入参会被识别为变量并替换；提示词中其余 {{...}} 将作为普通文本发送给模型。默认关闭，与历史行为一致。",
   "content_review_configuration": "内容审核配置",
   "content_review_configuration_tips": "将大模型输出内容字段屏蔽掉后再返回给用户。",
   "keywords": "敏感词",

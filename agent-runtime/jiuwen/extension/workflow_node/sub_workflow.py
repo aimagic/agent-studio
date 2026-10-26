@@ -959,9 +959,6 @@ class SubWorkflow(WorkflowComponent):
         parent_request_snapshot = self._enter_sub_request_scope(session, child_inputs)
         scope_active = True
         try:
-            # invoke 路径同样补发子 workflow_start（父图流式时子节点仍可能走 invoke）
-            await self._emit_child_workflow_start(session)
-
             invoke_timeout = self._get_timeout(session)
             result = await asyncio.wait_for(
                 self._workflow_instance.invoke(
@@ -1123,10 +1120,8 @@ class SubWorkflow(WorkflowComponent):
         parent_request_snapshot = self._enter_sub_request_scope(session, child_inputs)
         scope_active = True
         try:
-            # 子工作流开始事件：图内嵌套时外层 Wrapper 只会发一次父级 start，
-            # 这里补发带 child workflow_id 的 workflow_start，供多控制器 SSE 区分。
-            await self._emit_child_workflow_start(session)
-
+            # 多控制器诉求：只透出「挂在控制器上的工作流」那一条 workflow_start + workflow_id。
+            # 图内嵌套 SubWorkflow 的 lifecycle（含 workflow_start）继续过滤，不向外冒泡子 id。
             stream_iter = self._workflow_instance.stream(
                 inputs=child_inputs,
                 session=session,
@@ -1302,51 +1297,6 @@ class SubWorkflow(WorkflowComponent):
                 self._exit_sub_request_scope(session, parent_request_snapshot)
                 scope_active = False
 
-    def _child_workflow_meta(self) -> dict:
-        """子工作流 id/name，用于流式事件打标。"""
-        reference = self._conf.get("reference") or {}
-        workflow_id = ""
-        if isinstance(reference, dict):
-            workflow_id = reference.get("id") or ""
-        elif hasattr(reference, "id"):
-            workflow_id = getattr(reference, "id", "") or ""
-        workflow_name = (
-            self._conf.get("workflow_name")
-            or self._conf.get("name")
-            or self._node_id
-            or workflow_id
-        )
-        return {
-            "workflow_id": workflow_id,
-            "workflow_name": workflow_name,
-        }
-
-    async def _emit_child_workflow_start(self, session: Session) -> None:
-        """向父 session 写出子工作流 workflow_start（含 workflow_id / parentNodeId）。"""
-        meta = self._child_workflow_meta()
-        if not meta.get("workflow_id"):
-            return
-        payload = {
-            **meta,
-            "parentNodeId": session.get_component_id(),
-        }
-        await session.write_stream(
-            OutputSchema(type="workflow_start", index=0, payload=payload)
-        )
-
-    def _enrich_child_workflow_id(self, payload: dict) -> dict:
-        """子流 partial_content 等帧补齐 workflow_id，避免被上层误标为父 id。"""
-        if not isinstance(payload, dict):
-            return payload
-        meta = self._child_workflow_meta()
-        child_id = meta.get("workflow_id")
-        if child_id and not payload.get("workflow_id"):
-            payload = dict(payload)
-            payload["workflow_id"] = child_id
-            if not payload.get("workflow_name"):
-                payload["workflow_name"] = meta.get("workflow_name")
-        return payload
-
     async def _process_stream_chunk(
         self,
         chunk: Any,
@@ -1369,24 +1319,8 @@ class SubWorkflow(WorkflowComponent):
             chunk_type = chunk.type
             payload = chunk.payload if isinstance(chunk.payload, dict) else {}
 
-            # start / workflow_end：仍过滤（避免与父级生命周期重复）
-            # workflow_start：已在 _emit_child_workflow_start 合成；子图偶发再发则转发并打标
-            if chunk_type in ["start", "workflow_end"]:
-                return None
-            if chunk_type == "workflow_start":
-                meta = self._child_workflow_meta()
-                enriched = dict(payload) if isinstance(payload, dict) else {}
-                if meta.get("workflow_id"):
-                    enriched.setdefault("workflow_id", meta["workflow_id"])
-                    enriched.setdefault("workflow_name", meta.get("workflow_name"))
-                enriched.setdefault("parentNodeId", session.get_component_id())
-                await session.write_stream(
-                    OutputSchema(
-                        type="workflow_start",
-                        index=getattr(chunk, "index", 0) or 0,
-                        payload=enriched,
-                    )
-                )
+            # 嵌套子图 lifecycle 全部过滤，避免多控制器 SSE 冒出「挂载工作流内部的」子 id
+            if chunk_type in ["start", "workflow_start", "workflow_end"]:
                 return None
 
             if chunk_type == INTERACTION:
@@ -1441,13 +1375,6 @@ class SubWorkflow(WorkflowComponent):
                         node_id = payload.get("node_id")
                         if node_id:
                             self._interrupt_child_node_id = node_id
-                enriched_payload = self._enrich_child_workflow_id(payload)
-                if enriched_payload is not payload:
-                    chunk = OutputSchema(
-                        type=chunk_type,
-                        index=getattr(chunk, "index", 0) or 0,
-                        payload=enriched_payload,
-                    )
                 await session.write_stream(chunk)
                 return {"content": content}
 

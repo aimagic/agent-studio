@@ -571,3 +571,26 @@ class TestRenderPromptWithWhitespace:
         getattr(chain, "_conf")["allowLiteralBraces"] = True
         with pytest.raises(ValueError, match="dangerous placeholder"):
             getattr(chain, "_validate_prompt_template")("{{query.__class__}}")
+
+    def test_render_keeps_literal_braces_when_env_enabled(self, monkeypatch):
+        monkeypatch.setenv("ALLOW_LITERAL_BRACES", "true")
+        chain = LLMChain(conf=_make_llm_chain_conf())
+        # 节点开关关闭，仅靠环境变量
+        getattr(chain, "_conf")["allowLiteralBraces"] = False
+        result = getattr(chain, "_render_prompt")(
+            "你好{{query}}，示例：{{中文示例}}",
+            {"query": "世界"},
+        )
+        assert result == "你好世界，示例：{{中文示例}}"
+
+    def test_env_off_still_rejects_without_node_switch(self, monkeypatch):
+        from openjiuwen.core.common.exception.errors import ExecutionError
+
+        monkeypatch.setenv("ALLOW_LITERAL_BRACES", "false")
+        chain = LLMChain(conf=_make_llm_chain_conf())
+        getattr(chain, "_conf")["allowLiteralBraces"] = False
+        with pytest.raises(ExecutionError, match="Error parsing the placeholder"):
+            getattr(chain, "_render_prompt")(
+                "你好{{query}}，示例：{{中文示例}}",
+                {"query": "世界"},
+            )

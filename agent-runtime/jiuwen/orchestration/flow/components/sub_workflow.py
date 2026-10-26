@@ -85,8 +85,8 @@ class SubWorkflow(Invokable, InteractiveComponent):
         """
         通过队列读取子线程中子工作流流式输出内容，过滤START, WORKFLOW_START, WORKFLOW_END。
 
-        范围说明：子工作流 SSE 透出 workflow_start + 子 workflow_id 仅在 openjiuwen
-        extension SubWorkflow 路径实现；本 legacy 过滤器仍丢弃 WORKFLOW_START，不补发。
+        与 openjiuwen extension 一致：多控制器只需要「挂载工作流」自身的 workflow_start；
+        图内嵌套 SubWorkflow 的 lifecycle 不向外透出。
         """
         while True:
             data = await data_queue.get()

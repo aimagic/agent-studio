@@ -20,6 +20,7 @@ import asyncio
 import base64
 import ast
 import json
+import os
 import re
 import time
 from typing import Any, List, Optional, AsyncGenerator
@@ -1028,13 +1029,26 @@ class LLMChain(WorkflowComponent):
                 exc_info=True,
             )
 
+    # 与节点 conf.allowLiteralBraces 任一为真即开启；便于 K8S/现场用环境变量全局放开
+    _ALLOW_LITERAL_BRACES_ENV = "ALLOW_LITERAL_BRACES"
+
     def _allow_literal_braces(self) -> bool:
-        """节点开关：未声明/非安全名的 {{...}} 按字面量保留，默认关闭。
+        """未声明/非安全名的 {{...}} 按字面量保留。
+
+        由环境变量 ``ALLOW_LITERAL_BRACES``（1/true/yes/on）控制；画布不再提供开关。
+        仍兼容旧 IR 中 ``allowLiteralBraces=true``（OR）。
 
         仅本 openjiuwen extension 路径完整支持（校验 + _render_prompt 保留字面量）；
         legacy orchestration LLM 不放宽校验，避免静默丢内容。
         """
-        return bool(self._conf.get("allowLiteralBraces", False))
+        if bool(self._conf.get("allowLiteralBraces", False)):
+            return True
+        return os.getenv(self._ALLOW_LITERAL_BRACES_ENV, "false").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
     def _validate_prompt_template(self, template: str) -> None:
         """
