@@ -144,6 +144,7 @@ export class ImportSkillModalComponent {
     if (this.selectedFile) {
       this.selectedFile = undefined;
     }
+    this.fileList = [];
     this.isShowResult = false;
     this.skillInfo = { name: '', description: '' };
   }
@@ -290,6 +291,7 @@ export class ImportSkillModalComponent {
     this.fileList = [fileItem.file];
     if (fileItem.file.name.lastIndexOf('.zip') < 0) {
       this.onAddItemFailed({ validResults: ['type'] });
+      this.fileList = [];
       return;
     }
     this.onAddFileSuccess(fileItem.file.originFileObj);
