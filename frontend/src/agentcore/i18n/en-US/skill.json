@@ -22,6 +22,7 @@
   "skill.import.docoument.link": "详细查看Skill制品包规范",
   "skill.import_add_file": "添加文件",
   "skill.import.reselect.file": "重新选择",
+  "skill.import.remove.file": "Remove file",
   "skill.import_obs_tip": "将Skill ZIP文件上传至对象存储OBS服务，获取文件URL并在此传入，文件大小≤ 10 MiB。",
   "skill.import.obs.label": "OBS地址",
   "skill.import.obs.input.placeholder": "请输入OBS文件地址，如https://{桶名}.{OBS域名}/{文件路径}",

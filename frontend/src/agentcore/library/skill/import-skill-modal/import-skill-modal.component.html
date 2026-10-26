@@ -22,9 +22,9 @@
           <div class="file-item">
             <span nz-icon nzType="file-zip"></span>
             <span class="file-name">{{ selectedFile.name }}</span>
-            <span class="file-remove" (click)="onRemoveItems()">
+            <button type="button" class="file-remove" [attr.aria-label]="'skill.import.remove.file' | i18nextEager" (click)="onRemoveItems()">
               <span nz-icon nzType="close"></span>
-            </span>
+            </button>
           </div>
         }
       }
