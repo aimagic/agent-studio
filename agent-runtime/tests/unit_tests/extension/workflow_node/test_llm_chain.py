@@ -572,7 +572,8 @@ class TestRenderPromptWithWhitespace:
         with pytest.raises(ValueError, match="dangerous placeholder"):
             getattr(chain, "_validate_prompt_template")("{{query.__class__}}")
 
-    def test_render_keeps_literal_braces_when_env_enabled(self, monkeypatch):
+    @staticmethod
+    def test_render_keeps_literal_braces_when_env_enabled(monkeypatch):
         monkeypatch.setenv("ALLOW_LITERAL_BRACES", "true")
         chain = LLMChain(conf=_make_llm_chain_conf())
         # 节点开关关闭，仅靠环境变量
@@ -583,7 +584,8 @@ class TestRenderPromptWithWhitespace:
         )
         assert result == "你好世界，示例：{{中文示例}}"
 
-    def test_env_off_still_rejects_without_node_switch(self, monkeypatch):
+    @staticmethod
+    def test_env_off_still_rejects_without_node_switch(monkeypatch):
         from openjiuwen.core.common.exception.errors import ExecutionError
 
         monkeypatch.setenv("ALLOW_LITERAL_BRACES", "false")
