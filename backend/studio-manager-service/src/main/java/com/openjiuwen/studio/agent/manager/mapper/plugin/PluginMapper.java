@@ -91,5 +91,5 @@ public interface PluginMapper {
 
     void updateProjectIdByIds(@Param("opSvcProjectId") String opSvcProjectId, @Param("pluginIds") List<String> pluginIds);
 
-    String selectVersionByPluginId(String pluginId);
+    String selectVersionByPluginId(@Param("pluginId") String pluginId);
 }

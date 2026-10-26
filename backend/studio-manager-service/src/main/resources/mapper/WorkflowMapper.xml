@@ -516,7 +516,7 @@
             and dsl_path = #{workflowEntity.dslPath,jdbcType=VARCHAR}
         </if>
         <if test="workflowEntity != null and workflowEntity.irPath != null">
-            and irPath = #{workflowEntity.irPath,jdbcType=VARCHAR}
+            and ir_path = #{workflowEntity.irPath,jdbcType=VARCHAR}
         </if>
         <if test="workflowEntity != null and workflowEntity.status != null">
             and status = #{workflowEntity.status,jdbcType=VARCHAR}

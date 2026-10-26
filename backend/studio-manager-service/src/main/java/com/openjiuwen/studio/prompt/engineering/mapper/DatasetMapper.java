@@ -72,5 +72,5 @@ public interface DatasetMapper {
      * @param projectId projectId
      * @param datasetType 数据集类型
      */
-    int queryDatasetCountByProjectId(String projectId, String datasetType, @Param("workspaceId") String workspaceId);
+    int queryDatasetCountByProjectId(@Param("projectId") String projectId, @Param("datasetType") String datasetType, @Param("workspaceId") String workspaceId);
 }
