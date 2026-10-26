@@ -30,7 +30,8 @@ import static org.mockito.Mockito.when;
 
 /**
  * ObsFileStoreImpl.read 病灶修复测试：OBS 404（对象不存在）按业务语义返回 null，
- * 与 getMeta()/exists() 哲学一致；真实 OBS 故障（非 404）才抛 OBS_FAILED(500)。
+ * 真实 OBS 故障（非 404）才抛 OBS_FAILED(500)。与 getMeta()/exists() 全吞 ObsException
+ * 的行为有意不同（后两者待治理，会把 500 也当不存在）。
  * <p>未发布资源在 OBS 无发布元数据 → getObject 返回 404 → read 返回 null →
  * PublishUtils.getPublish 返回 null → 导出抛 EXPORT_RESOURCE_NOT_EXISTS(400)。
  */

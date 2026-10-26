@@ -34,9 +34,10 @@ public class ManagerSseErrorEventBuilder {
      * @return Map 形式的 {@code {event:"error", data:{...}}}
      */
     public Map<String, Object> buildEnvelope(ErrorDescriptor descriptor, Locale locale) {
-        // message/reason/suggestion 三段都传从异常 cause 提取的 args：i18n 资源里
-        // reason/suggestion 也有 {0}/{1} 占位符（如 tenant 期望/实际、版本号），不传 args
-        // 会渲染成字面 "{0}"。与 ManagerHttpErrorResponseBuilder / I18nUtil 约定对齐。
+        // message/reason/suggestion 三段共用从异常 cause 提取的 args：主要是 message 段模板有
+        // {0} 占位符；当前 reason/suggestion 模板无占位符，多传的 args 被 MessageFormat 忽略，
+        // 无副作用——三段同传与 ManagerHttpErrorResponseBuilder / I18nUtil 约定对齐，
+        // 为未来 reason/suggestion 增加占位符预留。
         Object[] args = extractArgs(descriptor);
         String errorMsg = safeResolve(descriptor.getMessageKey(), args, locale);
         String errorReason = safeResolve(descriptor.getReasonKey(), args, locale);

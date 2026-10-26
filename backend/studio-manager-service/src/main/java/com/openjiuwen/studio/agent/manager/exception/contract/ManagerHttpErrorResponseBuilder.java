@@ -41,10 +41,10 @@ public class ManagerHttpErrorResponseBuilder {
         // 从异常 cause 提取 i18n 占位符 args（资源未发布时为资源类型等业务参数）。
         // fromAgentStudioException 把 AgentStudioException 传给 descriptor.getCause()，
         // 其 getArgs() 携带占位符填充值。无 cause 或非 AgentStudioException 时 args=null。
-        // message/reason/suggestion 三段都传 args：i18n 资源里 reason/suggestion 也有
-        // {0}/{1}/{2} 占位符（如 tenant 期望/实际、版本号），不传 args 会渲染成字面 "{0}"。
-        // 与 I18nUtil.getMessage(AgentStudioException) 三段同传 args 的约定对齐。
-        // 多余 args 被 MessageFormat 忽略；args 不足时 I18nUtil catch 返回 code 兜底，不抛。
+        // message/reason/suggestion 三段共用同一份 args：主要是 message 段模板有 {0} 占位符
+        // （如"{0}资源不存在"）；当前 reason/suggestion 模板无占位符，多传的 args 被
+        // MessageFormat 忽略，无副作用——三段同传与 I18nUtil.getMessage(AgentStudioException)
+        // 约定对齐，为未来 reason/suggestion 增加占位符预留。args 不足时 I18nUtil catch 返回 code 兜底，不抛。
         Object[] args = extractArgs(descriptor);
         String errorMsg = safeResolve(descriptor.getMessageKey(), args, locale);
         String errorReason = safeResolve(descriptor.getReasonKey(), args, locale);

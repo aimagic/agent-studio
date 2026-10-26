@@ -311,7 +311,8 @@ public class RuntimeAssetExporter {
         if (StringUtils.isBlank(version) || Constants.LATEST_PUBLISH_VERSION.equals(version)) {
             // SDD 5.0：Redis 优先回退 OBS（PublishUtils.getPublish 已实现该语义）。
             // 未发布资源在 OBS 无发布元数据，obsClient.getObject 返回 404，ObsFileStoreImpl.read
-            // 特判 404 → return null（同 getMeta/exists 哲学），getPublish 据此返回 null，
+            // 特判 404 → return null（注意：与 getMeta/exists 全吞 ObsException 的行为有意不同——
+            // read 只吞 404，真实 5xx 故障仍抛 OBS_FAILED 不掩盖），getPublish 据此返回 null，
             // 这里 meta == null → 抛 EXPORT_RESOURCE_NOT_EXISTS(400)，走"资源未发布"业务语义。
             // {0} 占位填 resourceType（agent/workflow/controller），文案"{资源类型}资源不存在"。
             com.openjiuwen.studio.agent.common.bo.AgentMetadata meta =
@@ -325,6 +326,9 @@ public class RuntimeAssetExporter {
         // 具体版本号 → 校验存在
         ReleaseVersion rv = releaseVersionMapper.selectByAppIdAndVersionId(resourceId, version);
         if (rv == null) {
+            // 对外仍用 EXPORT_RESOURCE_NOT_EXISTS（保持 03601001 契约，避免破坏前端 code 映射），
+            // 日志带 version 区分"指定版本不存在"与上面"未发布(meta==null)"两种失败模式。
+            log.error("resolvePublishVersion failed, release version not exist for: {}/{}", resourceId, version);
             throw new AgentStudioException(StudioError.EXPORT_RESOURCE_NOT_EXISTS, resourceType);
         }
         return version;
