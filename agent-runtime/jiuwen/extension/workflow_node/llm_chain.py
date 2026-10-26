@@ -1029,7 +1029,11 @@ class LLMChain(WorkflowComponent):
             )
 
     def _allow_literal_braces(self) -> bool:
-        """节点开关：未声明/非安全名的 {{...}} 按字面量保留，默认关闭。"""
+        """节点开关：未声明/非安全名的 {{...}} 按字面量保留，默认关闭。
+
+        仅本 openjiuwen extension 路径完整支持（校验 + _render_prompt 保留字面量）；
+        legacy orchestration LLM 不放宽校验，避免静默丢内容。
+        """
         return bool(self._conf.get("allowLiteralBraces", False))
 
     def _validate_prompt_template(self, template: str) -> None:
