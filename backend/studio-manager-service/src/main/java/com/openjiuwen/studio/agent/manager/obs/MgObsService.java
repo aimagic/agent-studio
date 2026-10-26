@@ -146,9 +146,13 @@ public class MgObsService implements CommonObsService {
     public String downloadObsFile(String relativePath) {
         try {
             return fileStore.read(path(relativePath));
+        } catch (AgentStudioException e) {
+            // 透传：read 已抛 OBS_FAILED(真实故障)，不二次包装（同 downloadObsImageFile 模式）。
+            // read 在 OBS 404 时返回 null 不抛异常，故 404 不会到此，null 直接透传给调用方。
+            throw e;
         } catch (Exception e) {
-            log.error("download file from obs failed!");
-            throw new AgentStudioException(StudioError.OBS_FAILED);
+            log.error("download file from obs failed!", e);
+            throw new AgentStudioException(StudioError.OBS_FAILED, e);
         }
     }
 

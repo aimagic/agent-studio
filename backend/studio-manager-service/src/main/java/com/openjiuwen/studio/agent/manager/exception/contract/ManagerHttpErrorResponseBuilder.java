@@ -28,7 +28,7 @@ public class ManagerHttpErrorResponseBuilder {
 
     @FunctionalInterface
     public interface I18nResolver {
-        String resolve(String key, Locale locale);
+        String resolve(String key, Object[] args, Locale locale);
     }
 
     private final I18nResolver resolver;
@@ -38,9 +38,17 @@ public class ManagerHttpErrorResponseBuilder {
     }
 
     public ResponseEntity<ErrorRsp> build(ErrorDescriptor descriptor, Locale locale) {
-        String errorMsg = safeResolve(descriptor.getMessageKey(), locale);
-        String errorReason = safeResolve(descriptor.getReasonKey(), locale);
-        String errorSuggestion = safeResolve(descriptor.getSuggestionKey(), locale);
+        // 从异常 cause 提取 i18n 占位符 args（资源未发布时为资源类型等业务参数）。
+        // fromAgentStudioException 把 AgentStudioException 传给 descriptor.getCause()，
+        // 其 getArgs() 携带占位符填充值。无 cause 或非 AgentStudioException 时 args=null。
+        // message/reason/suggestion 三段都传 args：i18n 资源里 reason/suggestion 也有
+        // {0}/{1}/{2} 占位符（如 tenant 期望/实际、版本号），不传 args 会渲染成字面 "{0}"。
+        // 与 I18nUtil.getMessage(AgentStudioException) 三段同传 args 的约定对齐。
+        // 多余 args 被 MessageFormat 忽略；args 不足时 I18nUtil catch 返回 code 兜底，不抛。
+        Object[] args = extractArgs(descriptor);
+        String errorMsg = safeResolve(descriptor.getMessageKey(), args, locale);
+        String errorReason = safeResolve(descriptor.getReasonKey(), args, locale);
+        String errorSuggestion = safeResolve(descriptor.getSuggestionKey(), args, locale);
 
         ErrorRsp rsp = new ErrorRsp()
             .setErrorCode(descriptor.getErrorCode())
@@ -65,12 +73,26 @@ public class ManagerHttpErrorResponseBuilder {
      * COM-03 §4: fail-closed——resolver 异常时抛出,不返回空串。
      * 调用方 (build) 的调用者 (handler/listener) 应捕获并提供硬编码安全响应。
      */
-    private String safeResolve(String key, Locale locale) {
-        String result = resolver.resolve(key, locale);
+    private String safeResolve(String key, Object[] args, Locale locale) {
+        String result = resolver.resolve(key, args, locale);
         if (result == null || result.isBlank()) {
             throw new IllegalStateException(
                 "i18n resolution returned blank for key=" + key + " locale=" + locale);
         }
         return result;
+    }
+
+    /**
+     * 从 descriptor.cause 提取 i18n 占位符 args。
+     * message/reason/suggestion 三段共用同一份 args 填占位符（与
+     * I18nUtil.getMessage(AgentStudioException) 约定对齐）。cause 非 AgentStudioException
+     * 时返回 null（无占位符文案不受影响）。
+     */
+    private Object[] extractArgs(ErrorDescriptor descriptor) {
+        Throwable cause = descriptor.getCause();
+        if (cause instanceof com.openjiuwen.studio.agent.common.exception.AgentStudioException ase) {
+            return ase.getArgs();
+        }
+        return null;
     }
 }

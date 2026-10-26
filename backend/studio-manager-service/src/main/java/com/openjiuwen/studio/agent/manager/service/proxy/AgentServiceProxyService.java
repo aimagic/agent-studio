@@ -1588,7 +1588,7 @@ public class AgentServiceProxyService {
         java.util.Locale localeSnapshot = java.util.Locale.forLanguageTag(langHeader);
         ProxyEventSourceListener listener = new ProxyEventSourceListener(
             MDC.get(MdcKeys.REQUEST_ID), latch, sseEmitter,
-            (key, loc) -> i18nUtil.getMessage(key, loc), localeSnapshot);
+            (key, args, loc) -> i18nUtil.getMessage(key, args, loc), localeSnapshot);
 
         log.info("http stream request, url: {}", url);
         EventSource eventSource = factory.newEventSource(request, listener);

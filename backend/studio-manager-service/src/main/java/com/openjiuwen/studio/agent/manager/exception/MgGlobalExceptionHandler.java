@@ -82,12 +82,15 @@ public class MgGlobalExceptionHandler {
         ManagerErrorCatalog catalog = new ManagerErrorCatalog();
         this.factory = new ManagerErrorDescriptorFactory(catalog);
         // COM-03 §5.1/#4: resolver 使用显式 locale,不读线程上下文
+        // 显式三参重载 i18nUtil.getMessage(key, args, locale)，避免 locale 落入 varargs 的 args[0]。
+        // args 由 builder 从异常 cause 提取（资源未发布时为资源类型等业务参数），填 {0} 占位符。
         this.httpBuilder = new ManagerHttpErrorResponseBuilder(
-            (key, locale) -> i18nUtil.getMessage(key, locale));
+            (key, args, locale) -> i18nUtil.getMessage(key, args, locale));
         // COM-04 §4.3: 统一下游映射入口，由各传输 adapter 产出的 DownstreamFailure 经此一次映射
         this.downstreamMapper = new DownstreamErrorMapper(
             new DownstreamErrorMappingCatalog(catalog));
     }
+
 
     /**
      * COM-03 §4/#3: fail-closed 安全构建——httpBuilder.build() 失败时

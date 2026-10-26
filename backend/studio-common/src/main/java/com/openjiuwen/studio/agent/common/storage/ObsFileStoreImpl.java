@@ -146,9 +146,19 @@ public class ObsFileStoreImpl implements FileStore {
                 return IOUtils.toString(is, StandardCharsets.UTF_8);
             }
             return null;
-        } catch (Exception e) {
+        } catch (ObsException e) {
+            // 与 getMeta()/exists() 哲学一致：OBS 404（对象不存在）按业务语义返回 null，
+            // 不当 OBS 服务故障抛 500。真实 OBS 故障（5xx 等）才抛 OBS_FAILED，不掩盖。
+            // 未发布资源在 OBS 无发布元数据 → 404 → null，让调用方的 null 契约自然走通
+            // （如 PublishUtils.getPublish 返回 null → 导出抛 EXPORT_RESOURCE_NOT_EXISTS(400)）。
+            if (e.getResponseCode() == 404) {
+                return null;
+            }
             log.error("read failed: {}", path, e);
             throw new AgentStudioException(StudioError.OBS_FAILED);
+        } catch (Exception e) {
+            log.error("read failed: {}", path, e);
+            throw new AgentStudioException(StudioError.OBS_FAILED, e);
         } finally {
             IOUtils.closeQuietly(is);
         }
