@@ -88,7 +88,21 @@ class WorkflowEventsProcessor(BaseEventsProcessor):
 
     @classmethod
     def process_workflow_start(cls, full_data: Dict[str, Any], trace: Trace = None) -> Any:
-        data = {"start_time": full_data.get("createdTime")}
+        # 底层 StreamData.data 已携带 workflow_id/workflow_name，透传并写入 trace
+        # 供后续 message/end 帧复用；trace.instance_id（= 路径 workflow_id）兜底
+        src_data = full_data.get("data", {}) or {}
+        workflow_id = src_data.get("workflow_id") or (trace.instance_id if trace else None)
+        workflow_name = src_data.get("workflow_name")
+        if trace is not None:
+            if workflow_id:
+                trace.workflow_id = workflow_id
+            if workflow_name:
+                trace.workflow_name = workflow_name
+        data = {
+            "start_time": full_data.get("createdTime"),
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+        }
         return EventField(
             event=EventMapping.WORKFLOW_START.value,
             data=data,
@@ -107,8 +121,8 @@ class WorkflowEventsProcessor(BaseEventsProcessor):
             node_id=data.get("node_id"),
             node_type=node_type,
             node_name=data.get("node_name"),
-            workflow_id=data.get("workflow_id"),
-            workflow_name=data.get("workflow_name"),
+            workflow_id=data.get("workflow_id") or (trace.workflow_id if trace else None) or (trace.instance_id if trace else None),
+            workflow_name=data.get("workflow_name") or (trace.workflow_name if trace else None),
             enable_history=data.get("enable_history"),
             createdTime=full_data.get("createdTime"),
         )
@@ -130,8 +144,8 @@ class WorkflowEventsProcessor(BaseEventsProcessor):
             node_type=node_type,
             node_name=data.get("node_name"),
             is_finished=True,
-            workflow_id=data.get("workflow_id"),
-            workflow_name=data.get("workflow_name"),
+            workflow_id=data.get("workflow_id") or trace.workflow_id or trace.instance_id,
+            workflow_name=data.get("workflow_name") or trace.workflow_name,
             enable_history=data.get("enable_history"),
             createdTime=full_data.get("createdTime"),
         )
@@ -179,8 +193,8 @@ class WorkflowEventsProcessor(BaseEventsProcessor):
             node_type=node_type,
             code=code,
             message=safe_message,
-            workflow_id=data.get("workflow_id"),
-            workflow_name=data.get("workflow_name"),
+            workflow_id=data.get("workflow_id") or trace.workflow_id or trace.instance_id,
+            workflow_name=data.get("workflow_name") or trace.workflow_name,
             error_msg=error_msg,
             error_reason=error_reason,
             error_suggestion=error_suggestion,

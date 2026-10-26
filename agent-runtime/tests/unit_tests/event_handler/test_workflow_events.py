@@ -43,7 +43,7 @@ class TestProcessWorkflowStart:
             {"event": "workflow_start", "createdTime": 1784279771000}, trace
         )
         assert result.event == "workflow_started"
-        assert result.data == {"start_time": 1784279771000}
+        assert result.data["start_time"] == 1784279771000
 
 
 class TestProcessMessage:
