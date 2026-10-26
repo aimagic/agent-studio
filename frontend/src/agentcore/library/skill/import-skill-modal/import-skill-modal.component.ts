@@ -291,7 +291,7 @@ export class ImportSkillModalComponent {
     this.fileList = [fileItem.file];
     if (fileItem.file.name.lastIndexOf('.zip') < 0) {
       this.onAddItemFailed({ validResults: ['type'] });
-      this.fileList = [];
+      this.onRemoveItems();
       return;
     }
     this.onAddFileSuccess(fileItem.file.originFileObj);
