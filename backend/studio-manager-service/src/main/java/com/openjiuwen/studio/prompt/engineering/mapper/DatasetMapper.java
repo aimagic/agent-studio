@@ -64,7 +64,7 @@ public interface DatasetMapper {
      * 根据id判断数据集是否存在
      * @param id 数据集id
      */
-    Boolean isIdExist(String id, @Param("workspaceId") String workspaceId);
+    Boolean isIdExist(@Param("id") String id, @Param("workspaceId") String workspaceId);
 
     /**
      * 根据projectId查询数据集数目
