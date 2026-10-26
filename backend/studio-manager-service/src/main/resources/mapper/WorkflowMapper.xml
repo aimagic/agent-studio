@@ -522,7 +522,7 @@
             and status = #{workflowEntity.status,jdbcType=VARCHAR}
         </if>
         <if test="workflowEntity != null and workflowEntity.triggerList != null">
-            and trigger_list = #{workflowEntity.triggerList,jdbcType=VARCHAR}
+            and trigger_list = #{workflowEntity.triggerList,jdbcType=VARCHAR,typeHandler=com.openjiuwen.studio.agent.manager.mapper.handler.TriggerConfigArrayHandler}
         </if>
         <if test="workflowEntity != null and workflowEntity.visibility != null">
             and visibility = #{workflowEntity.visibility,jdbcType=VARCHAR}
