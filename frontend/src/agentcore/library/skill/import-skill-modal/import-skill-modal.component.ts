@@ -99,9 +99,17 @@ export class ImportSkillModalComponent {
 
     try {
       const arrayBuffer = await file.arrayBuffer();
+      // 防竞态：await 期间用户可能点 × 移除或重选了别的文件，
+      // 若 selectedFile 已不再指向本次解析的文件，则丢弃本次结果，避免把已移除文件的解析结果写回状态。
+      if (this.selectedFile !== file) {
+        return;
+      }
       const unzipped = unzipSync(new Uint8Array(arrayBuffer));
       this.unZip(unzipped);
     } catch (error) {
+      if (this.selectedFile !== file) {
+        return;
+      }
       this.importZipErrorTip = this.i18n.transform('skill.import.result.null');
       this.isShowResult = true;
     }
@@ -144,6 +152,7 @@ export class ImportSkillModalComponent {
     if (this.selectedFile) {
       this.selectedFile = undefined;
     }
+    this.fileList = [];
     this.isShowResult = false;
     this.skillInfo = { name: '', description: '' };
   }
@@ -290,6 +299,7 @@ export class ImportSkillModalComponent {
     this.fileList = [fileItem.file];
     if (fileItem.file.name.lastIndexOf('.zip') < 0) {
       this.onAddItemFailed({ validResults: ['type'] });
+      this.onRemoveItems();
       return;
     }
     this.onAddFileSuccess(fileItem.file.originFileObj);
