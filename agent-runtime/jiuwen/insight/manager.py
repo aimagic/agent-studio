@@ -30,7 +30,8 @@ class _NoAgentIdentity:
 
     __slots__ = ()
 
-    def __repr__(self) -> str:  # 日志/断言可读
+    @classmethod
+    def __repr__(cls) -> str:  # 日志/断言可读
         return "NO_AGENT_IDENTITY"
 
 

@@ -355,17 +355,16 @@ class TestSetupTraceManagerWiring:
         method = TestSetupTraceManagerWiring._load_setup_method()
         assert method is not None, "Agent._setup_trace_manager 缺失（身份接线被删？）"
 
-        gen_calls = [
-            n
-            for n in ast.walk(method)
-            if isinstance(n, ast.Call)
-            and isinstance(n.func, ast.Attribute)
-            and n.func.attr == "generate_manager"
-        ]
+        gen_calls = []
+        for n in ast.walk(method):
+            if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "generate_manager":
+                gen_calls.append(n)
         assert gen_calls, "_setup_trace_manager 不再构造 TraceManager"
-        keywords = [
-            kw for call in gen_calls for kw in call.keywords if kw.arg == "agent_identity"
-        ]
+        keywords = []
+        for call in gen_calls:
+            for kw in call.keywords:
+                if kw.arg == "agent_identity":
+                    keywords.append(kw)
         assert keywords, "接线丢失：generate_manager 未传 agent_identity"
         value = keywords[0].value
         # 形态：get_agent_identity(self) or NO_AGENT_IDENTITY（无身份时哨兵终态）
