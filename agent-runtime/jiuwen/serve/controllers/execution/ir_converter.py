@@ -1747,11 +1747,12 @@ class IRConverter:
             nid = node.get("id")
             ntype = node.get("type", "")
             cfgs = node.get("configs") or {}
-            if ntype in _llm_types and bool(cfgs.get("stream", False)):
-                ir_stream_source_ids.add(nid)
-            elif ntype in IRConverter._STREAMING_API_TYPES and bool(
+            # G.CTL.03：拆成中间布尔量，避免单 if 条件过多
+            llm_stream = ntype in _llm_types and bool(cfgs.get("stream", False))
+            api_stream = ntype in IRConverter._STREAMING_API_TYPES and bool(
                 cfgs.get("streaming", False)
-            ):
+            )
+            if llm_stream or api_stream:
                 ir_stream_source_ids.add(nid)
 
         # Pre-compute stream connection targets from explicit IR connections.
@@ -2136,8 +2137,6 @@ class IRConverter:
                 set_end_kwargs["stream_inputs_schema"] = (
                     stream_schema if stream_schema else {}
                 )
-            elif has_batch:
-                set_end_kwargs["inputs_schema"] = inputs_schema
             elif has_stream:
                 set_end_kwargs["stream_inputs_schema"] = inputs_schema
             else:
@@ -2859,26 +2858,7 @@ class IRConverter:
                 workflow.set_end_comp(node_id, component, **_end_kwargs)
             return component
 
-        if resolved_type == "jiuwen.message":
-            if stream_inputs_schema is not None:
-                _add_workflow_comp_with_exception(
-                    workflow,
-                    node_id,
-                    component,
-                    stream_inputs_schema=stream_inputs_schema,
-                    **_comp_reg,
-                )
-            else:
-                _add_workflow_comp_with_exception(
-                    workflow,
-                    node_id,
-                    component,
-                    inputs_schema=inputs_schema,
-                    **_comp_reg,
-                )
-            return component
-
-        if resolved_type in {"jiuwen.card", "jiuwen.flowCard"}:
+        if resolved_type in {"jiuwen.message", "jiuwen.card", "jiuwen.flowCard"}:
             if stream_inputs_schema is not None:
                 _add_workflow_comp_with_exception(
                     workflow,
