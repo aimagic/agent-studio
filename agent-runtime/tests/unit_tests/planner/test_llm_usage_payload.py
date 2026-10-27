@@ -221,7 +221,8 @@ class TestStreamFunctionCallEmit:
 
         class StubLLM:
             # 生产链路 llm.astream 是被 await 的协程，返回异步生成器
-            async def astream(self, inputs, **kwargs):
+            @staticmethod
+            async def astream(inputs, **kwargs):
                 async def gen():
                     yield AIMessage(content="he", usage_metadata=UsageMetadata())
                     yield AIMessage(content="llo", usage_metadata=UsageMetadata())
@@ -258,7 +259,8 @@ class TestStreamFunctionCallEmit:
             def __init__(self):
                 self.payloads = []
 
-            async def on_llm_start(self, messages):
+            @staticmethod
+            async def on_llm_start(messages):
                 pass
 
             async def on_llm_end(self, payload):
@@ -270,7 +272,8 @@ class TestStreamFunctionCallEmit:
         )
 
         class StubLLM:
-            async def astream(self, inputs, **kwargs):
+            @staticmethod
+            async def astream(inputs, **kwargs):
                 async def gen():
                     yield AIMessage(content="partial", usage_metadata=UsageMetadata())
 

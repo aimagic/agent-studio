@@ -53,7 +53,8 @@ def _install_psycopg2_stub() -> None:
         def join(self, *args, **kwargs):
             return self
 
-        def as_string(self, *args, **kwargs):
+        @staticmethod
+        def as_string(*args, **kwargs):
             return ""
 
     for name in ("Identifier", "SQL", "Literal", "Placeholder", "Composed"):
@@ -65,7 +66,24 @@ def _install_psycopg2_stub() -> None:
     sys.modules["psycopg2.sql"] = sql_mod
 
 
-_install_psycopg2_stub()
+def _seed_psycopg2_stub() -> bool:
+    """真实 psycopg2 可导入时返回 False、不装替身（CI 装有原生库）。
+
+    替身仅在加载被测模块期间存在，加载完立即卸载，不向同会话其他用例
+    泄漏（与 _seed_trace_compat_stub 同一 try/finally 语义）。
+    """
+    try:
+        import psycopg2  # noqa: F401
+
+        return False
+    except ModuleNotFoundError:
+        _install_psycopg2_stub()
+        return True
+
+
+def _uninstall_psycopg2_stub() -> None:
+    for _key in ("psycopg2", "psycopg2.extras", "psycopg2.sql"):
+        sys.modules.pop(_key, None)
 
 from openjiuwen.core.foundation.llm.schema.message import (  # noqa: E402
     AssistantMessage,
@@ -131,9 +149,12 @@ _spec = importlib.util.spec_from_file_location(
 )
 _model_wrapper = importlib.util.module_from_spec(_spec)
 _seeded = _seed_trace_compat_stub()
+_stubbed = _seed_psycopg2_stub()
 try:
     _spec.loader.exec_module(_model_wrapper)
 finally:
+    if _stubbed:
+        _uninstall_psycopg2_stub()
     _drop_trace_compat_stub(_seeded)
 ModelWrapper = _model_wrapper.ModelWrapper
 
