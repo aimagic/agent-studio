@@ -153,13 +153,38 @@ def test_static_string_mul_rejected_before_render(monkeypatch):
         render_jinja("{{ 'ab' * 1000 }}", {})
 
 
-def test_finalize_rejects_runtime_huge_string(monkeypatch):
-    """变量侧字符串重复在 finalize 阶段拦截。"""
+def test_static_chained_string_mul_rejected(monkeypatch):
+    """链式 'x' * a * b 应静态折叠拦截，不能只认单层 Mul。"""
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 1000)
+    with pytest.raises(TemplateRenderError, match="output length"):
+        render_jinja("{{ 'x' * 999 * 999 }}", {})
+
+
+def test_runtime_string_mul_rejected_before_alloc(monkeypatch):
+    """变量侧字符串重复在 call_binop 分配前拦截（非 finalize 事后）。"""
     import agent_runtime.extension.workflow_node.template_jinja as tj
 
     monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 50)
     with pytest.raises(TemplateRenderError, match="output length"):
         render_jinja("{{ text * n }}", {"text": "abcdefghij", "n": 20})
+
+
+def test_runtime_chained_string_mul_rejected(monkeypatch):
+    """运行时链式乘法每一步分配前检查，避免中间串再乘爆内存。"""
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 50)
+    with pytest.raises(TemplateRenderError, match="output length"):
+        render_jinja("{{ text * a * b }}", {"text": "xy", "a": 10, "b": 10})
+
+
+def test_moderate_string_mul_still_ok(monkeypatch):
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 100)
+    assert render_jinja("{{ 'ab' * 2 * 3 }}", {}) == "abababababab"
 
 
 def test_moderate_nested_loops_still_ok():
@@ -178,7 +203,7 @@ def test_render_timeout_does_not_block_on_shutdown(monkeypatch):
 
     release = threading.Event()
 
-    def _hang(_template, _variables, _deadline=None):
+    def _hang(*_args, **_kwargs):
         release.wait(timeout=30)
         return "never"
 
@@ -208,3 +233,98 @@ def test_infinite_iterator_hits_loop_budget(monkeypatch):
     with pytest.raises(TemplateRenderError, match="loop iterations exceeded"):
         render_jinja("{% for item in items %}{{ item }}{% endfor %}", {"items": _infinite()})
     assert time.monotonic() - started < 3, "infinite iterator should fail via budget, not hang"
+
+
+def test_static_range_zero_outer_not_false_positive(monkeypatch):
+    """外层 range(0) 的 size=0 不应触发嵌套乘积误杀。"""
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_LOOP_ITERATIONS", 50)
+    text = render_jinja(
+        "{% for i in range(0) %}"
+        "{% for j in range(100) %}"
+        "{% for k in range(100) %}x{% endfor %}"
+        "{% endfor %}{% endfor %}",
+        {},
+    )
+    assert text == ""
+
+
+def test_filter_list_hits_loop_budget(monkeypatch):
+    """|list / |join 等过滤器内部迭代也应计入预算。"""
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_LOOP_ITERATIONS", 50)
+    with pytest.raises(TemplateRenderError, match="loop iterations exceeded"):
+        render_jinja("{{ items|list|join('') }}", {"items": list(range(80))})
+
+
+def test_filter_sum_infinite_hits_budget_or_cancel(monkeypatch):
+    """|sum 走过滤器护栏；超时后 cancel 应让生成器停止推进。"""
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    progress = {"n": 0}
+
+    def _infinite():
+        while True:
+            progress["n"] += 1
+            yield 1
+
+    monkeypatch.setattr(tj, "MAX_LOOP_ITERATIONS", 10_000_000)
+    monkeypatch.setattr(tj, "RENDER_TIMEOUT_SEC", 0.2)
+    with pytest.raises(TemplateRenderError, match="timed out|loop iterations exceeded"):
+        render_jinja("{{ items|sum }}", {"items": _infinite()})
+    n_at_return = progress["n"]
+    time.sleep(0.3)
+    # cancel/deadline 后不应再大幅推进
+    assert progress["n"] - n_at_return < 50_000, (
+        f"generator kept running after return: {n_at_return} -> {progress['n']}"
+    )
+
+
+def test_filter_sort_hits_loop_budget(monkeypatch):
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_LOOP_ITERATIONS", 30)
+    with pytest.raises(TemplateRenderError, match="loop iterations exceeded"):
+        render_jinja("{{ items|sort|join(',') }}", {"items": list(range(50))})
+
+
+def test_render_concurrency_limit_blocks_extra(monkeypatch):
+    """超时 orphan 仍占槽时，超额请求应快速失败，避免无限起线程。"""
+    import threading
+
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    release = threading.Event()
+    started = threading.Event()
+    monkeypatch.setattr(tj, "_render_slots", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(tj, "RENDER_TIMEOUT_SEC", 2)
+
+    def _hang(*_args, **_kwargs):
+        started.set()
+        release.wait(timeout=30)
+        return "never"
+
+    monkeypatch.setattr(tj, "_render_with_guards", _hang)
+
+    errors: list[BaseException] = []
+
+    def _first_call() -> None:
+        try:
+            render_jinja("{{ x }}", {"x": 1})
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    t = threading.Thread(target=_first_call)
+    t.start()
+    assert started.wait(timeout=3), "first worker did not start"
+    try:
+        with pytest.raises(TemplateRenderError, match="concurrency limit"):
+            render_jinja("{{ x }}", {"x": 1})
+        # 等首个调用因 join 超时返回（worker 仍占槽挂起）
+        t.join(timeout=5)
+        assert errors and "timed out" in str(errors[0])
+    finally:
+        release.set()
+        t.join(timeout=5)
