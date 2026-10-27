@@ -138,29 +138,32 @@ def _make_guarded_finalize():
     return guarded_finalize
 
 
+def _const_str(node: nodes.Node) -> str | None:
+    if isinstance(node, nodes.Const) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _const_int(node: nodes.Node) -> int | None:
+    if isinstance(node, nodes.Const) and isinstance(node.value, int):
+        return node.value
+    return None
+
+
 def _reject_static_huge_string_mul(parsed: nodes.Template) -> None:
     """解析期拒绝字面量字符串重复（如 'x' * 1e7），避免渲染时先撑爆内存。"""
 
     def _mul_len(left: nodes.Node, right: nodes.Node) -> int | None:
-        if (
-            isinstance(left, nodes.Const)
-            and isinstance(left.value, str)
-            and isinstance(right, nodes.Const)
-            and isinstance(right.value, int)
-        ):
-            if right.value <= 0:
-                return 0
-            return len(left.value) * right.value
-        if (
-            isinstance(right, nodes.Const)
-            and isinstance(right.value, str)
-            and isinstance(left, nodes.Const)
-            and isinstance(left.value, int)
-        ):
-            if left.value <= 0:
-                return 0
-            return len(right.value) * left.value
-        return None
+        text = _const_str(left)
+        times = _const_int(right)
+        if text is None:
+            text = _const_str(right)
+            times = _const_int(left)
+        if text is None or times is None:
+            return None
+        if times <= 0:
+            return 0
+        return len(text) * times
 
     for node in parsed.find_all(nodes.Mul):
         size = _mul_len(node.left, node.right)
