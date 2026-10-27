@@ -695,7 +695,15 @@ def _compile_nested_patched(self, graph_store=None, step_callback=None):
             groups = self._resolve_barrier_groups(t, source_list)
 
             safe = True
-            if len(groups) <= 1:
+            # 环回边保护：若 t 可达 branch_node，则 bn->t 是环的一部分
+            # （t 是循环回边目标，如 dryrun 转账"转账主控_意图识别"复合循环：
+            # 环尾分支 -default-> 环首分支，环首另有 cycle_begin 常驻入边）。
+            # 此时"常驻前驱必然先触发、条件边冗余"的论证只在第一圈成立——
+            # 循环再次进入 t 只能靠这条条件边，过滤后第二圈起迭代失效
+            # （工作流提前结束/下一轮重启）。故判不安全，不做过滤。
+            if branch_node in self._forward_reachable(t):
+                safe = False
+            elif len(groups) <= 1:
                 # Single group: verify co-occurrence for targeting conditions.
                 # J is only reached when a group member fires, so the group
                 # is automatically satisfied.
