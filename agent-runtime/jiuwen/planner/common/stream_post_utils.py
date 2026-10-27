@@ -198,15 +198,11 @@ async def _format_yield_result(
     yield dict(llm_output=llm_output)
     time_dict.update(dict(total_latency=round(total_time, 2)))
     # inter-token（TPOT）：首末内容块间隔均值；单块/零块无意义不产出
-    if (
-        isinstance(finish_usage, dict)
-        and chunk_count > 1
-        and first_chunk_elapsed is not None
-        and last_chunk_elapsed is not None
-    ):
-        finish_usage["tpot_ms"] = (last_chunk_elapsed - first_chunk_elapsed) / (
-            chunk_count - 1
-        )
+    if isinstance(finish_usage, dict) and chunk_count > 1:
+        if first_chunk_elapsed is not None and last_chunk_elapsed is not None:
+            finish_usage["tpot_ms"] = (last_chunk_elapsed - first_chunk_elapsed) / (
+                chunk_count - 1
+            )
 
 
 def process_finish_item(

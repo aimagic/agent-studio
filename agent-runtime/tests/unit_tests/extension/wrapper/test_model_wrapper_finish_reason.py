@@ -6,20 +6,22 @@ core 侧 finish_reason 在消息顶层，OTel 载荷约定放 usage_metadata 内
 会被 _format_yield_result 当作 finish 块提前截断增量输出（原业务回归）。
 """
 
+import importlib.util
 import os
 import sys
 import types
 from typing import Optional
 
 # packages/（位于 agent-studio 仓库根，agent-runtime 上一级）下的 editable 包
-# （common_utils 等）在 pytest 的断言改写下 import 不到，手动加回 sys.path
+# （common_utils 等）在 pytest 的断言改写下 import 不到，手动补进 sys.path
+# （append 到末尾：仅补齐缺失路径，不抢占既有解析顺序，避免模块重名遮蔽）
 _REPO_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "..")
 )
 for _pkg in ("common_utils", "storage", "model_service"):
     _pkg_path = os.path.join(_REPO_ROOT, "packages", _pkg)
     if os.path.isdir(_pkg_path) and _pkg_path not in sys.path:
-        sys.path.insert(0, _pkg_path)
+        sys.path.append(_pkg_path)
 
 
 def _install_psycopg2_stub() -> None:
@@ -36,9 +38,11 @@ def _install_psycopg2_stub() -> None:
     psycopg2.OperationalError = type("OperationalError", (_error,), {})
 
     extras = types.ModuleType("psycopg2.extras")
-    extras.execute_values = lambda *a, **k: (_ for _ in ()).throw(
-        AssertionError("unit tests must not touch the database")
-    )
+
+    def _execute_values(*args, **kwargs):
+        raise AssertionError("unit tests must not touch the database")
+
+    extras.execute_values = _execute_values
     psycopg2.extras = extras
 
     sql_mod = types.ModuleType("psycopg2.sql")
@@ -92,7 +96,6 @@ from openjiuwen.core.foundation.llm.schema.message import (  # noqa: E402
 
 # 绕过 jiuwen.extension.wrapper.__init__（会拉起 mcp / customer_header 等
 # 与被测逻辑无关且单测环境缺依赖的模块），按文件直接加载被测模块
-import importlib.util  # noqa: E402
 
 
 def _seed_trace_compat_stub() -> Optional[dict]:
@@ -159,6 +162,17 @@ finally:
 ModelWrapper = _model_wrapper.ModelWrapper
 
 
+class _ModelWrapperHarness(ModelWrapper):
+    """被测方法的测试入口：单例静态方法无需（也不应）构造实例。
+
+    子类内经 cls 访问受保护静态方法，为类外直接触碰保护成员的合规替代。
+    """
+
+    @classmethod
+    def call_post_stream_message(cls, *args, **kwargs):
+        return cls._post_stream_message(*args, **kwargs)
+
+
 def _core_response(finish_reason: str) -> AssistantMessage:
     return AssistantMessage(
         content="done",
@@ -171,13 +185,15 @@ class TestPostStreamMessageFinishReason:
     @staticmethod
     def test_default_keeps_finish_reason_empty():
         """默认（流式路径调用形态）：顶层 finish_reason 不进 usage_metadata。"""
-        ai_message, _ = ModelWrapper._post_stream_message(_core_response("stop"))
+        ai_message, _ = _ModelWrapperHarness.call_post_stream_message(
+            _core_response("stop")
+        )
         assert ai_message.usage_metadata.finish_reason == ""
 
     @staticmethod
     def test_copy_finish_reason_true_copies_real_value():
         """显式开启（非流式路径）：真实值复制，供 OTel 载荷读取。"""
-        ai_message, _ = ModelWrapper._post_stream_message(
+        ai_message, _ = _ModelWrapperHarness.call_post_stream_message(
             _core_response("stop"), copy_finish_reason=True
         )
         assert ai_message.usage_metadata.finish_reason == "stop"
@@ -186,7 +202,7 @@ class TestPostStreamMessageFinishReason:
     def test_copy_finish_reason_skips_placeholder():
         """占位值 null 与空值不复制（保持默认空串）。"""
         for placeholder in ("null", ""):
-            ai_message, _ = ModelWrapper._post_stream_message(
+            ai_message, _ = _ModelWrapperHarness.call_post_stream_message(
                 _core_response(placeholder), copy_finish_reason=True
             )
             assert ai_message.usage_metadata.finish_reason == ""
