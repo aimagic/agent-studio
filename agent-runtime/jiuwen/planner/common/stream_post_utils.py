@@ -83,8 +83,9 @@ def build_usage_metadata(
     # 缺数据：不产出全零载荷，维持「缺数据路径不注入键」契约。时延信号
     # 独立判活：token 未上报但时间戳在（model_wrapper 无条件打点）或掐表
     # 可算（tpot）时，仍产出仅含时延键的载荷，不虚构 token 键
-    if not has_usage and not (has_ttft or has_tpot):
-        return {}
+    if not has_usage:
+        if not has_ttft and not has_tpot:
+            return {}
     usage_dict: dict = {}
     if has_usage:
         usage_dict = {
