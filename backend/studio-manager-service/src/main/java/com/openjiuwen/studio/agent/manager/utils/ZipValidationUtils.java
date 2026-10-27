@@ -558,7 +558,21 @@ public class ZipValidationUtils {
 
         // YAML frontmatter解析
         if (content.startsWith("---")) {
-            int endFront = content.indexOf("---", 3);
+            // 查找 frontmatter 结束标记 ---（必须是行首，前面是换行符，避免匹配 block scalar 内容中的缩进 ---）
+            int endFront = -1;
+            int searchFrom = 3;
+            while (true) {
+                int pos = content.indexOf("---", searchFrom);
+                if (pos == -1) {
+                    break;
+                }
+                // 必须在行首：pos==0（不可能，前面有起始---）或前一个字符是换行
+                if (pos > 0 && content.charAt(pos - 1) == '\n') {
+                    endFront = pos;
+                    break;
+                }
+                searchFrom = pos + 3;
+            }
             if (endFront != -1) {
                 String frontmatterText = content.substring(3, endFront).trim();
 
@@ -594,6 +608,7 @@ public class ZipValidationUtils {
                             StringBuilder blockValue = new StringBuilder();
                             idx++;
                             boolean firstLine = true;
+                            boolean lastWasBlankLine = false;
                             while (idx < lines.length) {
                                 String bl = lines[idx];
                                 // 去除行尾 \r 以兼容 Windows CRLF 换行
@@ -601,19 +616,21 @@ public class ZipValidationUtils {
                                 // 空行属于 block 内容（段落分隔）
                                 if (blTrimmed.isEmpty()) {
                                     idx++;
-                                    // 空行在 folded 模式下表示换行，在 literal 模式下也是换行
                                     if (blockValue.length() > 0) {
                                         blockValue.append("\n");
                                     }
+                                    lastWasBlankLine = true;
                                     continue;
                                 }
                                 // 缩进行属于 block scalar
                                 if (bl.charAt(0) == ' ' || bl.charAt(0) == '\t') {
-                                    if (!firstLine) {
+                                    if (!firstLine && !lastWasBlankLine) {
+                                        // folded 模式换行合并为空格，但空行后不再追加空格（YAML folded 语义）
                                         blockValue.append(isFolded ? " " : "\n");
                                     }
                                     blockValue.append(bl.trim());
                                     firstLine = false;
+                                    lastWasBlankLine = false;
                                     idx++;
                                 } else {
                                     // 非缩进行且非空行 → block 结束

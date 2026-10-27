@@ -188,7 +188,24 @@ export class ImportSkillModalComponent {
 
   private parseSkillMd(content: string): { name: string; description: string } {
     const skill = { name: '', description: '' };
-    const lines = content.split('---')[1]?.split('\n') || [];
+    // 查找 frontmatter：起始 --- 在文件开头，结束 --- 必须在行首（前面是换行符）
+    // 避免匹配 block scalar 内容中的缩进 ---
+    if (!content.startsWith('---')) {
+      return skill;
+    }
+    let endFront = -1;
+    let searchFrom = 3;
+    while (true) {
+      const pos = content.indexOf('---', searchFrom);
+      if (pos === -1) break;
+      if (pos > 0 && content[pos - 1] === '\n') {
+        endFront = pos;
+        break;
+      }
+      searchFrom = pos + 3;
+    }
+    if (endFront === -1) return skill;
+    const lines = content.substring(3, endFront).trim().split('\n');
 
     let i = 0;
     while (i < lines.length) {
@@ -215,6 +232,7 @@ export class ImportSkillModalComponent {
           const blockLines: string[] = [];
           i++;
           let firstLine = true;
+          let lastWasBlankLine = false;
           while (i < lines.length) {
             const bl = lines[i];
             // 去除行尾 \r 以兼容 Windows CRLF 换行
@@ -225,15 +243,18 @@ export class ImportSkillModalComponent {
               if (blockLines.length > 0) {
                 blockLines.push('\n');
               }
+              lastWasBlankLine = true;
               continue;
             }
             // 缩进行属于 block scalar
             if (bl.charAt(0) === ' ' || bl.charAt(0) === '\t') {
-              if (!firstLine) {
+              if (!firstLine && !lastWasBlankLine) {
+                // folded 模式换行合并为空格，但空行后不再追加空格（YAML folded 语义）
                 blockLines.push(isFolded ? ' ' : '\n');
               }
               blockLines.push(bl.trim());
               firstLine = false;
+              lastWasBlankLine = false;
               i++;
             } else {
               break;
@@ -335,6 +356,21 @@ export class ImportSkillModalComponent {
       this.importZipErrorTip = this.i18n.transform('skill.import.result.valid.tip1');
       this.isShowResult = true;
       return;
+    }
+    // 根级非空目录唯一性：含 SKILL.md 的目录必须是根级唯一的非空目录（与后端情况2对齐）
+    // 否则如 assets/ + my-skill/SKILL.md 会通过前端预览，但后端以 FILES_NUMBER_DOES_NOT_MATCH 拒绝
+    const rootLevelDirs = new Set(
+      rootFiles
+        .filter(p => p.includes('/'))
+        .map(p => p.split('/')[0])
+    );
+    for (const dir of rootLevelDirs) {
+      if (dir !== folderName) {
+        this.skillInfo = { name: '', description: '' };
+        this.importZipErrorTip = this.i18n.transform('skill.import.result.valid.tip1');
+        this.isShowResult = true;
+        return;
+      }
     }
     const parsed = this.parseSkillMd(fileMap[skillMdPath]);
     this.skillInfo = parsed;
