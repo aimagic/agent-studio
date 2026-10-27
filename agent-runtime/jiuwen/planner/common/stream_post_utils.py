@@ -56,16 +56,18 @@ def build_usage_metadata(
 ) -> dict:
     """构造 openjiuwen core OTel handler 约定键名的 usage_metadata 载荷。
 
-    handler（OtelAgentHandler._set_llm_response_attrs）只认这些扁平键，缺键自动
-    跳过。TTFT 由模型层双时间戳（first_token_time/requests_start_time，ISO 串）
-    换算秒值（消费端 gen_ai.response.time_to_first_chunk 按秒）——handler 只解析
-    数值，直传 ISO 串会被守卫跳过。
+    handler（OtelAgentHandler._set_llm_response_attrs）只认这些扁平键：
+    token/成本键在载荷存在时无条件落属性、缺键由 or 0/"" 兜底；first_token_time
+    按 str() 后 float() 解析（数值与数值串均可），直传 ISO 串会被 ValueError
+    守卫跳过。TTFT 由模型层双时间戳（first_token_time/requests_start_time，
+    ISO 串）换算，消费端 gen_ai.response.time_to_first_chunk 按 GenAI semconv
+    为秒（double），故直接给出 float 秒值。
     """
     if usage is None:
         return {}
-    # 全空 usage（模型错误 / 未上报用量的默认构造）视为缺数据：不产出全零
-    # 载荷，维持「缺数据路径不注入键」契约（避免 0 token + 空 model_name
-    # 写成误导性属性；有任一有效信号即正常产出）
+    ttft_ms = _iso_delta_ms(usage.first_token_time, usage.requests_start_time)
+    has_ttft = ttft_ms is not None and ttft_ms >= 0
+    has_tpot = tpot_ms is not None and tpot_ms > 0
     usage_signals = (
         usage.input_tokens,
         usage.output_tokens,
@@ -76,27 +78,31 @@ def build_usage_metadata(
         usage.output_cost,
         usage.total_cost,
     )
-    if not any(usage_signals):
+    has_usage = any(usage_signals)
+    # 全空 usage（模型错误 / 未上报用量的默认构造）且无任何可算时延 → 视为
+    # 缺数据：不产出全零载荷，维持「缺数据路径不注入键」契约。时延信号
+    # 独立判活：token 未上报但时间戳在（model_wrapper 无条件打点）或掐表
+    # 可算（tpot）时，仍产出仅含时延键的载荷，不虚构 token 键
+    if not has_usage and not (has_ttft or has_tpot):
         return {}
-    usage_dict = {
-        "input_tokens": usage.input_tokens or 0,
-        "output_tokens": usage.output_tokens or 0,
-        "model_name": usage.model_name or "",
-        "total_cost": usage.total_cost or 0.0,
-        "input_cost": usage.input_cost or 0.0,
-        "output_cost": usage.output_cost or 0.0,
-    }
-    if usage.cache_tokens:
-        usage_dict["cache_tokens"] = usage.cache_tokens
-    if usage.reasoning_tokens:
-        usage_dict["reasoning_tokens"] = usage.reasoning_tokens
-    ttft_ms = _iso_delta_ms(usage.first_token_time, usage.requests_start_time)
-    if ttft_ms is not None and ttft_ms >= 0:
-        # core handler 将该键透传至 gen_ai.response.time_to_first_chunk
-        # （GenAI semconv 单位为秒；带 _ms 后缀的自定义键才是毫秒），
-        # 毫秒差需换算成秒值，否则 span 属性被放大 1000 倍
-        usage_dict["first_token_time"] = str(round(ttft_ms / 1000, 6))
-    if tpot_ms is not None and tpot_ms > 0:
+    usage_dict: dict = {}
+    if has_usage:
+        usage_dict = {
+            "input_tokens": usage.input_tokens or 0,
+            "output_tokens": usage.output_tokens or 0,
+            "model_name": usage.model_name or "",
+            "total_cost": usage.total_cost or 0.0,
+            "input_cost": usage.input_cost or 0.0,
+            "output_cost": usage.output_cost or 0.0,
+        }
+        if usage.cache_tokens:
+            usage_dict["cache_tokens"] = usage.cache_tokens
+        if usage.reasoning_tokens:
+            usage_dict["reasoning_tokens"] = usage.reasoning_tokens
+    if has_ttft:
+        # 毫秒差须 /1000 换算为秒值 float，否则 span 属性被放大 1000 倍
+        usage_dict["first_token_time"] = round(ttft_ms / 1000, 6)
+    if has_tpot:
         usage_dict["inter_token_latency_ms"] = round(tpot_ms, 2)
     return usage_dict
 

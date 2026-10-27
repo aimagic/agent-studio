@@ -81,6 +81,37 @@ class TestBuildUsageMetadata:
         assert build_usage_metadata(UsageMetadata(model_name="qwen-max")) != {}
 
     @staticmethod
+    def test_latency_only_usage_still_emits():
+        """token 未上报但时间戳在（model_wrapper 无条件打点）→ 仅时延键。
+
+        全零守卫不得误伤可算时延：TTFT 换算秒值、TPOT 透传，且不虚构
+        token/成本键（handler 对缺键有 or 0 兜底，无需我方补零）。
+        """
+        usage = _usage(
+            model_name="",
+            input_tokens=0,
+            output_tokens=0,
+            total_tokens=0,
+            cache_tokens=0,
+            reasoning_tokens=0,
+            input_cost=0.0,
+            output_cost=0.0,
+            total_cost=0.0,
+        )
+        result = build_usage_metadata(usage, tpot_ms=12.5)
+        assert result["first_token_time"] == pytest.approx(0.2)
+        assert result["inter_token_latency_ms"] == 12.5
+        assert "input_tokens" not in result
+        assert "model_name" not in result
+        assert "total_cost" not in result
+
+    @staticmethod
+    def test_tpot_only_emits_without_timestamps():
+        """无用量也无模型层时间戳，但掐表可算 → 仅 TPOT 键。"""
+        result = build_usage_metadata(UsageMetadata(), tpot_ms=5.0)
+        assert result == {"inter_token_latency_ms": 5.0}
+
+    @staticmethod
     def test_full_usage_keys():
         """完整字段 → core handler 约定键名齐全，TTFT 换算为毫秒数值串。"""
         result = build_usage_metadata(_usage(), tpot_ms=12.5)
@@ -92,8 +123,9 @@ class TestBuildUsageMetadata:
         assert result["output_cost"] == 0.02
         assert result["cache_tokens"] == 5
         assert result["reasoning_tokens"] == 7
-        # 秒值契约：gen_ai.response.time_to_first_chunk 按秒（200ms → 0.2）
-        assert result["first_token_time"] == "0.2"
+        # 秒值契约：gen_ai.response.time_to_first_chunk 按秒（200ms → 0.2），
+        # 直接给 float（semconv double；handler str()→float() 均可解析）
+        assert result["first_token_time"] == pytest.approx(0.2)
         assert result["inter_token_latency_ms"] == 12.5
 
     @staticmethod
@@ -280,7 +312,7 @@ class TestStreamFunctionCallEmit:
         usage_dict = end_payload[USAGE_METADATA]
         assert usage_dict["total_cost"] == 0.03
         assert usage_dict["input_tokens"] == 10
-        assert usage_dict["first_token_time"] == "0.2"
+        assert usage_dict["first_token_time"] == pytest.approx(0.2)
         assert end_payload[FINISH_REASON] == "stop"
         # insights 原有键保持原样
         assert "model_stat" in end_payload
