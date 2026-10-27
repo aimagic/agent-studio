@@ -7,6 +7,8 @@ inter-token 掐表与 usage 暂存、stream_function_call 发射点载荷。
 
 import asyncio
 
+import pytest
+
 from jiuwen.common.llm_service.messages import AIMessage, UsageMetadata
 from jiuwen.planner.common import stream_post_utils as spu
 from jiuwen.planner.common.stream_post_utils import (
@@ -67,6 +69,16 @@ class TestBuildUsageMetadata:
     def test_none_returns_empty():
         """无 usage → 空载荷（发射点据此跳过注入）。"""
         assert build_usage_metadata(None) == {}
+
+    @staticmethod
+    def test_all_default_usage_returns_empty():
+        """全默认 UsageMetadata（模型错误/未上报用量）→ 空载荷，不注入全零键。
+
+        有任一有效信号（如 model_name）则正常产出。
+        """
+        assert build_usage_metadata(UsageMetadata()) == {}
+        assert build_usage_metadata(UsageMetadata(input_tokens=0)) == {}
+        assert build_usage_metadata(UsageMetadata(model_name="qwen-max")) != {}
 
     @staticmethod
     def test_full_usage_keys():
@@ -170,6 +182,30 @@ class TestFormatYieldResult:
         )
         _, finish_usage = self._consume(items, dict())
         assert "tpot_ms" not in finish_usage
+
+    def test_tpot_unit_is_milliseconds(self, monkeypatch):
+        """tpot_ms 单位锁定：time.time() 秒差须 ×1000 入毫秒键。
+
+        假钟每调用前进 0.1s：两内容块间隔 0.2s → TPOT 应为 200ms
+        （若漏乘 1000 会得到 0.2）。
+        """
+
+        class _StepClock:
+            def __init__(self):
+                self._now = 1000.0
+
+            def time(self):
+                self._now += 0.1
+                return self._now
+
+        monkeypatch.setattr(spu.time, "time", _StepClock().time)
+        items = self._stream(
+            AIMessage(content="a", usage_metadata=UsageMetadata()),
+            AIMessage(content="b", usage_metadata=UsageMetadata()),
+            AIMessage(content="done", usage_metadata=_usage()),
+        )
+        _, finish_usage = self._consume(items, dict())
+        assert finish_usage["tpot_ms"] == pytest.approx(200.0)
 
     def test_default_finish_usage_none_keeps_behavior(self):
         """不传 finish_usage（ask_user_module 裸调用场景）行为不变。"""

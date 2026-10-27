@@ -63,6 +63,21 @@ def build_usage_metadata(
     """
     if usage is None:
         return {}
+    # 全空 usage（模型错误 / 未上报用量的默认构造）视为缺数据：不产出全零
+    # 载荷，维持「缺数据路径不注入键」契约（避免 0 token + 空 model_name
+    # 写成误导性属性；有任一有效信号即正常产出）
+    usage_signals = (
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.model_name,
+        usage.cache_tokens,
+        usage.reasoning_tokens,
+        usage.input_cost,
+        usage.output_cost,
+        usage.total_cost,
+    )
+    if not any(usage_signals):
+        return {}
     usage_dict = {
         "input_tokens": usage.input_tokens or 0,
         "output_tokens": usage.output_tokens or 0,
@@ -197,10 +212,11 @@ async def _format_yield_result(
         llm_output["reasoning_content"] = reasoning_content
     yield dict(llm_output=llm_output)
     time_dict.update(dict(total_latency=round(total_time, 2)))
-    # inter-token（TPOT）：首末内容块间隔均值；单块/零块无意义不产出
+    # inter-token（TPOT）：首末内容块间隔均值；单块/零块无意义不产出。
+    # 掐表来自 time.time()（单位秒），×1000 换算后入 *_ms 键
     if isinstance(finish_usage, dict) and chunk_count > 1:
         if first_chunk_elapsed is not None and last_chunk_elapsed is not None:
-            finish_usage["tpot_ms"] = (last_chunk_elapsed - first_chunk_elapsed) / (
+            finish_usage["tpot_ms"] = (last_chunk_elapsed - first_chunk_elapsed) * 1000 / (
                 chunk_count - 1
             )
 
