@@ -435,7 +435,8 @@ export class CmdTextareaComponent implements ControlValueAccessor {
       startContainer.previousSibling.remove();
       event.preventDefault();
     } else if (
-      startContainer.parentElement.className === 'highlight'
+      startContainer.parentElement.className === 'highlight' ||
+      startContainer.parentElement.className === 'highlight-inline'
 
     ) {
       if( range.startOffset === startContainer.parentElement.innerText.length){
@@ -461,7 +462,7 @@ export class CmdTextareaComponent implements ControlValueAccessor {
         }
         return;
       }
-      if (targetNode.classList.contains('highlight')) {
+      if (targetNode.classList.contains('highlight') || targetNode.classList.contains('highlight-inline')) {
         targetNode.remove();
         event.preventDefault();
         this.onContentChange();
