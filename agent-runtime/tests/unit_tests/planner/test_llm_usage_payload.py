@@ -113,8 +113,10 @@ class TestBuildUsageMetadata:
 
     @staticmethod
     def test_none_usage_with_tpot_still_emits():
-        """无 finish 块（如 finish_reason=length 截断）：usage 为 None 但掐表
-        仍在，TPOT 不得被 usage is None 分支静默丢弃。"""
+        """无 finish 块（如 finish_reason=length 截断）时不丢 TPOT。
+
+        usage 为 None 但掐表仍在，TPOT 不得被 usage is None 分支静默丢弃。
+        """
         assert build_usage_metadata(None, tpot_ms=12.5) == {
             "inter_token_latency_ms": 12.5
         }
