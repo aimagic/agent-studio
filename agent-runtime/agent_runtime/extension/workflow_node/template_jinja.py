@@ -165,9 +165,8 @@ def _render_with_guards(template: str, variables: dict[str, Any]) -> str:
 
     try:
         rendered = env.from_string(template).render(**variables)
-    except TemplateRenderError:
-        raise
     except (SecurityError, TemplateError) as exc:
+        # TemplateRenderError（护栏主动抛出）不在此捕获，原样向上传播
         raise TemplateRenderError(str(exc)) from exc
 
     if not isinstance(rendered, str):
@@ -198,7 +197,5 @@ def render_jinja(template: str, variables: dict[str, Any]) -> str:
             raise TemplateRenderError(
                 f"template render timed out after {RENDER_TIMEOUT_SEC}s"
             ) from exc
-        except TemplateRenderError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — 统一成 TemplateRenderError
-            raise TemplateRenderError(str(exc)) from exc
+        # TemplateRenderError 等其它异常原样向上传播，由调用方统一处理；
+        # 不在此 except X: raise，避免触发 G.ERR.13
