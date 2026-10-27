@@ -33,6 +33,8 @@ import com.openjiuwen.studio.agent.manager.rce.client.AgentRuntimeClient;
 
 import com.openjiuwen.studio.agent.manager.service.AgentRuntimeService;
 import com.openjiuwen.studio.agent.manager.service.debugging.ControllerDebuggingMgmtService;
+import com.openjiuwen.studio.agent.manager.observability.MdcKeys;
+import com.openjiuwen.studio.agent.manager.observability.OutboundCorrelationPolicy;
 import feign.FeignException;
 import feign.Request;
 import org.junit.jupiter.api.BeforeEach;
@@ -42,6 +44,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.MDC;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -49,9 +52,11 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -1089,6 +1094,103 @@ class AgentServiceProxyServiceTest {
         assertEquals("http://runtime:8080/v1/workflows/chat/code-1/conversations/conv-1?workspace_id=ws-1",
             urlCaptor.getValue());
         verify(environmentManagerMapper, never()).findByProjectIdAndIsDefaultTrue(anyString());
+    }
+
+    /**
+     * parseSkipOutboundHeaders — null / 空串 / 全空白项:得到空集(不过滤,旧行为)
+     */
+    @Test
+    void testParseSkipOutboundHeaders_BlankInputYieldsEmptySet() {
+        assertTrue(AgentServiceProxyService.parseSkipOutboundHeaders(null).isEmpty());
+        assertTrue(AgentServiceProxyService.parseSkipOutboundHeaders("").isEmpty());
+        assertTrue(AgentServiceProxyService.parseSkipOutboundHeaders(" , , ").isEmpty());
+    }
+
+    /**
+     * parseSkipOutboundHeaders — trim + 小写归一 + 去空项
+     */
+    @Test
+    void testParseSkipOutboundHeaders_TrimsLowercasesAndDropsBlanks() {
+        assertEquals(Set.of("host", "content-length", "accept-encoding"),
+            AgentServiceProxyService.parseSkipOutboundHeaders(" Host ,Content-Length,,accept-encoding "));
+    }
+
+    /**
+     * shouldSkipOutboundHeader — 名单为空:任何头都不跳过(全量透传旧行为)
+     */
+    @Test
+    void testShouldSkipOutboundHeader_EmptyListMatchesNothing() {
+        ReflectionTestUtils.setField(proxyService, "skipOutboundHeaders", Set.of());
+        assertFalse(proxyService.shouldSkipOutboundHeader("Host"));
+        assertFalse(proxyService.shouldSkipOutboundHeader("content-length"));
+    }
+
+    /**
+     * shouldSkipOutboundHeader — 命中判断大小写不敏感;业务头不受影响
+     */
+    @Test
+    void testShouldSkipOutboundHeader_CaseInsensitive() {
+        ReflectionTestUtils.setField(proxyService, "skipOutboundHeaders", Set.of("host", "content-length"));
+        assertTrue(proxyService.shouldSkipOutboundHeader("Host"));
+        assertTrue(proxyService.shouldSkipOutboundHeader("HOST"));
+        assertTrue(proxyService.shouldSkipOutboundHeader("Content-Length"));
+        assertFalse(proxyService.shouldSkipOutboundHeader("Authorization"));
+    }
+
+    /**
+     * buildStreamRequest — 名单为空(默认):Host / Content-Length / Accept-Encoding 照常透传(回归锚)
+     */
+    @Test
+    void testBuildStreamRequest_EmptyListForwardsTransportHeaders() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.add("Host", "studio.example.com");
+        headers.add("Content-Length", "123");
+        headers.add("Accept-Encoding", "gzip");
+        headers.add("Authorization", "Bearer token");
+
+        okhttp3.Request request = invokeBuildStreamRequest(headers);
+        assertEquals("studio.example.com", request.header("Host"));
+        assertEquals("123", request.header("Content-Length"));
+        assertEquals("gzip", request.header("Accept-Encoding"));
+        assertEquals("Bearer token", request.header("Authorization"));
+    }
+
+    /**
+     * buildStreamRequest — 名单配置后:名单内的头被跳过,业务头照常透传
+     */
+    @Test
+    void testBuildStreamRequest_ConfiguredListSkipsListedHeaders() {
+        ReflectionTestUtils.setField(proxyService, "skipOutboundHeaders",
+            Set.of("host", "connection", "keep-alive", "transfer-encoding", "content-length", "accept-encoding"));
+        HttpHeaders headers = new HttpHeaders();
+        headers.add("Host", "studio.example.com");
+        headers.add("Content-Length", "123");
+        headers.add("Accept-Encoding", "gzip");
+        headers.add("Connection", "keep-alive");
+        headers.add("Authorization", "Bearer token");
+
+        okhttp3.Request request = invokeBuildStreamRequest(headers);
+        assertNull(request.header("Host"));
+        assertNull(request.header("Content-Length"));
+        assertNull(request.header("Accept-Encoding"));
+        assertNull(request.header("Connection"));
+        assertEquals("Bearer token", request.header("Authorization"));
+    }
+
+    /**
+     * 直调私有 buildStreamRequest:MDC 补齐 RUNTIME_EXECUTION 三键,origin 与目标 URL 一致
+     */
+    private okhttp3.Request invokeBuildStreamRequest(HttpHeaders headers) {
+        MDC.put(MdcKeys.REQUEST_ID, "req-1");
+        MDC.put(MdcKeys.TRACE_ID, "trace-1");
+        MDC.put(MdcKeys.EXECUTION_ID, "exec-1");
+        try {
+            return ReflectionTestUtils.invokeMethod(proxyService, "buildStreamRequest",
+                "http://runtime:8080/v1/workflows/chat", headers, "{}",
+                OutboundCorrelationPolicy.RUNTIME_EXECUTION, "http://runtime:8080");
+        } finally {
+            MDC.clear();
+        }
     }
 
     /**
