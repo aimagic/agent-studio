@@ -208,9 +208,10 @@ export class ImportSkillModalComponent {
         skill.name = trimmed.slice(5).trim();
       } else if (trimmed.startsWith('description:')) {
         let value = trimmed.slice(12).trim();
-        // YAML block scalar: | (literal, 保留换行) 或 > (folded, 换行合并为空格)
-        if (value === '|' || value === '>') {
-          const isFolded = value === '>';
+        // YAML block scalar: | (literal) 或 > (folded)，支持 chomping indicator (- +)
+        const isBlockScalar = value === '|' || value === '>' || value === '|-' || value === '|+' || value === '>-' || value === '>+';
+        if (isBlockScalar) {
+          const isFolded = value.startsWith('>');
           const blockLines: string[] = [];
           i++;
           let firstLine = true;

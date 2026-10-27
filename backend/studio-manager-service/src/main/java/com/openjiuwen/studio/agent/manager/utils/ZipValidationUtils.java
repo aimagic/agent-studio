@@ -344,17 +344,19 @@ public class ZipValidationUtils {
     /**
      * 验证目录结构。
      *
-     * <p>平铺结构优先判定：根级有 SKILL.md 即视为平铺包，允许任意数量的附属文件/文件夹，
-     * 但显式禁止子目录下再出现 SKILL.md，避免后续 Files.walk 查找歧义。
-     * 根级无 SKILL.md 时才进入"单子目录含 SKILL.md"分支。</p>
+     * <p>平铺结构优先判定：根级有带 frontmatter 的 SKILL.md 即视为平铺包，
+     * 允许任意数量的附属文件/文件夹，但显式禁止子目录下再出现带 frontmatter 的 SKILL.md，
+     * 避免后续 findFirst 查找歧义。子目录中不带 frontmatter 的同名普通文档不影响判定。
+     * 根级无带 frontmatter 的 SKILL.md 时才进入"单子目录含 SKILL.md"分支。</p>
      *
-     * <p><b>单文件夹结构的根级约束</b>：仅认可直接位于子目录根级的 SKILL.md
+     * <p><b>单文件夹结构的根级约束</b>：仅认可直接位于子目录根级的带 frontmatter 的 SKILL.md
      * （即 {@code baseDir/<name>/SKILL.md}）。</p>
      * <ul>
-     *   <li>禁止 {@code a/b/SKILL.md}：即 SKILL.md 嵌套在二级及更深子目录，
+     *   <li>禁止 {@code a/b/SKILL.md}：即带 frontmatter 的 SKILL.md 嵌套在二级及更深子目录，
      *       即使 name=b 也无法通过——否则会以原始结构上传，生成不符合
-     *       {@code {name}/SKILL.md} 规范的制品，下游消费方可能解析失败；</li>
-     *   <li>skillDirs.size() != 1 拒绝：含 SKILL.md 的直接子目录数量必须恰为 1；</li>
+     *       {@code {name}/SKILL.md} 规范的制品，下游消费方可能解析失败；
+     *       不带 frontmatter 的同名普通文档不受此约束；</li>
+     *   <li>skillDirs.size() != 1 拒绝：含带 frontmatter 的 SKILL.md 的直接子目录数量必须恰为 1；</li>
      *   <li><b>根级非空目录唯一性</b>：根级非空目录总数也必须恰为 1（即 skillDirs 那个）。
      *       否则如 {@code assets/ + my-skill/SKILL.md} 会通过校验并按原结构上传，
      *       详情页解压后 innerData[0] 按 sortTree 字母序取到 assets/ 而非 my-skill/，
@@ -407,16 +409,18 @@ public class ZipValidationUtils {
             for (Path dir : nonEmptyDirs) {
                 Path skillMdAtRoot = dir.resolve("SKILL.md");
                 if (Files.exists(skillMdAtRoot)) {
-                    // 强制 SKILL.md 所在目录必须是 baseDir 的直接子目录（深度=1）
-                    Path rel = baseDir.relativize(dir);
-                    if (rel.getNameCount() != 1) {
-                        log.error("Nested SKILL.md directory must be a direct child of base, got: {}", rel);
-                        throw new AgentStudioException(StudioError.FILES_NUMBER_DOES_NOT_MATCH);
-                    }
-                    allSkillDirs.add(dir);
-                    if (isSkillMdWithFrontmatter(skillMdAtRoot)) {
+                    boolean hasFrontmatter = isSkillMdWithFrontmatter(skillMdAtRoot);
+                    // 嵌套检查只对带 frontmatter 的 SKILL.md 生效
+                    // 不带 frontmatter 的同名普通文档（如 my-skill/docs/SKILL.md）不参与结构判定
+                    if (hasFrontmatter) {
+                        Path rel = baseDir.relativize(dir);
+                        if (rel.getNameCount() != 1) {
+                            log.error("Nested SKILL.md directory must be a direct child of base, got: {}", rel);
+                            throw new AgentStudioException(StudioError.FILES_NUMBER_DOES_NOT_MATCH);
+                        }
                         frontmatterSkillDirs.add(dir);
                     }
+                    allSkillDirs.add(dir);
                 }
             }
 
@@ -557,9 +561,14 @@ public class ZipValidationUtils {
                         String key = line.substring(0, colonIndex).trim();
                         String value = line.substring(colonIndex + 1).trim();
 
-                        // YAML block scalar: | (literal, 保留换行) 或 > (folded, 换行合并为空格)
-                        if ("|".equals(value) || ">".equals(value)) {
-                            boolean isFolded = ">".equals(value);
+                        // YAML block scalar: | (literal) 或 > (folded)，支持 chomping indicator (- +)
+                        // 如 |- (strip)、|+ (keep)、>- (strip)、>+ (keep)
+                        boolean isBlockScalar = value.equals("|") || value.equals(">")
+                                || value.equals("|-") || value.equals("|+")
+                                || value.equals(">-") || value.equals(">+");
+                        if (isBlockScalar) {
+                            boolean isFolded = value.startsWith(">");
+                            // chomping indicator (- +) 对 description 用途无实质影响（末尾 trim）
                             StringBuilder blockValue = new StringBuilder();
                             idx++;
                             boolean firstLine = true;

@@ -916,6 +916,96 @@ public class ZipValidationUtilsTest {
     }
 
     /**
+     * block scalar: description: | 多行内容（literal，保留换行语义转为描述）
+     */
+    @Test
+    public void testValidateZipFile_BlockScalarLiteral() throws IOException {
+        File zip = tempDir.resolve("block-literal.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry skillMd = new ZipEntry("block-literal/SKILL.md");
+            zos.putNextEntry(skillMd);
+            String content = "---\nname: block-skill\ndescription: |\n  First paragraph.\n  Second paragraph.\n---\n# Skill";
+            zos.write(content.getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        Map<String, Object> frontmatter = assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(zip));
+        assertNotNull(frontmatter);
+        assertEquals("block-skill", frontmatter.get("name"));
+        String desc = frontmatter.get("description").toString();
+        assertTrue(desc.contains("First paragraph."), "description should contain first paragraph");
+        assertTrue(desc.contains("Second paragraph."), "description should contain second paragraph");
+    }
+
+    /**
+     * block scalar: description: > 多行内容（folded，换行合并为空格）
+     */
+    @Test
+    public void testValidateZipFile_BlockScalarFolded() throws IOException {
+        File zip = tempDir.resolve("block-folded.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry skillMd = new ZipEntry("block-folded/SKILL.md");
+            zos.putNextEntry(skillMd);
+            String content = "---\nname: folded-skill\ndescription: >\n  Line one.\n  Line two.\n---\n# Skill";
+            zos.write(content.getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        Map<String, Object> frontmatter = assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(zip));
+        assertNotNull(frontmatter);
+        assertEquals("folded-skill", frontmatter.get("name"));
+        String desc = frontmatter.get("description").toString();
+        assertTrue(desc.contains("Line one."), "description should contain line one");
+        assertTrue(desc.contains("Line two."), "description should contain line two");
+    }
+
+    /**
+     * block scalar: description: >- 带 chomping indicator
+     */
+    @Test
+    public void testValidateZipFile_BlockScalarChompingIndicator() throws IOException {
+        File zip = tempDir.resolve("block-chomp.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry skillMd = new ZipEntry("block-chomp/SKILL.md");
+            zos.putNextEntry(skillMd);
+            String content = "---\nname: chomp-skill\ndescription: >-\n  Stripped content here.\n---\n# Skill";
+            zos.write(content.getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        Map<String, Object> frontmatter = assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(zip));
+        assertNotNull(frontmatter);
+        assertEquals("chomp-skill", frontmatter.get("name"));
+        assertEquals("Stripped content here.", frontmatter.get("description"));
+    }
+
+    /**
+     * block scalar: CRLF 换行下空行不截断 block 内容
+     */
+    @Test
+    public void testValidateZipFile_BlockScalarCRLF() throws IOException {
+        File zip = tempDir.resolve("block-crlf.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            ZipEntry skillMd = new ZipEntry("block-crlf/SKILL.md");
+            zos.putNextEntry(skillMd);
+            String content = "---\r\nname: crlf-skill\r\ndescription: |\r\n  Para one.\r\n\r\n  Para two.\r\n---\r\n# Skill";
+            zos.write(content.getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        Map<String, Object> frontmatter = assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(zip));
+        assertNotNull(frontmatter);
+        assertEquals("crlf-skill", frontmatter.get("name"));
+        String desc = frontmatter.get("description").toString();
+        assertTrue(desc.contains("Para one."), "description should contain para one");
+        assertTrue(desc.contains("Para two."), "description should contain para two after blank line");
+    }
+
+    /**
      * 负向：平铺包多个子目录同时含 SKILL.md（无根级 SKILL.md）→ 抛 FILES_NUMBER_DOES_NOT_MATCH
      */
     @Test
