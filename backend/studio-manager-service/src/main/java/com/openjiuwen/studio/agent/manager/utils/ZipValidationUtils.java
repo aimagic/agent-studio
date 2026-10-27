@@ -363,9 +363,10 @@ public class ZipValidationUtils {
      * </ul>
      */
     private static void validateDirectoryStructure(Path baseDir) throws IOException {
-        // 情况1：根目录有 SKILL.md（平铺结构），允许任意数量的附属文件夹/文件
+        // 情况1：根目录有带 frontmatter 的 SKILL.md（平铺结构），允许任意数量的附属文件夹/文件
+        // 与前端对齐：根级 SKILL.md 不带 frontmatter 时回落到情况2查找子目录 skill
         Path rootSkillMd = baseDir.resolve("SKILL.md");
-        if (Files.exists(rootSkillMd)) {
+        if (Files.exists(rootSkillMd) && isSkillMdWithFrontmatter(rootSkillMd)) {
             // 不允许子目录下再出现带 frontmatter 的 SKILL.md，避免后续 findFirst 查找歧义
             // 子目录中不带 frontmatter 的同名文件（如普通说明文档）不影响判定
             try (Stream<Path> paths = Files.walk(baseDir)) {
@@ -400,8 +401,9 @@ public class ZipValidationUtils {
             }
 
             // 仅取直接位于 baseDir 下且自身根级含 SKILL.md 的子目录
-            // （skillMdFile.parent == baseDir.resolve(name) 时，name 应直接是 baseDir 的子段）
-            // 注意：这里只检查文件存在，不检查 frontmatter——缺字段的情况交给 validateFrontmatter 报正确错误码
+            // 与前端策略2对齐：优先看带 frontmatter 的候选来消歧
+            List<Path> allSkillDirs = new ArrayList<>();
+            List<Path> frontmatterSkillDirs = new ArrayList<>();
             for (Path dir : nonEmptyDirs) {
                 Path skillMdAtRoot = dir.resolve("SKILL.md");
                 if (Files.exists(skillMdAtRoot)) {
@@ -411,13 +413,20 @@ public class ZipValidationUtils {
                         log.error("Nested SKILL.md directory must be a direct child of base, got: {}", rel);
                         throw new AgentStudioException(StudioError.FILES_NUMBER_DOES_NOT_MATCH);
                     }
-                    skillDirs.add(dir);
+                    allSkillDirs.add(dir);
+                    if (isSkillMdWithFrontmatter(skillMdAtRoot)) {
+                        frontmatterSkillDirs.add(dir);
+                    }
                 }
             }
 
+            // 优先用带 frontmatter 的候选消歧；若全部不带 frontmatter，用全部候选
+            // 这样单文件夹结构下 SKILL.md 缺字段时仍能选中并交给 validateFrontmatter 报正确错误码
+            skillDirs = frontmatterSkillDirs.size() > 0 ? frontmatterSkillDirs : allSkillDirs;
+
             if (skillDirs.size() != 1) {
-                log.error("Directory check failed - skillDirs: {}, nonEmpty: {}, hasRoot: {}",
-                        skillDirs.size(), nonEmptyDirs.size(), false);
+                log.error("Directory check failed - skillDirs: {}, frontmatterDirs: {}, allDirs: {}, nonEmpty: {}",
+                        skillDirs.size(), frontmatterSkillDirs.size(), allSkillDirs.size(), nonEmptyDirs.size());
                 throw new AgentStudioException(StudioError.FILES_NUMBER_DOES_NOT_MATCH);
             }
 
@@ -449,22 +458,26 @@ public class ZipValidationUtils {
      * @return 解析得到的 frontmatter
      */
     private static Map<String, Object> validateSkillMdFile(Path baseDir) throws IOException {
-        // 优先取根级 SKILL.md（存在即选，即使缺 name 也走 validateFrontmatter 报正确错误码）
+        // 优先取根级带 frontmatter 的 SKILL.md（与 validateDirectoryStructure 情况1 对齐）
+        // 根级 SKILL.md 不带 frontmatter 时，回落到兜底查找子目录中带 frontmatter 的 SKILL.md
         Path skillMdFile = baseDir.resolve("SKILL.md");
-        if (!Files.exists(skillMdFile)) {
-            // 兜底：查找第一个 SKILL.md（单文件夹结构下命中 {name}/SKILL.md）
-            // 优先选带 frontmatter 的，避免选中子目录中不带 frontmatter 的同名普通文档；
-            // 若全部不带 frontmatter，回退选第一个 SKILL.md（缺字段交给 validateFrontmatter 报错）
+        if (!Files.exists(skillMdFile) || !isSkillMdWithFrontmatter(skillMdFile)) {
+            // 兜底：查找第一个带 frontmatter 的 SKILL.md（单文件夹结构下命中 {name}/SKILL.md）
+            // 不带 frontmatter 的同名文件（如子目录普通文档）不会被选中
+            Path found = null;
             try (Stream<Path> paths = Files.walk(baseDir)) {
-                List<Path> allSkillMd = paths
+                found = paths
                         .filter(p -> p.getFileName() != null
                                 && "SKILL.md".equalsIgnoreCase(p.getFileName().toString()))
-                        .toList();
-                // 优先选带 frontmatter 的
-                skillMdFile = allSkillMd.stream()
                         .filter(ZipValidationUtils::isSkillMdWithFrontmatter)
-                        .findFirst()
-                        .orElse(allSkillMd.isEmpty() ? null : allSkillMd.get(0));
+                        .findFirst().orElse(null);
+            }
+            // 如果兜底找到了带 frontmatter 的，用兜底结果；
+            // 如果兜底没找到但根级 SKILL.md 存在（缺 frontmatter），仍选根级文件让 validateFrontmatter 报正确错误码
+            if (found != null) {
+                skillMdFile = found;
+            } else if (!Files.exists(skillMdFile)) {
+                skillMdFile = null;
             }
         }
 
@@ -552,8 +565,10 @@ public class ZipValidationUtils {
                             boolean firstLine = true;
                             while (idx < lines.length) {
                                 String bl = lines[idx];
+                                // 去除行尾 \r 以兼容 Windows CRLF 换行
+                                String blTrimmed = bl.replace("\r", "");
                                 // 空行属于 block 内容（段落分隔）
-                                if (bl.isEmpty()) {
+                                if (blTrimmed.isEmpty()) {
                                     idx++;
                                     // 空行在 folded 模式下表示换行，在 literal 模式下也是换行
                                     if (blockValue.length() > 0) {

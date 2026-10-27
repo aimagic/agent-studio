@@ -216,8 +216,10 @@ export class ImportSkillModalComponent {
           let firstLine = true;
           while (i < lines.length) {
             const bl = lines[i];
+            // 去除行尾 \r 以兼容 Windows CRLF 换行
+            const blTrimmed = bl.replace(/\r$/, '');
             // 空行属于 block 内容（段落分隔）
-            if (bl.length === 0) {
+            if (blTrimmed.length === 0) {
               i++;
               if (blockLines.length > 0) {
                 blockLines.push('\n');
