@@ -363,9 +363,9 @@ public class ZipValidationUtils {
      * </ul>
      */
     private static void validateDirectoryStructure(Path baseDir) throws IOException {
-        // 情况1：根目录有带 frontmatter 的 SKILL.md（平铺结构），允许任意数量的附属文件夹/文件
+        // 情况1：根目录有 SKILL.md（平铺结构），允许任意数量的附属文件夹/文件
         Path rootSkillMd = baseDir.resolve("SKILL.md");
-        if (Files.exists(rootSkillMd) && isSkillMdWithFrontmatter(rootSkillMd)) {
+        if (Files.exists(rootSkillMd)) {
             // 不允许子目录下再出现带 frontmatter 的 SKILL.md，避免后续 findFirst 查找歧义
             // 子目录中不带 frontmatter 的同名文件（如普通说明文档）不影响判定
             try (Stream<Path> paths = Files.walk(baseDir)) {
@@ -401,6 +401,7 @@ public class ZipValidationUtils {
 
             // 仅取直接位于 baseDir 下且自身根级含 SKILL.md 的子目录
             // （skillMdFile.parent == baseDir.resolve(name) 时，name 应直接是 baseDir 的子段）
+            // 注意：这里只检查文件存在，不检查 frontmatter——缺字段的情况交给 validateFrontmatter 报正确错误码
             for (Path dir : nonEmptyDirs) {
                 Path skillMdAtRoot = dir.resolve("SKILL.md");
                 if (Files.exists(skillMdAtRoot)) {
@@ -448,17 +449,22 @@ public class ZipValidationUtils {
      * @return 解析得到的 frontmatter
      */
     private static Map<String, Object> validateSkillMdFile(Path baseDir) throws IOException {
-        // 优先取根级带 frontmatter 的 SKILL.md
+        // 优先取根级 SKILL.md（存在即选，即使缺 name 也走 validateFrontmatter 报正确错误码）
         Path skillMdFile = baseDir.resolve("SKILL.md");
-        if (!Files.exists(skillMdFile) || !isSkillMdWithFrontmatter(skillMdFile)) {
-            // 兜底：查找第一个带 frontmatter 的 SKILL.md（单文件夹结构下命中 {name}/SKILL.md）
-            // 不带 frontmatter 的同名文件（如子目录普通文档）不会被选中
+        if (!Files.exists(skillMdFile)) {
+            // 兜底：查找第一个 SKILL.md（单文件夹结构下命中 {name}/SKILL.md）
+            // 优先选带 frontmatter 的，避免选中子目录中不带 frontmatter 的同名普通文档；
+            // 若全部不带 frontmatter，回退选第一个 SKILL.md（缺字段交给 validateFrontmatter 报错）
             try (Stream<Path> paths = Files.walk(baseDir)) {
-                skillMdFile = paths
+                List<Path> allSkillMd = paths
                         .filter(p -> p.getFileName() != null
                                 && "SKILL.md".equalsIgnoreCase(p.getFileName().toString()))
+                        .toList();
+                // 优先选带 frontmatter 的
+                skillMdFile = allSkillMd.stream()
                         .filter(ZipValidationUtils::isSkillMdWithFrontmatter)
-                        .findFirst().orElse(null);
+                        .findFirst()
+                        .orElse(allSkillMd.isEmpty() ? null : allSkillMd.get(0));
             }
         }
 
@@ -480,18 +486,21 @@ public class ZipValidationUtils {
     }
 
     /**
-     * 判断文件是否为带 YAML frontmatter（含 name 字段）的有效 SKILL.md。
+     * 判断文件是否为带 YAML frontmatter（含 name 和 description 字段）的有效 SKILL.md。
      *
      * <p>用于区分真正的 skill 定义文件与碰巧命名为 SKILL.md 的普通文档。
      * 多模块聚合包（如 ima-skills）的子目录中可能存在同名的普通 md 文档，
-     * 它们没有 frontmatter，不应被当作 skill 入口参与结构校验。</p>
+     * 它们没有 frontmatter，不应被当作 skill 入口参与结构校验。
+     * 与前端 parseSkillMd 判据对齐：同时检查 name 和 description 非空。</p>
      */
     private static boolean isSkillMdWithFrontmatter(Path skillMdPath) {
         try {
             String content = Files.readString(skillMdPath);
             Map<String, Object> fm = parseYamlFrontmatter(content);
             Object name = fm.get("name");
-            return name != null && !name.toString().trim().isEmpty();
+            Object description = fm.get("description");
+            return name != null && !name.toString().trim().isEmpty()
+                    && description != null && !description.toString().trim().isEmpty();
         } catch (IOException e) {
             log.warn("Failed to read SKILL.md for frontmatter check: {}", skillMdPath);
             return false;
