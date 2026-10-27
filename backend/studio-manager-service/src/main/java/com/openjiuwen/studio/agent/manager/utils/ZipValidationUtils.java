@@ -481,7 +481,14 @@ public class ZipValidationUtils {
             if (found != null) {
                 skillMdFile = found;
             } else if (!Files.exists(skillMdFile)) {
-                skillMdFile = null;
+                // 既没有根级 SKILL.md，也没找到带 frontmatter 的 SKILL.md
+                // 尝试找任意 SKILL.md（可能缺字段，交给 validateFrontmatter 报正确错误码）
+                try (Stream<Path> paths = Files.walk(baseDir)) {
+                    skillMdFile = paths.filter(p ->
+                            p.getFileName() != null &&
+                                    "SKILL.md".equalsIgnoreCase(p.getFileName().toString())
+                    ).findFirst().orElse(null);
+                }
             }
         }
 
