@@ -277,16 +277,19 @@ export class ImportSkillModalComponent {
     const rootSkillMdKey = findSkillMdKey(p => p === SKILL_MD_LOWER);
     if (rootSkillMdKey) {
       const rootParsed = this.parseSkillMd(fileMap[rootSkillMdKey]);
-      if (rootParsed.name?.trim() && rootParsed.description?.trim()) {
-        // 根级 SKILL.md 带 frontmatter：禁止子目录再出现带 frontmatter 的 SKILL.md
-        const nestedSkillMdKeys = rootFiles.filter(p => {
-          const lower = p.toLowerCase();
-          return lower !== SKILL_MD_LOWER && lower.endsWith('/' + SKILL_MD_LOWER);
-        });
-        const hasNestedWithFrontmatter = nestedSkillMdKeys.some(key => {
-          const parsed = this.parseSkillMd(fileMap[key]);
-          return parsed.name?.trim() && parsed.description?.trim();
-        });
+      const rootHasFrontmatter = rootParsed.name?.trim() && rootParsed.description?.trim();
+      // 检查子目录是否有带 frontmatter 的 SKILL.md
+      const nestedSkillMdKeys = rootFiles.filter(p => {
+        const lower = p.toLowerCase();
+        return lower !== SKILL_MD_LOWER && lower.endsWith('/' + SKILL_MD_LOWER);
+      });
+      const hasNestedWithFrontmatter = nestedSkillMdKeys.some(key => {
+        const parsed = this.parseSkillMd(fileMap[key]);
+        return parsed.name?.trim() && parsed.description?.trim();
+      });
+
+      if (rootHasFrontmatter) {
+        // 根级带 frontmatter：禁止子目录再出现带 frontmatter 的 SKILL.md
         if (hasNestedWithFrontmatter) {
           this.skillInfo = { name: '', description: '' };
           this.importZipErrorTip = this.i18n.transform('skill.import.result.valid.tip1');
@@ -296,18 +299,28 @@ export class ImportSkillModalComponent {
         this.skillInfo = rootParsed;
         this.isShowResult = true;
         return;
+      } else if (!hasNestedWithFrontmatter) {
+        // 根级不带 frontmatter，子目录也没有带 frontmatter 的 SKILL.md
+        // 仍按平铺处理，展示解析结果（空的 name/description → 报"解析结果为空"）
+        this.skillInfo = rootParsed;
+        if (!rootParsed.name?.trim() || !rootParsed.description?.trim()) {
+          this.importZipErrorTip = this.i18n.transform('skill.import.result.null');
+        }
+        this.isShowResult = true;
+        return;
       }
-      // 根级 SKILL.md 不带 frontmatter，回落到策略2查找子目录中的 skill
+      // 根级不带 frontmatter 但子目录有带 frontmatter 的 → 回落到策略2
     }
 
     // 策略2：单文件夹结构 {folderName}/SKILL.md
-    // 与后端对齐：只看带 frontmatter 的候选，忽略不带 frontmatter 的同名普通文档
-    const skillMdCandidates = rootFiles
-      .filter(p => p.toLowerCase().endsWith('/' + SKILL_MD_LOWER))
-      .filter(key => {
-        const parsed = this.parseSkillMd(fileMap[key]);
-        return parsed.name?.trim() && parsed.description?.trim();
-      });
+    // 与后端情况2对齐：优先用带 frontmatter 的候选消歧；若全部不带 frontmatter，用全部候选
+    // 这样单文件夹结构下 SKILL.md 缺字段时仍能选中并展示解析结果（空的 name/description → 报"解析结果为空"）
+    const allCandidates = rootFiles.filter(p => p.toLowerCase().endsWith('/' + SKILL_MD_LOWER));
+    const frontmatterCandidates = allCandidates.filter(key => {
+      const parsed = this.parseSkillMd(fileMap[key]);
+      return parsed.name?.trim() && parsed.description?.trim();
+    });
+    const skillMdCandidates = frontmatterCandidates.length > 0 ? frontmatterCandidates : allCandidates;
     if (skillMdCandidates.length !== 1) {
       this.skillInfo = { name: '', description: '' };
       this.importZipErrorTip = this.i18n.transform('skill.import.result.valid.tip1');
@@ -323,7 +336,11 @@ export class ImportSkillModalComponent {
       this.isShowResult = true;
       return;
     }
-    this.skillInfo = this.parseSkillMd(fileMap[skillMdPath]);
+    const parsed = this.parseSkillMd(fileMap[skillMdPath]);
+    this.skillInfo = parsed;
+    if (!parsed.name?.trim() || !parsed.description?.trim()) {
+      this.importZipErrorTip = this.i18n.transform('skill.import.result.null');
+    }
     this.isShowResult = true;
   }
 

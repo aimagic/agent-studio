@@ -923,7 +923,7 @@ public class ZipValidationUtilsTest {
         File zip = tempDir.resolve("block-literal.zip").toFile();
         try (FileOutputStream fos = new FileOutputStream(zip);
              ZipOutputStream zos = new ZipOutputStream(fos)) {
-            ZipEntry skillMd = new ZipEntry("block-literal/SKILL.md");
+            ZipEntry skillMd = new ZipEntry("SKILL.md");
             zos.putNextEntry(skillMd);
             String content = "---\nname: block-skill\ndescription: |\n  First paragraph.\n  Second paragraph.\n---\n# Skill";
             zos.write(content.getBytes(StandardCharsets.UTF_8));
@@ -946,7 +946,7 @@ public class ZipValidationUtilsTest {
         File zip = tempDir.resolve("block-folded.zip").toFile();
         try (FileOutputStream fos = new FileOutputStream(zip);
              ZipOutputStream zos = new ZipOutputStream(fos)) {
-            ZipEntry skillMd = new ZipEntry("block-folded/SKILL.md");
+            ZipEntry skillMd = new ZipEntry("SKILL.md");
             zos.putNextEntry(skillMd);
             String content = "---\nname: folded-skill\ndescription: >\n  Line one.\n  Line two.\n---\n# Skill";
             zos.write(content.getBytes(StandardCharsets.UTF_8));
@@ -969,7 +969,7 @@ public class ZipValidationUtilsTest {
         File zip = tempDir.resolve("block-chomp.zip").toFile();
         try (FileOutputStream fos = new FileOutputStream(zip);
              ZipOutputStream zos = new ZipOutputStream(fos)) {
-            ZipEntry skillMd = new ZipEntry("block-chomp/SKILL.md");
+            ZipEntry skillMd = new ZipEntry("SKILL.md");
             zos.putNextEntry(skillMd);
             String content = "---\nname: chomp-skill\ndescription: >-\n  Stripped content here.\n---\n# Skill";
             zos.write(content.getBytes(StandardCharsets.UTF_8));
@@ -990,7 +990,7 @@ public class ZipValidationUtilsTest {
         File zip = tempDir.resolve("block-crlf.zip").toFile();
         try (FileOutputStream fos = new FileOutputStream(zip);
              ZipOutputStream zos = new ZipOutputStream(fos)) {
-            ZipEntry skillMd = new ZipEntry("block-crlf/SKILL.md");
+            ZipEntry skillMd = new ZipEntry("SKILL.md");
             zos.putNextEntry(skillMd);
             String content = "---\r\nname: crlf-skill\r\ndescription: |\r\n  Para one.\r\n\r\n  Para two.\r\n---\r\n# Skill";
             zos.write(content.getBytes(StandardCharsets.UTF_8));
