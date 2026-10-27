@@ -169,7 +169,7 @@ public class PromptObsService {
         try {
             return fileStore.read(path(relativePath));
         } catch (AgentStudioException e) {
-            // 透传：read 已抛 OBS_FAILED(真实故障)，不二次包装（同 MgObsService.downloadObsFile 模式）。
+            // 透传: read 已抛 OBS_FAILED, 不二次包装（同 MgObsService.downloadObsFile）。
             throw e;
         } catch (Exception e) {
             log.error("download file from obs failed!", e);

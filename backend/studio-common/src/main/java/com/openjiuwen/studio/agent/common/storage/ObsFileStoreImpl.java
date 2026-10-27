@@ -147,12 +147,10 @@ public class ObsFileStoreImpl implements FileStore {
             }
             return null;
         } catch (ObsException e) {
-            // read() 只对 OBS 404（对象不存在）返回 null（业务语义：未发布资源在 OBS 无元数据），
-            // 真实 OBS 故障（5xx 等）仍抛 OBS_FAILED(500) 不掩盖。与 getMeta()/exists() 的"全
-            // ObsException 吞成 null/false"行为有意不同——后两者会把 500 也当不存在，是已知待治理项；
-            // 此处不沿用，避免掩盖真实故障。调用方 null 契约自然走通：PublishUtils.getPublish
-            // 据此返回 null → 导出抛 EXPORT_RESOURCE_NOT_EXISTS(400)。
+            // 404（对象不存在=未发布）返回 null，走调用方 null 契约；其他故障抛 OBS_FAILED 不掩盖。
+            // 与 getMeta()/exists() 全吞 ObsException 有意不同（后两者会把 500 也当不存在，待治理）。
             if (e.getResponseCode() == 404) {
+                log.warn("obs object not found, treat as unpublished: {}", path);
                 return null;
             }
             log.error("read failed: {}", path, e);

@@ -79,23 +79,19 @@ class ManagerSseErrorEventBuilderTest {
         assertTrue(wire.contains("\"event\":\"error\""));
     }
 
-    /**
-     * bug009 根因2:cause 为 AgentStudioException 时,其 args 透传给 resolver 填占位符,
-     * message/reason/suggestion 三段同传 args（与 HTTP builder / I18nUtil 约定对齐）。
-     */
+    /** bug009 根因2: cause 为 ASE 时, args 透传给 resolver 填占位符。 */
     @Test
     @SuppressWarnings("unchecked")
     void causeAgentStudioException_argsPassedToResolver() {
         AgentStudioException cause = new AgentStudioException(StudioError.EXPORT_RESOURCE_NOT_EXISTS,
-            "agent not published");
+            "agent");
         ErrorDescriptor d = new ErrorDescriptor(CODE, 400, MSG_KEY, REASON_KEY,
             SUGGESTION_KEY, REQ_ID, null, null, null, cause);
         Map<String, Object> env = sseBuilder.buildEnvelope(d, Locale.CHINA);
         Map<String, Object> data = (Map<String, Object>) env.get("data");
-        // 三段都透传同一份 args:args[0]="agent not published" → KEY::agent not published
-        assertEquals(MSG_KEY + "::agent not published", data.get("error_msg"));
-        assertEquals(REASON_KEY + "::agent not published", data.get("error_reason"));
-        assertEquals(SUGGESTION_KEY + "::agent not published", data.get("error_suggestion"));
+        assertEquals(MSG_KEY + "::agent", data.get("error_msg"));
+        assertEquals(REASON_KEY + "::agent", data.get("error_reason"));
+        assertEquals(SUGGESTION_KEY + "::agent", data.get("error_suggestion"));
     }
 
     // ---- Terminal guard ----

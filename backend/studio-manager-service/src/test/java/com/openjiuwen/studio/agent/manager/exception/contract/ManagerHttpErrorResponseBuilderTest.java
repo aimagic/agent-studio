@@ -123,25 +123,20 @@ class ManagerHttpErrorResponseBuilderTest {
         assertEquals(500, resp.getStatusCode().value());
     }
 
-    /**
-     * bug009 根因2:cause 为 AgentStudioException 时,其 args 透传给 resolver 填占位符,
-     * message/reason/suggestion 三段同传同一份 args（与 I18nUtil.getMessage(AgentStudioException)
-     * 约定对齐）,locale 不再被当作 args[0] 误填。
-     */
+    /** bug009 根因2: cause 为 ASE 时, args 透传给 resolver 填占位符, locale 不被误填。 */
     @Test
     void causeAgentStudioException_argsPassedToResolver() {
-        // EXPORT_RESOURCE_NOT_EXISTS 抛出时 args=["agent not published"],应填进三段占位符
+        // EXPORT_RESOURCE_NOT_EXISTS 抛出时 args=["agent"]（resourceType），三段同传。
         AgentStudioException cause = new AgentStudioException(StudioError.EXPORT_RESOURCE_NOT_EXISTS,
-            "agent not published");
+            "agent");
         ErrorDescriptor d = new ErrorDescriptor(CODE, 400, MSG_KEY, REASON_KEY,
             SUGGESTION_KEY, REQ_ID, null, null, null, cause);
         ResponseEntity<ErrorRsp> resp = builder.build(d, Locale.CHINA);
-        // 三段都透传同一份 args:args[0]="agent not published" → KEY::agent not published
-        assertEquals(MSG_KEY + "::agent not published", resp.getBody().getErrorMsg(),
-            "异常 args 应透传给 message resolver 填占位符,而非被 locale 误填");
-        assertEquals(REASON_KEY + "::agent not published", resp.getBody().getErrorReason(),
-            "reason 段同样透传 args（i18n 资源 reason 也有 {0} 占位符）");
-        assertEquals(SUGGESTION_KEY + "::agent not published", resp.getBody().getErrorSuggestion(),
+        assertEquals(MSG_KEY + "::agent", resp.getBody().getErrorMsg(),
+            "args 应透传给 message resolver 填占位符,而非被 locale 误填");
+        assertEquals(REASON_KEY + "::agent", resp.getBody().getErrorReason(),
+            "reason 段同样透传 args");
+        assertEquals(SUGGESTION_KEY + "::agent", resp.getBody().getErrorSuggestion(),
             "suggestion 段同样透传 args");
     }
 }

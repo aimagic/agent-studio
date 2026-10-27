@@ -38,13 +38,8 @@ public class ManagerHttpErrorResponseBuilder {
     }
 
     public ResponseEntity<ErrorRsp> build(ErrorDescriptor descriptor, Locale locale) {
-        // 从异常 cause 提取 i18n 占位符 args（资源未发布时为资源类型等业务参数）。
-        // fromAgentStudioException 把 AgentStudioException 传给 descriptor.getCause()，
-        // 其 getArgs() 携带占位符填充值。无 cause 或非 AgentStudioException 时 args=null。
-        // message/reason/suggestion 三段共用同一份 args：主要是 message 段模板有 {0} 占位符
-        // （如"{0}资源不存在"）；当前 reason/suggestion 模板无占位符，多传的 args 被
-        // MessageFormat 忽略，无副作用——三段同传与 I18nUtil.getMessage(AgentStudioException)
-        // 约定对齐，为未来 reason/suggestion 增加占位符预留。args 不足时 I18nUtil catch 返回 code 兜底，不抛。
+        // 从异常 cause 提取 args 填 i18n 占位符; reason/suggestion 当前无占位符, 多传 args 被 MessageFormat 忽略。
+        // args 不足时 I18nUtil catch 返回 code 兜底, 不抛。
         Object[] args = extractArgs(descriptor);
         String errorMsg = safeResolve(descriptor.getMessageKey(), args, locale);
         String errorReason = safeResolve(descriptor.getReasonKey(), args, locale);
@@ -82,12 +77,7 @@ public class ManagerHttpErrorResponseBuilder {
         return result;
     }
 
-    /**
-     * 从 descriptor.cause 提取 i18n 占位符 args。
-     * message/reason/suggestion 三段共用同一份 args 填占位符（与
-     * I18nUtil.getMessage(AgentStudioException) 约定对齐）。cause 非 AgentStudioException
-     * 时返回 null（无占位符文案不受影响）。
-     */
+    /** 从 descriptor.cause 提取 i18n 占位符 args; cause 非 ASE 时返回 null。 */
     private Object[] extractArgs(ErrorDescriptor descriptor) {
         Throwable cause = descriptor.getCause();
         if (cause instanceof com.openjiuwen.studio.agent.common.exception.AgentStudioException ase) {
