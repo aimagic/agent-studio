@@ -544,19 +544,33 @@ public class ZipValidationUtils {
                         String key = line.substring(0, colonIndex).trim();
                         String value = line.substring(colonIndex + 1).trim();
 
-                        // YAML block scalar: | 或 > 开头时，值在后续缩进行中
+                        // YAML block scalar: | (literal, 保留换行) 或 > (folded, 换行合并为空格)
                         if ("|".equals(value) || ">".equals(value)) {
+                            boolean isFolded = ">".equals(value);
                             StringBuilder blockValue = new StringBuilder();
                             idx++;
+                            boolean firstLine = true;
                             while (idx < lines.length) {
                                 String bl = lines[idx];
-                                if (!bl.isEmpty() && (bl.charAt(0) == ' ' || bl.charAt(0) == '\t')) {
+                                // 空行属于 block 内容（段落分隔）
+                                if (bl.isEmpty()) {
+                                    idx++;
+                                    // 空行在 folded 模式下表示换行，在 literal 模式下也是换行
                                     if (blockValue.length() > 0) {
-                                        blockValue.append(" ");
+                                        blockValue.append("\n");
+                                    }
+                                    continue;
+                                }
+                                // 缩进行属于 block scalar
+                                if (bl.charAt(0) == ' ' || bl.charAt(0) == '\t') {
+                                    if (!firstLine) {
+                                        blockValue.append(isFolded ? " " : "\n");
                                     }
                                     blockValue.append(bl.trim());
+                                    firstLine = false;
                                     idx++;
                                 } else {
+                                    // 非缩进行且非空行 → block 结束
                                     break;
                                 }
                             }

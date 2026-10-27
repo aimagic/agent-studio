@@ -208,21 +208,35 @@ export class ImportSkillModalComponent {
         skill.name = trimmed.slice(5).trim();
       } else if (trimmed.startsWith('description:')) {
         let value = trimmed.slice(12).trim();
-        // YAML block scalar: | 或 > 开头时，值在后续缩进行中
+        // YAML block scalar: | (literal, 保留换行) 或 > (folded, 换行合并为空格)
         if (value === '|' || value === '>') {
+          const isFolded = value === '>';
           const blockLines: string[] = [];
           i++;
+          let firstLine = true;
           while (i < lines.length) {
             const bl = lines[i];
+            // 空行属于 block 内容（段落分隔）
+            if (bl.length === 0) {
+              i++;
+              if (blockLines.length > 0) {
+                blockLines.push('\n');
+              }
+              continue;
+            }
             // 缩进行属于 block scalar
             if (bl.charAt(0) === ' ' || bl.charAt(0) === '\t') {
+              if (!firstLine) {
+                blockLines.push(isFolded ? ' ' : '\n');
+              }
               blockLines.push(bl.trim());
+              firstLine = false;
               i++;
             } else {
               break;
             }
           }
-          skill.description = blockLines.join(' ').trim();
+          skill.description = blockLines.join('').trim();
           continue;
         }
         skill.description = value;
@@ -255,39 +269,42 @@ export class ImportSkillModalComponent {
       });
 
     // 策略1：根级 SKILL.md（平铺结构）
+    // 与后端对齐：根级 SKILL.md 存在即进入平铺分支。但如果根级 SKILL.md 不带 frontmatter
+    //（name/description 为空），且子目录有带 frontmatter 的 SKILL.md，则回落到策略2
     const rootSkillMdKey = findSkillMdKey(p => p === SKILL_MD_LOWER);
     if (rootSkillMdKey) {
-      // 与后端对齐：根级有带 frontmatter 的 SKILL.md 时，禁止子目录再出现带 frontmatter 的 SKILL.md
-      // 子目录中不带 frontmatter 的同名文件（如普通说明文档）不影响判定
-      const nestedSkillMdKeys = rootFiles.filter(p => {
-        const lower = p.toLowerCase();
-        return lower !== SKILL_MD_LOWER && lower.endsWith('/' + SKILL_MD_LOWER);
-      });
-      const hasNestedWithFrontmatter = nestedSkillMdKeys.some(key => {
-        const parsed = this.parseSkillMd(fileMap[key]);
-        return parsed.name?.trim() && parsed.description?.trim();
-      });
-      if (hasNestedWithFrontmatter) {
-        this.skillInfo = { name: '', description: '' };
-        this.importZipErrorTip = this.i18n.transform('skill.import.result.valid.tip1');
+      const rootParsed = this.parseSkillMd(fileMap[rootSkillMdKey]);
+      if (rootParsed.name?.trim() && rootParsed.description?.trim()) {
+        // 根级 SKILL.md 带 frontmatter：禁止子目录再出现带 frontmatter 的 SKILL.md
+        const nestedSkillMdKeys = rootFiles.filter(p => {
+          const lower = p.toLowerCase();
+          return lower !== SKILL_MD_LOWER && lower.endsWith('/' + SKILL_MD_LOWER);
+        });
+        const hasNestedWithFrontmatter = nestedSkillMdKeys.some(key => {
+          const parsed = this.parseSkillMd(fileMap[key]);
+          return parsed.name?.trim() && parsed.description?.trim();
+        });
+        if (hasNestedWithFrontmatter) {
+          this.skillInfo = { name: '', description: '' };
+          this.importZipErrorTip = this.i18n.transform('skill.import.result.valid.tip1');
+          this.isShowResult = true;
+          return;
+        }
+        this.skillInfo = rootParsed;
         this.isShowResult = true;
         return;
       }
-      this.skillInfo = this.parseSkillMd(fileMap[rootSkillMdKey]);
-      if (!this.skillInfo?.name?.trim() || !this.skillInfo?.description?.trim()) {
-        this.skillInfo = { name: '', description: '' };
-        this.importZipErrorTip = this.i18n.transform('skill.import.result.null');
-        this.isShowResult = true;
-        return;
-      }
-      this.isShowResult = true;
-      return;
+      // 根级 SKILL.md 不带 frontmatter，回落到策略2查找子目录中的 skill
     }
 
     // 策略2：单文件夹结构 {folderName}/SKILL.md
-    // 与后端对齐：根级无 SKILL.md 时，允许根级存在额外附属文件（如 README.md），
-    // 只要存在唯一一个含 SKILL.md 的子目录即可（不再强制根级只能有一个目录）。
-    const skillMdCandidates = rootFiles.filter(p => p.toLowerCase().endsWith('/' + SKILL_MD_LOWER));
+    // 与后端对齐：只看带 frontmatter 的候选，忽略不带 frontmatter 的同名普通文档
+    const skillMdCandidates = rootFiles
+      .filter(p => p.toLowerCase().endsWith('/' + SKILL_MD_LOWER))
+      .filter(key => {
+        const parsed = this.parseSkillMd(fileMap[key]);
+        return parsed.name?.trim() && parsed.description?.trim();
+      });
     if (skillMdCandidates.length !== 1) {
       this.skillInfo = { name: '', description: '' };
       this.importZipErrorTip = this.i18n.transform('skill.import.result.valid.tip1');
@@ -304,12 +321,6 @@ export class ImportSkillModalComponent {
       return;
     }
     this.skillInfo = this.parseSkillMd(fileMap[skillMdPath]);
-    if (!this.skillInfo?.name?.trim() || !this.skillInfo?.description?.trim()) {
-      this.skillInfo = { name: '', description: '' };
-      this.importZipErrorTip = this.i18n.transform('skill.import.result.null');
-      this.isShowResult = true;
-      return;
-    }
     this.isShowResult = true;
   }
 
