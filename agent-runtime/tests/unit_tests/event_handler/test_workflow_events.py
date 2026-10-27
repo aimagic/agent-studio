@@ -43,7 +43,35 @@ class TestProcessWorkflowStart:
             {"event": "workflow_start", "createdTime": 1784279771000}, trace
         )
         assert result.event == "workflow_started"
-        assert result.data == {"start_time": 1784279771000}
+        assert result.data["start_time"] == 1784279771000
+
+    @staticmethod
+    def test_start_frame_propagates_workflow_id_and_name():
+        """data 携带 workflow_id/workflow_name 时透传并写入 trace。"""
+        trace = Trace(handler_type="Workflow")
+        result = WorkflowEventsProcessor.process_event(
+            {
+                "event": "workflow_start",
+                "data": {"workflow_id": "wf-123", "workflow_name": "test"},
+                "createdTime": 1000,
+            },
+            trace,
+        )
+        assert result.data["workflow_id"] == "wf-123"
+        assert result.data["workflow_name"] == "test"
+        assert trace.workflow_id == "wf-123"
+        assert trace.workflow_name == "test"
+
+    @staticmethod
+    def test_start_frame_falls_back_to_trace_instance_id():
+        """data 为空时回退 trace.instance_id；workflow_name 缺省时不输出 null 键。"""
+        trace = Trace(handler_type="Workflow", instance_id="wf-from-path")
+        result = WorkflowEventsProcessor.process_event(
+            {"event": "workflow_start", "data": {}, "createdTime": 1000},
+            trace,
+        )
+        assert result.data["workflow_id"] == "wf-from-path"
+        assert "workflow_name" not in result.data
 
     @staticmethod
     def test_preserves_workflow_id_and_name():
@@ -100,6 +128,30 @@ class TestProcessMessage:
             trace,
         )
         assert result.data["reasoning_content"] == "reasoning"
+
+    @staticmethod
+    def test_message_propagates_workflow_id_from_trace():
+        """start 帧写入 trace 后，message 帧回退使用 trace.workflow_id/instance_id。"""
+        trace = Trace(handler_type="Workflow", instance_id="wf-from-path")
+        # 模拟 start 帧已写入 trace
+        WorkflowEventsProcessor.process_event(
+            {
+                "event": "workflow_start",
+                "data": {"workflow_id": "wf-123", "workflow_name": "test"},
+                "createdTime": 1000,
+            },
+            trace,
+        )
+        result = WorkflowEventsProcessor.process_event(
+            {
+                "event": "message",
+                "data": {"answer": "hi", "node_type": "End", "node_id": "n1"},
+                "createdTime": 2000,
+            },
+            trace,
+        )
+        assert result.data["workflow_id"] == "wf-123"
+        assert result.data["workflow_name"] == "test"
 
 
 class TestProcessMessageEnd:
