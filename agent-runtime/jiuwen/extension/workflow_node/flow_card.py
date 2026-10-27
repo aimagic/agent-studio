@@ -628,6 +628,11 @@ class FlowCard(WorkflowComponent):
         return self.NODE_TYPE
 
     @property
+    def node_type(self) -> str:
+        """兼容旧属性名；新代码请使用 resolved_node_type。"""
+        return self.resolved_node_type
+
+    @property
     def config(self) -> FlowCardConfig:
         """获取配置"""
         return self._config
