@@ -1692,12 +1692,12 @@ class IRConverter:
             nid = node.get("id")
             ntype = node.get("type", "")
             cfgs = node.get("configs") or {}
-            if (
-                ntype in _llm_types and bool(cfgs.get("stream", False))
-            ) or (
-                ntype in IRConverter._STREAMING_API_TYPES
-                and bool(cfgs.get("streaming", False))
-            ):
+            # G.CTL.03：拆成中间布尔量，避免单 if 条件过多
+            llm_stream = ntype in _llm_types and bool(cfgs.get("stream", False))
+            api_stream = ntype in IRConverter._STREAMING_API_TYPES and bool(
+                cfgs.get("streaming", False)
+            )
+            if llm_stream or api_stream:
                 ir_stream_source_ids.add(nid)
 
         # Pre-compute stream connection targets from explicit IR connections.
