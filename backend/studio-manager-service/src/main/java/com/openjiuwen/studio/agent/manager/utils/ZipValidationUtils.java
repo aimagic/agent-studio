@@ -363,18 +363,20 @@ public class ZipValidationUtils {
      * </ul>
      */
     private static void validateDirectoryStructure(Path baseDir) throws IOException {
-        // 情况1：根目录有 SKILL.md（平铺结构），允许任意数量的附属文件夹/文件
+        // 情况1：根目录有带 frontmatter 的 SKILL.md（平铺结构），允许任意数量的附属文件夹/文件
         Path rootSkillMd = baseDir.resolve("SKILL.md");
-        if (Files.exists(rootSkillMd)) {
-            // 但不允许子目录下再出现 SKILL.md，避免后续 findFirst 查找歧义
+        if (Files.exists(rootSkillMd) && isSkillMdWithFrontmatter(rootSkillMd)) {
+            // 不允许子目录下再出现带 frontmatter 的 SKILL.md，避免后续 findFirst 查找歧义
+            // 子目录中不带 frontmatter 的同名文件（如普通说明文档）不影响判定
             try (Stream<Path> paths = Files.walk(baseDir)) {
                 long childSkillMdCount = paths
                         .filter(p -> !p.equals(rootSkillMd))
                         .filter(p -> p.getFileName() != null
                                 && "SKILL.md".equalsIgnoreCase(p.getFileName().toString()))
+                        .filter(ZipValidationUtils::isSkillMdWithFrontmatter)
                         .count();
                 if (childSkillMdCount > 0) {
-                    log.error("Multiple SKILL.md detected: root + {} child", childSkillMdCount);
+                    log.error("Multiple SKILL.md with frontmatter detected: root + {} child", childSkillMdCount);
                     throw new AgentStudioException(StudioError.FILES_NUMBER_DOES_NOT_MATCH);
                 }
             }
@@ -446,15 +448,17 @@ public class ZipValidationUtils {
      * @return 解析得到的 frontmatter
      */
     private static Map<String, Object> validateSkillMdFile(Path baseDir) throws IOException {
-        // 优先取根级 SKILL.md
+        // 优先取根级带 frontmatter 的 SKILL.md
         Path skillMdFile = baseDir.resolve("SKILL.md");
-        if (!Files.exists(skillMdFile)) {
-            // 兜底：查找任意位置的 SKILL.md（单文件夹结构下命中 {name}/SKILL.md）
+        if (!Files.exists(skillMdFile) || !isSkillMdWithFrontmatter(skillMdFile)) {
+            // 兜底：查找第一个带 frontmatter 的 SKILL.md（单文件夹结构下命中 {name}/SKILL.md）
+            // 不带 frontmatter 的同名文件（如子目录普通文档）不会被选中
             try (Stream<Path> paths = Files.walk(baseDir)) {
-                skillMdFile = paths.filter(p ->
-                        p.getFileName() != null &&
-                                "SKILL.md".equalsIgnoreCase(p.getFileName().toString())
-                ).findFirst().orElse(null);
+                skillMdFile = paths
+                        .filter(p -> p.getFileName() != null
+                                && "SKILL.md".equalsIgnoreCase(p.getFileName().toString()))
+                        .filter(ZipValidationUtils::isSkillMdWithFrontmatter)
+                        .findFirst().orElse(null);
             }
         }
 
@@ -476,6 +480,25 @@ public class ZipValidationUtils {
     }
 
     /**
+     * 判断文件是否为带 YAML frontmatter（含 name 字段）的有效 SKILL.md。
+     *
+     * <p>用于区分真正的 skill 定义文件与碰巧命名为 SKILL.md 的普通文档。
+     * 多模块聚合包（如 ima-skills）的子目录中可能存在同名的普通 md 文档，
+     * 它们没有 frontmatter，不应被当作 skill 入口参与结构校验。</p>
+     */
+    private static boolean isSkillMdWithFrontmatter(Path skillMdPath) {
+        try {
+            String content = Files.readString(skillMdPath);
+            Map<String, Object> fm = parseYamlFrontmatter(content);
+            Object name = fm.get("name");
+            return name != null && !name.toString().trim().isEmpty();
+        } catch (IOException e) {
+            log.warn("Failed to read SKILL.md for frontmatter check: {}", skillMdPath);
+            return false;
+        }
+    }
+
+    /**
      * 解析YAML frontmatter。
      *
      * <p>本方法仅返回解析结果，不再写入静态变量，避免并发导入时的线程安全问题。
@@ -493,13 +516,17 @@ public class ZipValidationUtils {
 
                 // 解析key: value格式
                 String[] lines = frontmatterText.split("\n");
-                for (String rawLine : lines) {
+                int idx = 0;
+                while (idx < lines.length) {
+                    String rawLine = lines[idx];
                     if (!rawLine.isEmpty() && (rawLine.charAt(0) == ' ' || rawLine.charAt(0) == '\t')) {
+                        idx++;
                         continue;
                     }
 
                     String line = rawLine.trim();
                     if (line.isEmpty() || line.startsWith("#")) {
+                        idx++;
                         continue;
                     }
 
@@ -507,6 +534,27 @@ public class ZipValidationUtils {
                     if (colonIndex > 0) {
                         String key = line.substring(0, colonIndex).trim();
                         String value = line.substring(colonIndex + 1).trim();
+
+                        // YAML block scalar: | 或 > 开头时，值在后续缩进行中
+                        if ("|".equals(value) || ">".equals(value)) {
+                            StringBuilder blockValue = new StringBuilder();
+                            idx++;
+                            while (idx < lines.length) {
+                                String bl = lines[idx];
+                                if (!bl.isEmpty() && (bl.charAt(0) == ' ' || bl.charAt(0) == '\t')) {
+                                    if (blockValue.length() > 0) {
+                                        blockValue.append(" ");
+                                    }
+                                    blockValue.append(bl.trim());
+                                    idx++;
+                                } else {
+                                    break;
+                                }
+                            }
+                            value = blockValue.toString().trim();
+                            result.put(key, value);
+                            continue;
+                        }
 
                         // 处理布尔值
                         if ("true".equalsIgnoreCase(value)) {
@@ -517,6 +565,7 @@ public class ZipValidationUtils {
 
                         result.put(key, value);
                     }
+                    idx++;
                 }
             }
         }

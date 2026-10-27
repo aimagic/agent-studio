@@ -877,6 +877,45 @@ public class ZipValidationUtilsTest {
     }
 
     /**
+     * 平铺包：根级带 frontmatter 的 SKILL.md + 子目录不带 frontmatter 的同名 SKILL.md → 校验通过
+     * 覆盖 ima-skills 等多模块聚合包场景（子目录的 SKILL.md 只是普通说明文档）
+     */
+    @Test
+    public void testValidateZipFile_FlatLayout_RootSkillMdWithChildPlainSkillMd() throws IOException {
+        File zip = tempDir.resolve("flat-multi-module.zip").toFile();
+        try (FileOutputStream fos = new FileOutputStream(zip);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
+            // 根级 SKILL.md — 带 frontmatter（真正的 skill 定义）
+            ZipEntry rootSkillMd = new ZipEntry("SKILL.md");
+            zos.putNextEntry(rootSkillMd);
+            zos.write("---\nname: ima-skill\ndescription: IMA skill with sub-module docs\n---\n# IMA Skill".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            // 子目录 SKILL.md — 不带 frontmatter（普通说明文档）
+            ZipEntry notesSkillMd = new ZipEntry("notes/SKILL.md");
+            zos.putNextEntry(notesSkillMd);
+            zos.write("# Notes Module\nPlain markdown doc, not a skill definition.".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            ZipEntry kbSkillMd = new ZipEntry("knowledge-base/SKILL.md");
+            zos.putNextEntry(kbSkillMd);
+            zos.write("# Knowledge Base Module\nAlso a plain markdown doc.".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            // 附属脚本
+            ZipEntry script = new ZipEntry("ima_api.cjs");
+            zos.putNextEntry(script);
+            zos.write("// api script".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        Map<String, Object> frontmatter = assertDoesNotThrow(() -> ZipValidationUtils.validateZipFile(zip));
+        assertNotNull(frontmatter);
+        assertEquals("ima-skill", frontmatter.get("name"));
+        assertEquals("IMA skill with sub-module docs", frontmatter.get("description"));
+    }
+
+    /**
      * 负向：平铺包多个子目录同时含 SKILL.md（无根级 SKILL.md）→ 抛 FILES_NUMBER_DOES_NOT_MATCH
      */
     @Test
