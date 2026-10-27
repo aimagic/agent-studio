@@ -20,6 +20,23 @@ from jiuwen.insight.handlers.data import BaseDataHandler
 Trace = Optional[Union[List[BaseDataHandler], "TraceManager"]]
 
 
+class _NoAgentIdentity:
+    """显式哨兵：所属 agent 已解析、确实无身份（如无 agent_id）。
+
+    区分「无身份（终态）」与「未解析（派生/子 manager 待继承）」：成员
+    agent 无 agent_id 时，其根 manager 不得被 controller 链身份继承补齐，
+    防止成员 span 冒用 controller 身份。
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # 日志/断言可读
+        return "NO_AGENT_IDENTITY"
+
+
+NO_AGENT_IDENTITY = _NoAgentIdentity()
+
+
 async def _trace_event(
     trace_handlers: List[BaseDataHandler], event_name: str, *args: Any, **kwargs: Any
 ):
@@ -49,7 +66,7 @@ class TraceManager(
         parent_invoke_id: Optional[str] = None,
         instance_info: Optional[dict] = None,
         openjiuwen_tracer=None,
-        agent_identity: Optional[dict] = None,
+        agent_identity: Optional[Union[dict, "_NoAgentIdentity"]] = None,
         **kwargs,
     ) -> None:
         """Initialize"""
@@ -65,10 +82,17 @@ class TraceManager(
         self._oj_root_span = None
         # 执行身份（扁平 agent_id/agent_name/agent_description），由所属 agent
         # 显式提供；转发 openjiuwen 事件时注入 instance_info，handler 以
-        # agent_name 优先于 class_name 盖 gen_ai.agent.name
-        self._oj_agent_identity: Optional[Dict[str, Any]] = (
-            dict(agent_identity) if agent_identity else None
-        )
+        # agent_name 优先于 class_name 盖 gen_ai.agent.name。显式身份与
+        # NO_AGENT_IDENTITY（所属 agent 确实无身份）均为终态，继承不得改动
+        if agent_identity is NO_AGENT_IDENTITY:
+            self._oj_agent_identity: Optional[Dict[str, Any]] = None
+            self._oj_identity_final = True
+        elif agent_identity:
+            self._oj_agent_identity = dict(agent_identity)
+            self._oj_identity_final = True
+        else:
+            self._oj_agent_identity = None
+            self._oj_identity_final = False
         if openjiuwen_tracer is not None:
             self._oj_init_root_span()
 
@@ -76,7 +100,6 @@ class TraceManager(
 
     def _oj_init_root_span(self):
         """初始化 openjiuwen agent 根 span。"""
-        from openjiuwen.core.session.tracer.span import SpanManager
         span_manager = self._oj_tracer.tracer_agent_span_manager
         self._oj_root_span = span_manager.create_agent_span(span_manager.last_span)
         span_manager.update_span(self._oj_root_span, {
@@ -189,12 +212,16 @@ class TraceManager(
     def inherit_oj_agent_identity(self, source: "TraceManager") -> None:
         """从 source 继承 openjiuwen 双写执行身份（带守卫）。
 
-        自身已携带身份时不覆盖：多智能体成员根 manager 自带成员身份，
-        不得被 controller 链 trace_handlers 的身份盖回。
+        仅身份未终态解析的 manager（派生/子）可继承；自身已携带身份、或以
+        NO_AGENT_IDENTITY 显式声明无身份（如无 agent_id 的成员根 manager）
+        时不继承，防止成员身份被 controller 链身份盖回/冒名。继承取拷贝，
+        与 __init__ 的防御性拷贝保持同一不变量。
         """
+        if self._oj_identity_final:
+            return
         source_identity = source.oj_agent_identity
-        if source_identity and not self._oj_agent_identity:
-            self._oj_agent_identity = source_identity
+        if source_identity:
+            self._oj_agent_identity = dict(source_identity)
 
     # ── 公共方法 ────────────────────────────────────────────
 
@@ -204,7 +231,7 @@ class TraceManager(
         trace_handlers: Optional["TraceManager"] = None,
         instance_info: Optional[dict] = None,
         session=None,
-        agent_identity: Optional[dict] = None,
+        agent_identity: Optional[Union[dict, "_NoAgentIdentity"]] = None,
     ) -> "TraceManager":
         """Return a trace handlers manager"""
         return _generate_manager(
@@ -527,7 +554,7 @@ def _generate_manager(
     trace_handlers: Trace = None,
     instance_info: Optional[dict] = None,
     session=None,
-    agent_identity: Optional[dict] = None,
+    agent_identity: Optional[Union[dict, "_NoAgentIdentity"]] = None,
 ) -> TraceManager:
     """Return a trace manager"""
     trace_manager = trace_manager_cls(
