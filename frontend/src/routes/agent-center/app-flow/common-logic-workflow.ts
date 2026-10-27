@@ -160,8 +160,6 @@ const commonLogic = {
       // runtime / IR 侧可能下发 IR 类型或 Python 类名，需与画布 type 对齐
       'jiuwen.templateTransform': cdnAssetUrl('assets/agent-center/flow/TemplateTransform.svg'),
       FlowTemplateTransform: cdnAssetUrl('assets/agent-center/flow/TemplateTransform.svg'),
-      // 映射补齐前事件层曾落成 Unknown，避免调用链裂图（重新试运行后应为 TemplateTransform）
-      Unknown: cdnAssetUrl('assets/agent-center/flow/TemplateTransform.svg'),
       Branch: cdnAssetUrl('assets/agent-center/flow/Branch.svg'),
       IntentDetection: cdnAssetUrl('assets/agent-center/flow/Intent.svg'),
       Questioner: cdnAssetUrl('assets/agent-center/flow/Questioner.svg'),
@@ -200,7 +198,11 @@ const commonLogic = {
       Controller: cdnAssetUrl('assets/agent-center/flow/Controller.svg'),
     };
 
-    return svgMap[node_type];
+    // 未知/漏映射类型用通用图标，避免误显示为 TemplateTransform
+    return (
+      svgMap[node_type] ||
+      cdnAssetUrl('assets/agent-center/images/service-default.svg')
+    );
   },
 
   /** 调用链，获取节点不同状态的icon */

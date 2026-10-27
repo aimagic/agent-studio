@@ -6,8 +6,8 @@
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeout
+import threading
+import time
 from typing import Any, Iterable, Iterator
 
 from jinja2 import nodes
@@ -40,15 +40,20 @@ class TemplateRenderError(ValueError):
 
 
 class _RenderBudget:
-    """渲染期共享计数：循环迭代次数。"""
+    """渲染期共享计数：循环迭代次数 + 可选墙钟截止时间。"""
 
-    __slots__ = ("iters", "max_iters")
+    __slots__ = ("iters", "max_iters", "deadline")
 
-    def __init__(self, max_iters: int) -> None:
+    def __init__(self, max_iters: int, deadline: float | None = None) -> None:
         self.iters = 0
         self.max_iters = max_iters
+        self.deadline = deadline
 
     def consume(self, n: int = 1) -> None:
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            raise TemplateRenderError(
+                f"template render timed out after {RENDER_TIMEOUT_SEC}s"
+            )
         self.iters += n
         if self.iters > self.max_iters:
             raise TemplateRenderError(
@@ -57,7 +62,7 @@ class _RenderBudget:
 
 
 class _CountingIterable:
-    """对 for 可迭代对象计数，超限即抛错，避免嵌套大 range 拖死进程。"""
+    """对 for 可迭代对象计数，超限即抛错（含 list/dict 与 range）。"""
 
     def __init__(self, iterable: Iterable[Any], budget: _RenderBudget) -> None:
         self._iterable = iterable
@@ -70,6 +75,17 @@ class _CountingIterable:
 
     def __len__(self) -> int:
         return len(self._iterable)  # type: ignore[arg-type]
+
+
+def _make_guard_iter(budget: _RenderBudget):
+    """包装任意 for 目标；已是 _CountingIterable 则不重复计数。"""
+
+    def guard_iter(obj: Any) -> Any:
+        if isinstance(obj, _CountingIterable):
+            return obj
+        return _CountingIterable(obj, budget)
+
+    return guard_iter
 
 
 def _make_guarded_range(budget: _RenderBudget):
@@ -86,6 +102,84 @@ def _make_guarded_range(budget: _RenderBudget):
         return _CountingIterable(r, budget)
 
     return guarded_range
+
+
+def _make_guarded_concat():
+    """渲染拼接时累计长度，避免只在最终结果上做事后检查。"""
+
+    def guarded_concat(pieces: Iterable[Any]) -> str:
+        parts: list[str] = []
+        total = 0
+        for piece in pieces:
+            if piece is None:
+                continue
+            text = piece if isinstance(piece, str) else str(piece)
+            total += len(text)
+            if total > MAX_OUTPUT_CHARS:
+                raise TemplateRenderError(
+                    f"template output length {total} exceeds limit {MAX_OUTPUT_CHARS}"
+                )
+            parts.append(text)
+        return "".join(parts)
+
+    return guarded_concat
+
+
+def _make_guarded_finalize():
+    """每个输出表达式落地前检查长度，尽早拒绝超大中间产物。"""
+
+    def guarded_finalize(value: Any) -> Any:
+        if isinstance(value, str) and len(value) > MAX_OUTPUT_CHARS:
+            raise TemplateRenderError(
+                f"template output length {len(value)} exceeds limit {MAX_OUTPUT_CHARS}"
+            )
+        return value
+
+    return guarded_finalize
+
+
+def _reject_static_huge_string_mul(parsed: nodes.Template) -> None:
+    """解析期拒绝字面量字符串重复（如 'x' * 1e7），避免渲染时先撑爆内存。"""
+
+    def _mul_len(left: nodes.Node, right: nodes.Node) -> int | None:
+        if (
+            isinstance(left, nodes.Const)
+            and isinstance(left.value, str)
+            and isinstance(right, nodes.Const)
+            and isinstance(right.value, int)
+        ):
+            if right.value <= 0:
+                return 0
+            return len(left.value) * right.value
+        if (
+            isinstance(right, nodes.Const)
+            and isinstance(right.value, str)
+            and isinstance(left, nodes.Const)
+            and isinstance(left.value, int)
+        ):
+            if left.value <= 0:
+                return 0
+            return len(right.value) * left.value
+        return None
+
+    for node in parsed.find_all(nodes.Mul):
+        size = _mul_len(node.left, node.right)
+        if size is not None and size > MAX_OUTPUT_CHARS:
+            raise TemplateRenderError(
+                f"template output length {size} exceeds limit {MAX_OUTPUT_CHARS}"
+            )
+
+
+def _wrap_for_iters_with_guard(parsed: nodes.Template) -> None:
+    """把每个 for 的可迭代表达式包进 guard_iter(...)，list/dict 等也会计入预算。"""
+    for for_node in list(parsed.find_all(nodes.For)):
+        for_node.iter = nodes.Call(
+            nodes.Name("guard_iter", "load"),
+            [for_node.iter],
+            [],
+            None,
+            None,
+        )
 
 
 def _has_forbidden_attr_access(parsed: nodes.Template) -> bool:
@@ -144,7 +238,11 @@ def _reject_static_nested_range_blowup(parsed: nodes.Template) -> None:
     walk(parsed, 1)
 
 
-def _render_with_guards(template: str, variables: dict[str, Any]) -> str:
+def _render_with_guards(
+    template: str,
+    variables: dict[str, Any],
+    deadline: float | None = None,
+) -> str:
     env = SandboxedEnvironment(autoescape=False)
     try:
         parsed = env.parse(template)
@@ -158,19 +256,28 @@ def _render_with_guards(template: str, variables: dict[str, Any]) -> str:
     if _has_forbidden_attr_access(parsed):
         raise TemplateRenderError("forbidden dunder access")
 
+    # 静态检查必须在 AST 改写之前（改写后 for 目标变成 guard_iter(...)）
     _reject_static_nested_range_blowup(parsed)
+    _reject_static_huge_string_mul(parsed)
+    _wrap_for_iters_with_guard(parsed)
 
-    budget = _RenderBudget(MAX_LOOP_ITERATIONS)
+    budget = _RenderBudget(MAX_LOOP_ITERATIONS, deadline=deadline)
     env.globals["range"] = _make_guarded_range(budget)
+    env.globals["guard_iter"] = _make_guard_iter(budget)
+    env.concat = _make_guarded_concat()
+    env.finalize = _make_guarded_finalize()
 
     try:
-        rendered = env.from_string(template).render(**variables)
+        code = env.compile(parsed)
+        tmpl = env.template_class.from_code(env, code, env.make_globals(None), None)
+        rendered = tmpl.render(**variables)
     except (SecurityError, TemplateError) as exc:
         # TemplateRenderError（护栏主动抛出）不在此捕获，原样向上传播
         raise TemplateRenderError(str(exc)) from exc
 
     if not isinstance(rendered, str):
         raise TemplateRenderError("template render result must be a string")
+    # concat 已在渲染中拦截；此处兜底单表达式直接产出超长字符串的路径
     if len(rendered) > MAX_OUTPUT_CHARS:
         raise TemplateRenderError(
             f"template output length {len(rendered)} exceeds limit {MAX_OUTPUT_CHARS}"
@@ -182,20 +289,37 @@ def render_jinja(template: str, variables: dict[str, Any]) -> str:
     """用 SandboxedEnvironment 渲染。
 
     - 拒绝 include/import/extends，并按 AST 拦住私有属性访问（SSTI）
-    - 限制 range 大小、总循环迭代次数、输出长度与渲染超时，避免拖死 runtime
+    - 限制 range 大小、所有 for 迭代次数（含 list/dict）、输出长度与渲染超时
+    - 超时用 daemon 线程 + join(timeout)：调用方按时返回，不 wait 工作线程；
+      循环内靠 budget.deadline / 迭代上限协作退出（Python 无法强杀线程；
+      不做进程隔离，避免本次改动过重）
     """
     if not isinstance(template, str) or not template.strip():
         raise TemplateRenderError("template must be a non-empty string")
     if not isinstance(variables, dict):
         raise TemplateRenderError("template variables must be a dict")
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(_render_with_guards, template, variables)
+    deadline = time.monotonic() + RENDER_TIMEOUT_SEC
+    box: dict[str, Any] = {}
+
+    def _worker() -> None:
         try:
-            return future.result(timeout=RENDER_TIMEOUT_SEC)
-        except FuturesTimeout as exc:
-            raise TemplateRenderError(
-                f"template render timed out after {RENDER_TIMEOUT_SEC}s"
-            ) from exc
-        # TemplateRenderError 等其它异常原样向上传播，由调用方统一处理；
-        # 不在此 except X: raise，避免触发 G.ERR.13
+            box["result"] = _render_with_guards(template, variables, deadline)
+        except Exception as exc:  # noqa: BLE001 — 传回调用线程统一处理
+            box["error"] = exc
+
+    thread = threading.Thread(
+        target=_worker,
+        name="template-jinja-render",
+        daemon=True,
+    )
+    thread.start()
+    thread.join(timeout=RENDER_TIMEOUT_SEC)
+    if thread.is_alive():
+        # 不 join 到底：避免 ThreadPoolExecutor shutdown(wait=True) 同类卡死
+        raise TemplateRenderError(
+            f"template render timed out after {RENDER_TIMEOUT_SEC}s"
+        )
+    if "error" in box:
+        raise box["error"]
+    return box["result"]

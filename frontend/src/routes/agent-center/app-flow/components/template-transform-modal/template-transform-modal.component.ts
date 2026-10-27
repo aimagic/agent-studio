@@ -181,7 +181,7 @@ export class TemplateTransformModalComponent extends ModalBaseComponent implemen
     if (this.tagCompareNoChange()) {
       return;
     }
-    if (this.inputForm?.invalid) {
+    if (this.inputForm?.invalid || this.modelFormGroup.invalid) {
       return;
     }
     const nodeData: ITemplateTransformNode = {
