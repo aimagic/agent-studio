@@ -156,7 +156,12 @@ const commonLogic = {
       Start: cdnAssetUrl('assets/agent-center/flow/Start.svg'),
       LLM: cdnAssetUrl('assets/agent-center/flow/LLM.svg'),
       Code: cdnAssetUrl('assets/agent-center/flow/Code.svg'),
-      TemplateTransform: cdnAssetUrl('assets/agent-center/flow/Code.svg'),
+      TemplateTransform: cdnAssetUrl('assets/agent-center/flow/TemplateTransform.svg'),
+      // runtime / IR 侧可能下发 IR 类型或 Python 类名，需与画布 type 对齐
+      'jiuwen.templateTransform': cdnAssetUrl('assets/agent-center/flow/TemplateTransform.svg'),
+      FlowTemplateTransform: cdnAssetUrl('assets/agent-center/flow/TemplateTransform.svg'),
+      // 映射补齐前事件层曾落成 Unknown，避免调用链裂图（重新试运行后应为 TemplateTransform）
+      Unknown: cdnAssetUrl('assets/agent-center/flow/TemplateTransform.svg'),
       Branch: cdnAssetUrl('assets/agent-center/flow/Branch.svg'),
       IntentDetection: cdnAssetUrl('assets/agent-center/flow/Intent.svg'),
       Questioner: cdnAssetUrl('assets/agent-center/flow/Questioner.svg'),

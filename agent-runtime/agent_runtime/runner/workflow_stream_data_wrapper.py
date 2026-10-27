@@ -39,6 +39,8 @@ _DEBUG_EVENT_RETURN_TO_SERVICE: dict[str, str] = {
     "LoopSetVariable": "jiuwen.setVariable",
     "Aggregate": "jiuwen.aggregation",
     "FlowCode": "Code",
+    "FlowTemplateTransform": "TemplateTransform",
+    "jiuwen.templateTransform": "TemplateTransform",
     "ComplexIntentDetection": "EI.ComplexIntentDetection",
     "FlowStreamTransform": "jiuwen.paramExtraction",
     "FlowMcp": "jiuwen.mcp",

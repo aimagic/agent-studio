@@ -1,4 +1,4 @@
-<div class="flex h-full w-full flex-col">
+<div class="flex h-full w-full flex-col" (keydown)="handleKeyDown($event)">
   <div class="mb-[16px] block">
     <div class="flex w-[calc(100%-38px)] items-center justify-between">
       <div class="flex items-center gap-[8px]">
@@ -63,6 +63,7 @@
                     type="text"
                     nz-input
                     [(ngModel)]="param.value.content"
+                    (ngModelChange)="changeUpdateTime()"
                     (blur)="handelSave()"
                     [placeholder]="'input_placeholder' | i18nextEager"
                   />
