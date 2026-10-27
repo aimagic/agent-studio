@@ -112,6 +112,15 @@ class TestBuildUsageMetadata:
         assert result == {"inter_token_latency_ms": 5.0}
 
     @staticmethod
+    def test_none_usage_with_tpot_still_emits():
+        """无 finish 块（如 finish_reason=length 截断）：usage 为 None 但掐表
+        仍在，TPOT 不得被 usage is None 分支静默丢弃。"""
+        assert build_usage_metadata(None, tpot_ms=12.5) == {
+            "inter_token_latency_ms": 12.5
+        }
+        assert build_usage_metadata(None, tpot_ms=None) == {}
+
+    @staticmethod
     def test_full_usage_keys():
         """完整字段 → core handler 约定键名齐全，TTFT 换算为毫秒数值串。"""
         result = build_usage_metadata(_usage(), tpot_ms=12.5)

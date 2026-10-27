@@ -63,11 +63,16 @@ def build_usage_metadata(
     ISO 串）换算，消费端 gen_ai.response.time_to_first_chunk 按 GenAI semconv
     为秒（double），故直接给出 float 秒值。
     """
+    has_tpot = tpot_ms is not None and tpot_ms > 0
     if usage is None:
+        # finish 块缺失（如 finish_reason=length 截断、流提前结束）时无 usage，
+        # 但 _format_yield_result 的掐表不依赖 finish 块：TPOT 可算即产出
+        # 仅含时延键的载荷，不随 usage 缺席被静默丢弃
+        if has_tpot:
+            return {"inter_token_latency_ms": round(tpot_ms, 2)}
         return {}
     ttft_ms = _iso_delta_ms(usage.first_token_time, usage.requests_start_time)
     has_ttft = ttft_ms is not None and ttft_ms >= 0
-    has_tpot = tpot_ms is not None and tpot_ms > 0
     usage_signals = (
         usage.input_tokens,
         usage.output_tokens,
