@@ -352,7 +352,8 @@ class FlowCode(WorkflowComponent):
         """
         try:
             node_config = session.get_node_config()
-        except Exception:
+        except Exception as e:
+            workflow_logger.warning(f"Failed to get node config for exception timeout: {e}")
             return None
         if node_config is None:
             return None

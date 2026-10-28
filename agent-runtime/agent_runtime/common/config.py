@@ -430,6 +430,7 @@ class CodeExecutionSettings(BaseSettings):
     # 与沙箱超时（SECURITY_SANDBOX_TIMEOUT）解耦，避免混用。
     local_exec_timeout: int = Field(
         default=900,
+        gt=0,
         validation_alias="LOCAL_CODE_EXEC_TIMEOUT",
     )
 

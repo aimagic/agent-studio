@@ -33,6 +33,11 @@ class _ThreadInterrupt(Exception):
     """用于 PyThreadState_SetAsyncExc 注入工作线程以中断 exec 的内部异常。"""
 
 
+# 进程级锁：os.system 为进程级全局属性，实例级锁在线程并发下无法串行化补丁。
+# 改为进程级锁确保任意 InprocessCodeRunner 实例的 exec 串行执行。
+_exec_process_lock = threading.Lock()
+
+
 class InprocessCodeRunner(CodeRunner):
     """进程内代码执行器 - 使用 exec() 在当前进程内执行代码
 
@@ -63,13 +68,8 @@ class InprocessCodeRunner(CodeRunner):
 
     def __init__(self):
         self.function_log: str = ""
-        # 复用 os.system patcher：实例级单例，避免每次 run() 重建 _patch 对象。
-        # os.system 为进程级全局属性，patch 期间影响全进程；用 _exec_lock 串行
-        # start/stop，使并发调用下全局补丁不竞争，并保持与旧版同步 exec 等价的串行语义。
-        self._os_system_patcher = mock.patch('os.system', return_value=-1)
-        self._exec_lock = threading.Lock()
 
-    async def run(self, user_code: str, inputs: dict, timeout: int = 300) -> dict:
+    async def run(self, user_code: str, inputs: dict, timeout: int = 900) -> dict:
         """在进程内执行用户代码（带超时控制）
 
         Args:
@@ -91,6 +91,11 @@ class InprocessCodeRunner(CodeRunner):
         def _worker():
             try:
                 self._exec_sync(user_code, inputs, container)
+            except BaseException as e:
+                # _exec_sync 之外的异常（如 deepcopy 失败）也要写入 container，
+                # 否则主协程会因 container.result 为 None 误报 "main() must return a dict"
+                container.exception = e
+                container.error_log = traceback.format_exc()
             finally:
                 done_event.set()
 
@@ -111,16 +116,13 @@ class InprocessCodeRunner(CodeRunner):
                 f"代码执行超时（已超过 {timeout} 秒限制），"
                 f"请优化代码或调整超时配置"
             ) from exc
+        except asyncio.CancelledError:
+            # 协程被取消（断连/外层 wait_for 超时）：中断 worker 线程，避免补丁/锁泄漏
+            self._interrupt_thread(thread)
+            await loop.run_in_executor(None, lambda: done_event.wait(timeout=2))
+            raise
 
-        # 正常路径：线程已结束。防御性检查 —— 若线程仍存活（注入异常未生效，
-        # 如卡在不可中断的 C 扩展），container 未写入，不应读取到脏数据。
-        if thread.is_alive():
-            raise TimeoutError(
-                f"代码执行超时（已超过 {timeout} 秒限制），"
-                f"且无法中断执行线程，请优化代码或调整超时配置"
-            )
-
-        # 线程执行完毕，收集结果
+        # 线程执行完毕，收集结果（先拼 function_log 再 raise，确保异常时也能拿到堆栈）
         self.function_log = container.function_log
         if container.error_log:
             self.function_log += container.error_log[
@@ -173,7 +175,7 @@ class InprocessCodeRunner(CodeRunner):
         # 2. 构建执行代码：stdout 重定向 + 用户代码 + try/finally 恢复
         exec_code = self._PROLOGUE + user_code + self._EPILOGUE
 
-        # 3. 执行代码（复用 os.system patcher）
+        # 3. 执行代码（每次创建局部 os.system patcher，避免实例级补丁在并发下残留）
         env = {
             "args": inputs,
             "__builtins__": __builtins__,
@@ -184,15 +186,16 @@ class InprocessCodeRunner(CodeRunner):
         exec_exception = None
         error_log = None
 
-        with self._exec_lock:
-            self._os_system_patcher.start()
+        os_system_patcher = mock.patch('os.system', return_value=-1)
+        with _exec_process_lock:
+            os_system_patcher.start()
             try:
                 exec(exec_code, global_namespace, local_namespace)
             except BaseException as e:
                 error_log = traceback.format_exc()
                 exec_exception = e
             finally:
-                self._os_system_patcher.stop()
+                os_system_patcher.stop()
 
         # 4. 提取结果
         res = local_namespace.get("res", {})
