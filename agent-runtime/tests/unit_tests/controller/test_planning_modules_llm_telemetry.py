@@ -300,28 +300,30 @@ class TestTaskUnderstandingEmit:
         assert kinds == ["start", "error"]
 
 
+def make_stream_mode(monkeypatch, stub_manager, model):
+    """装配 _stream_llm_response 依赖的最小 PlanExecuteMode。
+
+    方法内部 from stream_post_utils import create_trace_manager 在
+    调用时解析模块属性，故打桩打在 spu 命名空间。多个测试类共用，
+    置于模块级（类内受保护成员跨类访问会触 G.CLS.11）。
+    """
+    _install_stub_manager(monkeypatch, spu, stub_manager)
+    mode = object.__new__(PlanExecuteMode)
+    mode.task_id = "t-pe"
+    mode.model = model
+    monkeypatch.setattr(mode, "_trace_handlers", None, raising=False)
+    return mode
+
+
 class TestPlanExecuteStreamLlmEmit:
-    @staticmethod
-    def _make_mode(monkeypatch, stub_manager, model):
-        """装配 _stream_llm_response 依赖的最小属性。
-
-        方法内部 from stream_post_utils import create_trace_manager 在
-        调用时解析模块属性，故打桩打在 spu 命名空间。
-        """
-        _install_stub_manager(monkeypatch, spu, stub_manager)
-        mode = object.__new__(PlanExecuteMode)
-        mode.task_id = "t-pe"
-        mode.model = model
-        monkeypatch.setattr(mode, "_trace_handlers", None, raising=False)
-        return mode
-
     @staticmethod
     def test_stream_llm_response_emits_payload(monkeypatch):
         """astream finish 块的 usage_metadata 进入 on_llm_end 载荷。"""
 
         class StubModel:
-            # 生产链路 self.model.astream 同步返回异步生成器
-            def astream(self, inputs, **kwargs):
+            # 生产链路 self.model.astream 同步返回异步生成器；无实例状态
+            @staticmethod
+            def astream(inputs, **kwargs):
                 async def gen():
                     yield AIMessage(content="he", usage_metadata=UsageMetadata())
                     yield AIMessage(content="llo", usage_metadata=UsageMetadata())
@@ -330,12 +332,11 @@ class TestPlanExecuteStreamLlmEmit:
                 return gen()
 
         stub_manager = StubManager()
-        mode = TestPlanExecuteStreamLlmEmit._make_mode(
-            monkeypatch, stub_manager, StubModel()
-        )
+        mode = make_stream_mode(monkeypatch, stub_manager, StubModel())
 
+        # G.CLS.11：被测私有方法按字符串属性访问（测试直测内部路径）
         llm_output = asyncio.run(
-            mode._stream_llm_response(
+            getattr(mode, "_stream_llm_response")(
                 [{"role": "user", "content": "hi"}], []
             )
         )
@@ -355,16 +356,16 @@ class TestPlanExecuteStreamLlmEmit:
         """流式调用失败 → on_llm_error 发射 + 原有吞错（error 键）保留。"""
 
         class StubModel:
-            def astream(self, inputs, **kwargs):
+            @staticmethod
+            def astream(inputs, **kwargs):
                 raise RuntimeError("stream down")
 
         stub_manager = StubManager()
-        mode = TestPlanExecuteStreamLlmEmit._make_mode(
-            monkeypatch, stub_manager, StubModel()
-        )
+        mode = make_stream_mode(monkeypatch, stub_manager, StubModel())
 
+        # G.CLS.11：被测私有方法按字符串属性访问（测试直测内部路径）
         llm_output = asyncio.run(
-            mode._stream_llm_response(
+            getattr(mode, "_stream_llm_response")(
                 [{"role": "user", "content": "hi"}], []
             )
         )
@@ -417,17 +418,17 @@ class TestTelemetryFailureIsolation:
         """on_llm_start/on_llm_end 抛错 → 步骤输出正常，不落入 error 分支。"""
 
         class StubModel:
-            def astream(self, inputs, **kwargs):
+            @staticmethod
+            def astream(inputs, **kwargs):
                 async def gen():
                     yield AIMessage(content="done", usage_metadata=_usage())
 
                 return gen()
 
-        mode = TestPlanExecuteStreamLlmEmit._make_mode(
-            monkeypatch, RaisingManager(), StubModel()
-        )
+        mode = make_stream_mode(monkeypatch, RaisingManager(), StubModel())
+        # G.CLS.11：被测私有方法按字符串属性访问（测试直测内部路径）
         llm_output = asyncio.run(
-            mode._stream_llm_response(
+            getattr(mode, "_stream_llm_response")(
                 [{"role": "user", "content": "hi"}], []
             )
         )
