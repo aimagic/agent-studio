@@ -36,13 +36,15 @@ _AMPLIFYING_STR_METHODS = frozenset(
     }
 )
 
-# printf 风格：%[ (name) ] [flags] [width] [.precision] type；%% 单独成字段
+# printf 风格：%[ (name) ] [flags] [width] [.precision] [hlL] type；%% 单独成字段
+# 必须识别 h/l/L，否则 %1000000000ld 等会漏过宽度预检并先分配再拒绝
 _PERCENT_FIELD_RE = re.compile(
     r"%"
     r"(?:\(([^)]+)\))?"
     r"([#0\- +]*)"
     r"(\*|\d+)?"
     r"(?:\.(\*|\d+))?"
+    r"[hlL]?"
     r"([diouxXeEfFgGcrsa%])"
 )
 
@@ -177,24 +179,67 @@ class _CountingIterable:
             yield item
 
 
+class _CountingMapping(Mapping):
+    """Mapping 代理：iter/items/values 计入预算，供 |dictsort 等在排序前受控。"""
+
+    __slots__ = ("_data", "_budget")
+
+    def __init__(self, data: Mapping[Any, Any], budget: _RenderBudget) -> None:
+        self._data = data
+        self._budget = budget
+
+    def __getitem__(self, key: Any) -> Any:
+        self._budget.check_deadline()
+        return self._data[key]
+
+    def __iter__(self) -> Iterator[Any]:
+        for key in self._data:
+            self._budget.consume()
+            yield key
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def items(self) -> Iterator[tuple[Any, Any]]:  # type: ignore[override]
+        for item in self._data.items():
+            self._budget.consume()
+            yield item
+
+    def values(self) -> Iterator[Any]:  # type: ignore[override]
+        for value in self._data.values():
+            self._budget.consume()
+            yield value
+
+
 def _make_guard_iter(budget: _RenderBudget):
-    """包装任意 for 目标；已是 _CountingIterable 则不重复计数。"""
+    """包装任意 for 目标；已是计数包装则不重复套。"""
 
     def guard_iter(obj: Any) -> Any:
-        if isinstance(obj, _CountingIterable):
+        if isinstance(obj, (_CountingIterable, _CountingMapping)):
             return obj
+        if isinstance(obj, Mapping):
+            if len(obj) > MAX_LOOP_ITERATIONS:
+                raise TemplateRenderError(
+                    f"template loop iterations exceeded limit {MAX_LOOP_ITERATIONS}"
+                )
+            return _CountingMapping(obj, budget)
         return _CountingIterable(obj, budget)
 
     return guard_iter
 
 
 def _prepare_filter_value(value: Any, budget: _RenderBudget) -> Any:
-    """过滤器入参：序列包进计数器；str/bytes/Mapping 保留原类型（|reverse 等依赖 str 特判）。"""
-    if isinstance(value, _CountingIterable):
+    """过滤器入参：序列/Mapping 包进计数器；str/bytes 保留原类型（|reverse 等依赖特判）。"""
+    if isinstance(value, (_CountingIterable, _CountingMapping)):
         return value
     if isinstance(value, Mapping):
         budget.check_deadline()
-        return value
+        if len(value) > MAX_LOOP_ITERATIONS:
+            raise TemplateRenderError(
+                f"template loop iterations exceeded limit {MAX_LOOP_ITERATIONS}"
+            )
+        # dictsort 等会直接 .items() 排序；须包装才能计入预算/响应 cancel
+        return _CountingMapping(value, budget)
     if isinstance(value, (str, bytes, bytearray)):
         # 不包装：Jinja reverse/join 等对 str 有专用分支；超长仍按输出/迭代上限拒绝
         budget.check_deadline()

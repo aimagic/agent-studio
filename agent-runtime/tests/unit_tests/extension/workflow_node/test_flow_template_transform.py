@@ -153,6 +153,28 @@ def test_dict_loop_iteration_budget(monkeypatch):
         )
 
 
+def test_dictsort_respects_iteration_budget(monkeypatch):
+    """|dictsort 须在排序前按 items 计入预算，不能因 Mapping 直通而绕过。"""
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_LOOP_ITERATIONS", 30)
+    with pytest.raises(TemplateRenderError, match="loop iterations exceeded"):
+        render_jinja(
+            "{{ data|dictsort|length }}",
+            {"data": {str(i): i for i in range(50)}},
+        )
+
+
+def test_moderate_dictsort_still_ok(monkeypatch):
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_LOOP_ITERATIONS", 100)
+    assert render_jinja(
+        "{{ data|dictsort|map('first')|join(',') }}",
+        {"data": {"b": 2, "a": 1}},
+    ) == "a,b"
+
+
 def test_output_length_caught_during_concat(monkeypatch):
     """超长输出应在 concat 拼接过程中拦截，而不仅依赖最终 len 检查。"""
     import agent_runtime.extension.workflow_node.template_jinja as tj
@@ -251,6 +273,20 @@ def test_percent_format_width_rejected_before_alloc(monkeypatch):
     monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 1000)
     with pytest.raises(TemplateRenderError, match="output length"):
         render_jinja("{{ '%1000000000s' % 'x' }}", {})
+
+
+def test_percent_format_length_modifier_width_rejected_before_alloc(monkeypatch):
+    """含 h/l/L 修饰符的 %Nld/%Nls 等也须宽度预检，不能先分配再拒。"""
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 1000)
+    for tmpl in (
+        "{{ '%1000000000ld' % 1 }}",
+        "{{ '%1000000000ls' % 'x' }}",
+        "{{ '%1000000000hd' % 1 }}",
+    ):
+        with pytest.raises(TemplateRenderError, match="output length"):
+            render_jinja(tmpl, {})
 
 
 def test_percent_star_width_rejected_before_alloc(monkeypatch):
