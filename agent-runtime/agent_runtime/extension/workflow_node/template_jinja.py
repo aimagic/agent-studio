@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import operator
 import os
+import re
 import threading
 import time
 from collections.abc import Mapping
+from string import Formatter
 from typing import Any, Callable, Iterable, Iterator
 
 from jinja2 import nodes
@@ -17,6 +20,21 @@ from jinja2.runtime import Context
 from jinja2.sandbox import SandboxedEnvironment
 
 _FORBIDDEN_TAGS = (nodes.Include, nodes.Import, nodes.FromImport, nodes.Extends)
+
+# str 上会按宽度/填充放大分配的方法；须在调用前拦，不能等 finalize
+_ALLOC_STR_METHODS = frozenset(
+    {"ljust", "rjust", "center", "zfill", "expandtabs", "format", "format_map"}
+)
+
+# printf 风格：%[ (name) ] [flags] [width] [.precision] type；%% 单独成字段
+_PERCENT_FIELD_RE = re.compile(
+    r"%"
+    r"(?:\(([^)]+)\))?"
+    r"([#0\- +]*)"
+    r"(\*|\d+)?"
+    r"(?:\.(\*|\d+))?"
+    r"([diouxXeEfFgGcrsa%])"
+)
 
 # 内部会自行迭代的过滤器：入参包进 CountingIterable，使预算/deadline 覆盖 |list|sort|join 等
 _ITERATING_FILTERS = frozenset(
@@ -161,14 +179,24 @@ def _make_guard_iter(budget: _RenderBudget):
 
 
 def _prepare_filter_value(value: Any, budget: _RenderBudget) -> Any:
-    """过滤器入参：可迭代对象包进计数器；Mapping 只查 deadline，避免破坏 dict 协议。"""
+    """过滤器入参：序列包进计数器；str/bytes/Mapping 保留原类型（|reverse 等依赖 str 特判）。"""
     if isinstance(value, _CountingIterable):
         return value
     if isinstance(value, Mapping):
         budget.check_deadline()
         return value
     if isinstance(value, (str, bytes, bytearray)):
-        return _CountingIterable(value, budget)
+        # 不包装：Jinja reverse/join 等对 str 有专用分支；超长仍按输出/迭代上限拒绝
+        budget.check_deadline()
+        if len(value) > MAX_OUTPUT_CHARS:
+            raise TemplateRenderError(
+                f"template output length {len(value)} exceeds limit {MAX_OUTPUT_CHARS}"
+            )
+        if len(value) > MAX_LOOP_ITERATIONS:
+            raise TemplateRenderError(
+                f"template loop iterations exceeded limit {MAX_LOOP_ITERATIONS}"
+            )
+        return value
     if isinstance(value, Iterable):
         return _CountingIterable(value, budget)
     budget.check_deadline()
@@ -204,15 +232,44 @@ def _install_filter_guards(env: SandboxedEnvironment, budget: _RenderBudget) -> 
         if original is None:
             continue
         env.filters[name] = _wrap_filter_with_budget(original, budget)
+    _install_alloc_filter_guards(env)
+
+
+def _install_alloc_filter_guards(env: SandboxedEnvironment) -> None:
+    """|format / |center 等会按宽度分配，须在过滤器内预检。"""
+    fmt = env.filters.get("format")
+    if fmt is not None:
+        def guarded_format(value: Any, *args: Any, **kwargs: Any) -> Any:
+            if isinstance(value, str):
+                _guard_percent_format(value, kwargs if kwargs else args)
+            elif isinstance(value, (bytes, bytearray)):
+                _guard_percent_format(value, kwargs if kwargs else args)
+            return fmt(value, *args, **kwargs)
+
+        guarded_format.__name__ = getattr(fmt, "__name__", "format")
+        env.filters["format"] = guarded_format
+
+    center = env.filters.get("center")
+    if center is not None:
+        def guarded_center(value: Any, width: Any = 80, *args: Any, **kwargs: Any) -> Any:
+            if isinstance(width, int) and isinstance(value, (str, bytes, bytearray)):
+                _reject_if_over_limit(max(width, len(value)))
+            elif isinstance(width, int):
+                _reject_if_over_limit(width)
+            return center(value, width, *args, **kwargs)
+
+        guarded_center.__name__ = getattr(center, "__name__", "center")
+        env.filters["center"] = guarded_center
 
 
 def _make_guarded_range(budget: _RenderBudget):
     def guarded_range(*args: int):
         try:
             r = range(*args)
-        except TypeError as exc:
+            size = len(r)
+        except (TypeError, ValueError, OverflowError) as exc:
+            # step=0 → ValueError；超大起止 → len() OverflowError；统一成 TemplateRenderError
             raise TemplateRenderError(f"invalid range(): {exc}") from exc
-        size = len(r)
         if size > MAX_RANGE_SIZE:
             raise TemplateRenderError(
                 f"range() size {size} exceeds limit {MAX_RANGE_SIZE}"
@@ -333,6 +390,149 @@ def _guard_int_pow(base: int, exp: int) -> None:
         )
 
 
+def _reject_if_over_limit(size: int) -> None:
+    if size > MAX_OUTPUT_CHARS:
+        _raise_output_too_long(size)
+
+
+def _guard_percent_format(fmt: Any, args: Any) -> None:
+    """str/bytes % args 分配前：按宽度字段与代入值估算产物下限。"""
+    if not isinstance(fmt, (str, bytes, bytearray)):
+        return
+    fmt_text = fmt.decode("utf-8", "replace") if isinstance(fmt, (bytes, bytearray)) else fmt
+    if len(fmt_text) > MAX_OUTPUT_CHARS:
+        _raise_output_too_long(len(fmt_text))
+
+    mapping: Mapping[str, Any] | None
+    seq: list[Any] | None
+    if isinstance(args, Mapping):
+        mapping, seq = args, None
+    elif isinstance(args, tuple):
+        mapping, seq = None, list(args)
+    else:
+        mapping, seq = None, [args]
+
+    field_sizes: list[int] = []
+    idx = 0
+    for match in _PERCENT_FIELD_RE.finditer(fmt_text):
+        name, _flags, width, prec, conv = match.groups()
+        if conv == "%":
+            continue
+        size = 0
+        if width == "*":
+            if seq is None or idx >= len(seq) or not isinstance(seq[idx], int):
+                # 让原生 % 报错；无法预估则跳过该字段宽度
+                idx += 1
+                continue
+            size = max(size, seq[idx])
+            idx += 1
+        elif width is not None and width.isdigit():
+            size = max(size, int(width))
+        if prec == "*":
+            if seq is not None and idx < len(seq):
+                idx += 1
+        if mapping is not None:
+            if name is not None and name in mapping:
+                val = mapping[name]
+                if isinstance(val, (str, bytes, bytearray)):
+                    size = max(size, len(val))
+        elif seq is not None:
+            if idx < len(seq):
+                val = seq[idx]
+                idx += 1
+                if isinstance(val, (str, bytes, bytearray)):
+                    size = max(size, len(val))
+        _reject_if_over_limit(size)
+        field_sizes.append(size)
+
+    if field_sizes:
+        _reject_if_over_limit(max(field_sizes))
+        _reject_if_over_limit(sum(field_sizes))
+
+
+def _literal_format_spec_width(spec: str) -> int | None:
+    """解析 format_spec 中的字面量 width；含嵌套字段则返回 None。"""
+    if not spec or "{" in spec:
+        return None
+    i = 0
+    if len(spec) >= 2 and spec[1] in "<>=^":
+        i = 2
+    elif spec and spec[0] in "<>=^":
+        i = 1
+    if i < len(spec) and spec[i] in "+- ":
+        i += 1
+    if i < len(spec) and spec[i] == "z":
+        i += 1
+    if i < len(spec) and spec[i] == "#":
+        i += 1
+    if i < len(spec) and spec[i] == "0":
+        i += 1
+    j = i
+    while j < len(spec) and spec[j].isdigit():
+        j += 1
+    if j > i:
+        return int(spec[i:j])
+    return None
+
+
+def _guard_str_format(fmt: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+    """str.format / format_map 分配前：检查字面量与嵌套宽度。"""
+    if len(fmt) > MAX_OUTPUT_CHARS:
+        _raise_output_too_long(len(fmt))
+    for _literal, _field, format_spec, _conv in Formatter().parse(fmt):
+        if not format_spec:
+            continue
+        width = _literal_format_spec_width(format_spec)
+        if width is not None:
+            _reject_if_over_limit(width)
+            continue
+        # 嵌套宽度（如 {:>{}} / {:{}s}）：保守检查可能充当宽度的 int 实参
+        if "{" not in format_spec:
+            continue
+        for arg in args:
+            if isinstance(arg, int):
+                _reject_if_over_limit(arg)
+        for val in kwargs.values():
+            if isinstance(val, int):
+                _reject_if_over_limit(val)
+
+
+def _guard_str_alloc_method(
+    owner: str, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> None:
+    """ljust/rjust/center/zfill/expandtabs/format 调用前按产物长度拒绝。"""
+    if name in ("ljust", "rjust", "center", "zfill"):
+        width = args[0] if args else kwargs.get("width")
+        if isinstance(width, int):
+            _reject_if_over_limit(max(width, len(owner)))
+        return
+    if name == "expandtabs":
+        tabsize = args[0] if args else kwargs.get("tabsize", 8)
+        if isinstance(tabsize, int) and tabsize > 0:
+            ntabs = owner.count("\t")
+            est = len(owner) - ntabs + ntabs * tabsize
+            _reject_if_over_limit(est)
+        return
+    if name == "format":
+        _guard_str_format(owner, args, kwargs)
+        return
+    if name == "format_map":
+        mapping = args[0] if args else kwargs.get("mapping", {})
+        if isinstance(mapping, Mapping):
+            _guard_str_format(owner, (), dict(mapping))
+
+
+def _guard_mod_operands(left: Any, right: Any) -> Any:
+    """%：str/bytes 走格式化护栏；其余走取模。返回运算结果。"""
+    if isinstance(left, (str, bytes, bytearray)):
+        _guard_percent_format(left, right)
+        try:
+            return left % right
+        except (TypeError, ValueError, KeyError) as exc:
+            raise TemplateRenderError(f"template % format failed: {exc}") from exc
+    return operator.mod(left, right)
+
+
 def _guard_mul_operands(left: Any, right: Any) -> None:
     """* 运算分配前：str/bytes 按输出长度；list/tuple 按元素数。"""
     if isinstance(left, str) and isinstance(right, int):
@@ -360,18 +560,65 @@ def _guard_pow_operands(left: Any, right: Any) -> None:
 
 
 class _GuardedSandboxedEnvironment(SandboxedEnvironment):
-    """拦截 * / **，在分配或重计算前做资源护栏。"""
+    """拦截 * / ** / % 与会放大分配的 str 方法，在分配前做资源护栏。"""
 
-    intercepted_binops = frozenset(["*", "**"])
+    intercepted_binops = frozenset(["*", "**", "%"])
 
     def call_binop(
         self, context: Context, operator: str, left: Any, right: Any
     ) -> Any:
+        if operator == "%":
+            return _guard_mod_operands(left, right)
         if operator == "*":
             _guard_mul_operands(left, right)
         elif operator == "**":
             _guard_pow_operands(left, right)
         return super().call_binop(context, operator, left, right)
+
+    def wrap_str_format(self, value: Any) -> Callable[..., str] | None:
+        """Jinja 在 getattr 时替换 format；须在 wrapper 内预检，call() 看不到 bound method。"""
+        wrapped = super().wrap_str_format(value)
+        if wrapped is None:
+            return None
+        owner = getattr(value, "__self__", None)
+        name = getattr(value, "__name__", None)
+        if not isinstance(owner, str) or name not in ("format", "format_map"):
+            return wrapped
+
+        def guarded(*args: Any, **kwargs: Any) -> str:
+            if name == "format_map":
+                mapping = args[0] if args else {}
+                if isinstance(mapping, Mapping):
+                    _guard_str_format(owner, (), dict(mapping))
+            else:
+                _guard_str_format(owner, args, kwargs)
+            return wrapped(*args, **kwargs)
+
+        guarded.__name__ = getattr(wrapped, "__name__", name)
+        guarded.__doc__ = getattr(wrapped, "__doc__", None)
+        return guarded
+
+    def call(
+        self,
+        context: Context,
+        obj: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        owner = getattr(obj, "__self__", None)
+        name = getattr(obj, "__name__", None)
+        if isinstance(owner, str) and name in _ALLOC_STR_METHODS - {"format", "format_map"}:
+            _guard_str_alloc_method(owner, name, args, kwargs)
+        elif isinstance(owner, (bytes, bytearray)) and name in {
+            "ljust",
+            "rjust",
+            "center",
+            "zfill",
+            "expandtabs",
+        }:
+            text = owner.decode("utf-8", "replace")
+            _guard_str_alloc_method(text, name, args, kwargs)
+        return super().call(context, obj, *args, **kwargs)
 
 
 def _fold_static_str_len(node: nodes.Node) -> int | None:
@@ -414,11 +661,36 @@ def _reject_static_huge_seq_mul(node: nodes.Mul) -> None:
     _product_seq_or_raise(left_len, times)
 
 
+def _reject_static_huge_percent(node: nodes.Mod) -> None:
+    """字面量 '%Ns' % ... 解析期拒绝，避免编译后才分配。"""
+    fmt = _const_str(node.left)
+    if fmt is None:
+        return
+    right = node.right
+    if isinstance(right, nodes.Const):
+        _guard_percent_format(fmt, right.value)
+        return
+    if isinstance(right, nodes.Tuple):
+        values: list[Any] = []
+        for item in right.items:
+            if not isinstance(item, nodes.Const):
+                # 宽度字面量仍可扫 format 串本身
+                _guard_percent_format(fmt, ())
+                return
+            values.append(item.value)
+        _guard_percent_format(fmt, tuple(values))
+        return
+    # 右侧非常量：至少按 format 串内字面量宽度拒绝
+    _guard_percent_format(fmt, ())
+
+
 def _reject_static_huge_ops(parsed: nodes.Template) -> None:
-    """解析期拒绝可静态折叠的超大 str/seq 重复与整数幂。"""
+    """解析期拒绝可静态折叠的超大 str/seq 重复、%-宽度与整数幂。"""
     for node in parsed.find_all(nodes.Mul):
         _fold_static_str_len(node)
         _reject_static_huge_seq_mul(node)
+    for node in parsed.find_all(nodes.Mod):
+        _reject_static_huge_percent(node)
     for node in parsed.find_all(nodes.Pow):
         base = _const_int(node.left)
         exp = _const_int(node.right)
@@ -461,7 +733,7 @@ def _const_range_len(call: nodes.Call) -> int | None:
         return None
     try:
         return len(range(*args))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -558,14 +830,22 @@ def render_jinja(template: str, variables: dict[str, Any]) -> str:
         raise TemplateRenderError("template variables must be a dict")
 
     slots = _render_slots
-    # 短等：给超时 cancel 后的 orphan 一点释放槽位的时间，减轻「槽满即全拒绝」
-    slot_wait = min(1.0, float(RENDER_TIMEOUT_SEC))
+    # 等槽 + 渲染共用同一 RENDER_TIMEOUT_SEC 总预算，避免硬编码 1s 误杀排队请求
+    overall_deadline = time.monotonic() + float(RENDER_TIMEOUT_SEC)
+    slot_wait = max(0.0, overall_deadline - time.monotonic())
     if not slots.acquire(blocking=True, timeout=slot_wait):
         raise TemplateRenderError(
             f"template render concurrency limit exceeded ({MAX_CONCURRENT_RENDERS})"
         )
 
-    deadline = time.monotonic() + RENDER_TIMEOUT_SEC
+    remain = max(0.0, overall_deadline - time.monotonic())
+    if remain <= 0:
+        slots.release()
+        raise TemplateRenderError(
+            f"template render timed out after {RENDER_TIMEOUT_SEC}s"
+        )
+
+    deadline = overall_deadline
     cancel = threading.Event()
     box: dict[str, Any] = {}
 
@@ -592,7 +872,7 @@ def render_jinja(template: str, variables: dict[str, Any]) -> str:
             f"template render failed to start worker: {exc}"
         ) from exc
 
-    thread.join(timeout=RENDER_TIMEOUT_SEC)
+    thread.join(timeout=remain)
     if thread.is_alive():
         # 通知 worker 在下一次 consume/check_deadline 时退出；不 join 到底
         cancel.set()

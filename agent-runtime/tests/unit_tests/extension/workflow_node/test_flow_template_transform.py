@@ -74,6 +74,37 @@ def test_single_range_over_limit_rejected(monkeypatch):
         render_jinja("{% for i in range(101) %}x{% endfor %}", {})
 
 
+def test_range_zero_step_becomes_template_render_error():
+    """range(..., 0) 的 ValueError 须收成 TemplateRenderError，不能裸漏。"""
+    with pytest.raises(TemplateRenderError, match="invalid range"):
+        render_jinja("{{ range(1, 2, 0) }}", {})
+    with pytest.raises(TemplateRenderError, match="invalid range"):
+        render_jinja("{% for i in range(1, 2, 0) %}x{% endfor %}", {})
+
+
+def test_range_overflow_becomes_template_render_error():
+    """超大 range 的 len() OverflowError 须收成 TemplateRenderError。"""
+    with pytest.raises(TemplateRenderError, match="invalid range"):
+        render_jinja("{{ range(10 ** 100) }}", {})
+
+
+def test_const_range_len_swallows_overflow():
+    """静态路径对非法/溢出 range 返回 None，不向外抛 OverflowError。"""
+    from jinja2 import nodes
+    from jinja2.sandbox import SandboxedEnvironment
+
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    env = SandboxedEnvironment()
+    parsed = env.parse("{% for i in range(1, 2, 0) %}x{% endfor %}")
+    for_node = next(parsed.find_all(nodes.For))
+    assert tj._const_range_len(for_node.iter) is None
+
+    huge = env.parse("{% for i in range(" + ("9" * 100) + ") %}x{% endfor %}")
+    for_node = next(huge.find_all(nodes.For))
+    assert tj._const_range_len(for_node.iter) is None
+
+
 def test_loop_iteration_budget_runtime(monkeypatch):
     import agent_runtime.extension.workflow_node.template_jinja as tj
 
@@ -222,6 +253,69 @@ def test_moderate_list_repeat_and_pow_ok(monkeypatch):
     assert render_jinja("{{ 2 ** 10 }}", {}) == "1024"
 
 
+def test_percent_format_width_rejected_before_alloc(monkeypatch):
+    """'%Ns' % x 超限须在分配前拒绝（宽度可达 1e9，不能先造串）。"""
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 1000)
+    with pytest.raises(TemplateRenderError, match="output length"):
+        render_jinja("{{ '%1000000000s' % 'x' }}", {})
+
+
+def test_percent_star_width_rejected_before_alloc(monkeypatch):
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 1000)
+    with pytest.raises(TemplateRenderError, match="output length"):
+        render_jinja("{{ '%*s' % (n, 'x') }}", {"n": 10**9})
+
+
+def test_str_pad_methods_rejected_before_alloc(monkeypatch):
+    """ljust/rjust/center/zfill 按宽度分配前拦截。"""
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 1000)
+    for tmpl in (
+        "{{ 'x'.ljust(n) }}",
+        "{{ 'x'.rjust(n) }}",
+        "{{ 'x'.center(n) }}",
+        "{{ 'x'.zfill(n) }}",
+    ):
+        with pytest.raises(TemplateRenderError, match="output length"):
+            render_jinja(tmpl, {"n": 10**9})
+
+
+def test_str_format_width_rejected_before_alloc(monkeypatch):
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 1000)
+    with pytest.raises(TemplateRenderError, match="output length"):
+        render_jinja("{{ '{:>1000000000}'.format('x') }}", {})
+    with pytest.raises(TemplateRenderError, match="output length"):
+        render_jinja("{{ '{:>{}}'.format('x', n) }}", {"n": 10**9})
+
+
+def test_format_and_center_filters_rejected_before_alloc(monkeypatch):
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 1000)
+    with pytest.raises(TemplateRenderError, match="output length"):
+        render_jinja("{{ '%1000000000s'|format('x') }}", {})
+    with pytest.raises(TemplateRenderError, match="output length"):
+        render_jinja("{{ 'x'|center(n) }}", {"n": 10**9})
+
+
+def test_moderate_percent_and_pad_still_ok(monkeypatch):
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 100)
+    assert render_jinja("{{ 10 % 3 }}", {}) == "1"
+    assert render_jinja("{{ '%5s' % 'x' }}", {}) == "    x"
+    assert render_jinja("{{ 'x'.ljust(5) }}", {}) == "x    "
+    assert render_jinja("{{ 'x'|center(5) }}", {}) == "  x  "
+    assert render_jinja("{{ '%3s'|format('ab') }}", {}) == " ab"
+
+
 def test_moderate_nested_loops_still_ok():
     text = render_jinja(
         "{% for i in range(3) %}{% for j in range(2) %}{{ i }}{{ j }};{% endfor %}{% endfor %}",
@@ -295,6 +389,12 @@ def test_filter_last_and_random_still_work():
     assert picked in items
 
 
+def test_filter_reverse_on_string_keeps_str_semantics():
+    """|reverse 对 str 必须走 Jinja 字符串分支，输出 cba 而非 generator repr。"""
+    assert render_jinja("{{ 'abc'|reverse }}", {}) == "cba"
+    assert render_jinja("{{ items|reverse|list|join('') }}", {"items": ["a", "b", "c"]}) == "cba"
+
+
 def test_filter_list_hits_loop_budget(monkeypatch):
     """|list / |join 等过滤器内部迭代也应计入预算。"""
     import agent_runtime.extension.workflow_node.template_jinja as tj
@@ -336,7 +436,7 @@ def test_filter_sort_hits_loop_budget(monkeypatch):
 
 
 def test_render_concurrency_limit_blocks_extra(monkeypatch):
-    """超时 orphan 仍占槽时，超额请求应快速失败，避免无限起线程。"""
+    """槽被占满且在总超时内未释放时，超额请求应报 concurrency limit。"""
     import threading
 
     import agent_runtime.extension.workflow_node.template_jinja as tj
@@ -344,7 +444,7 @@ def test_render_concurrency_limit_blocks_extra(monkeypatch):
     release = threading.Event()
     started = threading.Event()
     monkeypatch.setattr(tj, "_render_slots", threading.BoundedSemaphore(1))
-    monkeypatch.setattr(tj, "RENDER_TIMEOUT_SEC", 2)
+    monkeypatch.setattr(tj, "RENDER_TIMEOUT_SEC", 1)
 
     def _hang(*_args, **_kwargs):
         started.set()
@@ -365,11 +465,66 @@ def test_render_concurrency_limit_blocks_extra(monkeypatch):
     t.start()
     assert started.wait(timeout=3), "first worker did not start"
     try:
+        started_wait = time.monotonic()
         with pytest.raises(TemplateRenderError, match="concurrency limit"):
             render_jinja("{{ x }}", {"x": 1})
-        # 等首个调用因 join 超时返回（worker 仍占槽挂起）
+        # 等槽应对齐 RENDER_TIMEOUT_SEC，而非硬编码 1s 的更短值；此处超时=1
+        assert time.monotonic() - started_wait >= 0.8
         t.join(timeout=5)
         assert errors and "timed out" in str(errors[0])
     finally:
         release.set()
         t.join(timeout=5)
+
+
+def test_render_waits_for_slot_within_timeout(monkeypatch):
+    """合法渲染占满槽时，后来者应能等到槽释放（在总超时内），而不是 1s 就失败。"""
+    import threading
+
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    release_first = threading.Event()
+    first_started = threading.Event()
+    monkeypatch.setattr(tj, "_render_slots", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(tj, "RENDER_TIMEOUT_SEC", 3)
+
+    def _first_guard(*_args, **_kwargs):
+        first_started.set()
+        release_first.wait(timeout=30)
+        return "first"
+
+    calls = {"n": 0}
+    orig = tj._render_with_guards
+
+    def _dispatch(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _first_guard(*args, **kwargs)
+        return "second"
+
+    monkeypatch.setattr(tj, "_render_with_guards", _dispatch)
+
+    results: list[str] = []
+    errors: list[BaseException] = []
+
+    def _run_first() -> None:
+        try:
+            results.append(render_jinja("{{ a }}", {"a": 1}))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    t = threading.Thread(target=_run_first)
+    t.start()
+    assert first_started.wait(timeout=3)
+
+    def _release_soon() -> None:
+        time.sleep(0.5)
+        release_first.set()
+
+    threading.Thread(target=_release_soon, daemon=True).start()
+    # 若仍 min(1.0,...) 且第一槽永不释放会失败；这里 0.5s 后释放，应成功等到
+    second = render_jinja("{{ b }}", {"b": 2})
+    t.join(timeout=5)
+    assert not errors
+    assert results == ["first"]
+    assert second == "second"
