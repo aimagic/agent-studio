@@ -158,3 +158,25 @@ class TestInprocessCodeRunnerOsSystemMock:
         code = "import os\ndef main(args):\n    ret = os.system('echo test')\n    return {'ret': ret}"
         result = await runner.run(user_code=code, inputs={})
         assert result == {"ret": -1}
+
+
+class TestInprocessCodeRunnerTimeout:
+    """超时控制测试"""
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_timeout_raises_timeout_error():
+        """死循环代码在超时后被中断并抛出 TimeoutError"""
+        runner = InprocessCodeRunner()
+        code = "def main(args):\n    while True:\n        pass\n    return {}"
+        with pytest.raises(TimeoutError, match="代码执行超时"):
+            await runner.run(user_code=code, inputs={}, timeout=1)
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_normal_execution_within_timeout():
+        """正常代码在超时时间内完成不受影响"""
+        runner = InprocessCodeRunner()
+        code = "def main(args): return {'ok': True}"
+        result = await runner.run(user_code=code, inputs={}, timeout=10)
+        assert result == {"ok": True}
