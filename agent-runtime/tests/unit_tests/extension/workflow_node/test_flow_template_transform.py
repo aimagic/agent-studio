@@ -367,6 +367,32 @@ def test_str_join_infinite_hits_budget_and_stops(monkeypatch):
     assert iters["n"] - n_at_return < 50_000
 
 
+def test_join_filter_rejects_large_output_before_alloc(monkeypatch):
+    """|join 须与 str.join 一样在拼接前累计长度，不能等 do_join 造完超大串。"""
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 1000)
+    with pytest.raises(TemplateRenderError, match="output length"):
+        render_jinja(
+            "{{ items|join('') }}",
+            {"items": ["y" * 500_000, "z" * 500_000]},
+        )
+
+
+def test_moderate_join_filter_still_ok(monkeypatch):
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 100)
+    assert render_jinja("{{ items|join(',') }}", {"items": [1, 2, 3]}) == "1,2,3"
+    assert (
+        render_jinja(
+            "{{ users|join(',', attribute='name') }}",
+            {"users": [{"name": "a"}, {"name": "b"}]},
+        )
+        == "a,b"
+    )
+
+
 def test_str_replace_amplify_rejected_before_alloc(monkeypatch):
     import agent_runtime.extension.workflow_node.template_jinja as tj
 

@@ -16,8 +16,10 @@ from typing import Any, Callable, Iterable, Iterator
 
 from jinja2 import nodes
 from jinja2.exceptions import SecurityError, TemplateError
+from jinja2.filters import make_attrgetter
 from jinja2.runtime import Context
 from jinja2.sandbox import SandboxedEnvironment
+from jinja2.utils import pass_eval_context
 
 _FORBIDDEN_TAGS = (nodes.Include, nodes.Import, nodes.FromImport, nodes.Extends)
 
@@ -283,11 +285,42 @@ def _wrap_filter_with_budget(original: Callable[..., Any], budget: _RenderBudget
 
 def _install_filter_guards(env: SandboxedEnvironment, budget: _RenderBudget) -> None:
     for name in _ITERATING_FILTERS:
+        if name == "join":
+            # |join 单独安装：须在拼接前累计输出长度，不能只计迭代
+            continue
         original = env.filters.get(name)
         if original is None:
             continue
         env.filters[name] = _wrap_filter_with_budget(original, budget)
+    _install_join_filter_guard(env, budget)
     _install_alloc_filter_guards(env)
+
+
+def _install_join_filter_guard(
+    env: SandboxedEnvironment, budget: _RenderBudget
+) -> None:
+    """|join 走 _budgeted_join，避免 do_join 先整串分配再被 finalize 拒绝。"""
+    if env.filters.get("join") is None:
+        return
+
+    @pass_eval_context
+    def guarded_join(
+        eval_ctx: Any,
+        value: Any,
+        d: Any = "",
+        attribute: Any = None,
+    ) -> str:
+        budget.check_deadline()
+        iterable: Any = value
+        if attribute is not None:
+            iterable = map(
+                make_attrgetter(eval_ctx.environment, attribute),
+                value,
+            )
+        return _budgeted_join(str(d), iterable, budget)
+
+    guarded_join.__name__ = "join"
+    env.filters["join"] = guarded_join
 
 
 def _install_alloc_filter_guards(env: SandboxedEnvironment) -> None:
