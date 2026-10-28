@@ -57,6 +57,8 @@ _DEBUG_EVENT_RETURN_TO_SERVICE: dict[str, str] = {
     "LoopSetVariable": "jiuwen.setVariable",
     "Aggregate": "jiuwen.aggregation",
     "FlowCode": "Code",
+    "FlowTemplateTransform": "TemplateTransform",
+    "jiuwen.templateTransform": "TemplateTransform",
     "EI.ComplexIntentDetection": "EI.ComplexIntentDetection",
     "jiuwen.paramExtraction": "jiuwen.paramExtraction",
     "FlowMcp": "jiuwen.mcp",
@@ -748,9 +750,10 @@ class WorkflowWrapper:
             "agentId": payload.get("workflowId", ""),
             "componentId": comp_id,
             "componentName": effective_component_name,
+            # 优先用 IR 覆盖后的类型（Trace 对未登记组件可能是空/unknown）
             "componentType": _DEBUG_EVENT_RETURN_TO_SERVICE.get(
-                payload.get("componentType", "unknown"),
-                payload.get("componentType", ""),
+                effective_component_type or payload.get("componentType", "unknown"),
+                effective_component_type or payload.get("componentType", ""),
             ),
             "agentParentInvokeId": "",
             "inputs": payload.get("inputs"),
