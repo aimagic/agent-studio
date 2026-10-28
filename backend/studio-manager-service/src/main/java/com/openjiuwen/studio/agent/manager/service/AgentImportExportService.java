@@ -567,6 +567,7 @@ public class AgentImportExportService {
         Agent agent = agentExportEntity.getMetadata();
         if (agent != null && CommonConstant.PLANEXECUTE_TYPE.equals(agent.getSubType())) {
             // Scene定义放在了dsl中
+            // bug009 已知: downloadObsFile 在 OBS 404 时返回 null, parseObject(null) 后解引用有 NPE 风险; 本 bug009 不改(导出链路已过版本校验, dsl 存在是发布契约保护; 极端丢失时 NPE 500 与 OBS_FAILED 500 对外无差)。
             String agentDslJson = mgObsService.downloadObsFile(agentExportEntity.getMetadata().getDslPath());
             AgentInfo agentInfo = JSON.parseObject(agentDslJson, AgentInfo.class);
             agentExportEntity.setScenes(agentInfo.getScenes());

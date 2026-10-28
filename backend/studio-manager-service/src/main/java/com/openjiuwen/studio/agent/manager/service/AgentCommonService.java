@@ -607,6 +607,7 @@ public class AgentCommonService {
         // deepresearch模式
         if (StringUtils.isNotBlank(agent.getDslPath()) && CommonConstant.DEEPRESEARCH_TYPE.equals(agent.getSubType())) {
             // 如果有dsl 直接从dsl返回
+            // bug009 已知: downloadObsFile 在 OBS 404 时返回 null(read 404→null 契约), parseObject(null) 返回 null 后 .setXxx() 有 NPE 风险; 本 bug009 不改(非导出链路, DSL 丢失属极端数据不一致)。
             String agentJson = mgObsService.downloadObsFile(agent.getDslPath());
             return JSON.parseObject(agentJson, AgentInfo.class).setUpdateTime(agent.getUpdatedOn()).setPublishTime(agent.getPublishedOn());
         }
@@ -627,6 +628,7 @@ public class AgentCommonService {
         agentInfo.setSkills(skillReferences);
         // 自主动态规划模式
         if (StringUtils.isNotBlank(agent.getDslPath()) && CommonConstant.PLANEXECUTE_TYPE.equals(agent.getSubType())) {
+            // bug009 已知: downloadObsFile 在 OBS 404 时返回 null, parseObject(null) 后解引用有 NPE 风险; 本 bug009 不改(非导出链路, DSL 丢失属极端数据不一致)。
             String agentJson = mgObsService.downloadObsFile(agent.getDslPath());
             AgentInfo agentInfoFromDSL = JSON.parseObject(agentJson, AgentInfo.class).setUpdateTime(agent.getUpdatedOn()).setPublishTime(agent.getPublishedOn());
 

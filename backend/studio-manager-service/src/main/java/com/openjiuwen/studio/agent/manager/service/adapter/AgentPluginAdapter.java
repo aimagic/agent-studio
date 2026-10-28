@@ -53,6 +53,7 @@ public class AgentPluginAdapter {
         // 检查应用类型是否是 AGENT
         if (Strings.CS.equals(exportResourceUnit.getAppType(), ResourceTypeEnum.AGENT.toString())) {
             // 获取代理信息
+            // bug009 已知: downloadObsFile 在 OBS 404 时返回 null, parseObject(null) 后解引用有 NPE 风险; 本 bug009 不改(导出链路已过版本校验, dsl 存在是发布契约保护; 极端丢失时 NPE 500 与 OBS_FAILED 500 对外无差)。
             Agent agent = agentMapper.selectById(exportResourceUnit.getAppId());
             AgentInfo agentInfo = JSONObject.parseObject(obsService.downloadObsFile(agent.getDslPath()),
                 AgentInfo.class);
