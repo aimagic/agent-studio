@@ -305,6 +305,11 @@ class StreamableHttpClientNew(McpClient):
 
         每次调用新建 client/session，执行完毕后自动释放
         """
+        if self._mcp_choose_tools is not None and tool_name not in self._mcp_choose_tools:
+            err_msg = f"tool {tool_name} is not in the chosen mcp tools {self._mcp_choose_tools}"
+            logger.error(err_msg)
+            raise exception.PluginParamException(message=err_msg)
+
         jiuwen_kwargs = arguments.pop(JIUWEN_RUNTIME_KWARGS, {}) or {}
 
         request_params = self._prepare_request_params(
