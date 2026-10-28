@@ -305,6 +305,62 @@ def test_moderate_percent_and_pad_still_ok(monkeypatch):
     assert render_jinja("{{ 'x'.ljust(5) }}", {}) == "x    "
     assert render_jinja("{{ 'x'|center(5) }}", {}) == "  x  "
     assert render_jinja("{{ '%3s'|format('ab') }}", {}) == " ab"
+    assert render_jinja("{{ sep.join(items) }}", {"sep": ",", "items": ["a", "b"]}) == "a,b"
+
+
+def test_str_join_infinite_hits_budget_and_stops(monkeypatch):
+    """sep.join(无限迭代) 须计入预算/cancel，超时后 worker 不得继续狂跑。"""
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "RENDER_TIMEOUT_SEC", 1)
+    monkeypatch.setattr(tj, "MAX_LOOP_ITERATIONS", 10**9)
+    iters = {"n": 0}
+
+    class _Inf:
+        def __iter__(self):
+            while True:
+                iters["n"] += 1
+                yield "a"
+
+    with pytest.raises(
+        TemplateRenderError, match="timed out|loop iterations|output length"
+    ):
+        render_jinja("{{ sep.join(items) }}", {"sep": ",", "items": _Inf()})
+    n_at_return = iters["n"]
+    time.sleep(0.4)
+    # 护栏抛错后 worker 应结束；允许少量在途增量，但不能再涨数百万
+    assert iters["n"] - n_at_return < 50_000
+
+
+def test_str_replace_amplify_rejected_before_alloc(monkeypatch):
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 1000)
+    owner = ("a" + "b") * 450
+    replacement = "y" * 900
+    with pytest.raises(TemplateRenderError, match="output length"):
+        render_jinja(
+            "{{ owner.replace(old, replacement) }}",
+            {"owner": owner, "old": "a", "replacement": replacement},
+        )
+
+
+def test_str_format_repeated_args_rejected_before_alloc(monkeypatch):
+    """'{}{}{}'.format(x,x,x) 须按字段值总长预拒，不能先拼再拒。"""
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_OUTPUT_CHARS", 1000)
+    x = "z" * 900
+    with pytest.raises(TemplateRenderError, match="output length"):
+        render_jinja("{{ '{}{}{}'.format(x, x, x) }}", {"x": x})
+
+
+def test_str_format_invalid_string_becomes_template_render_error():
+    """非法 format 串的 ValueError 须收成 TemplateRenderError。"""
+    with pytest.raises(TemplateRenderError, match="invalid format string|format failed"):
+        render_jinja("{{ '{'.format() }}", {})
+    with pytest.raises(TemplateRenderError, match="invalid format string|format failed"):
+        render_jinja("{{ '}'.format() }}", {})
 
 
 def test_moderate_nested_loops_still_ok():

@@ -21,9 +21,19 @@ from jinja2.sandbox import SandboxedEnvironment
 
 _FORBIDDEN_TAGS = (nodes.Include, nodes.Import, nodes.FromImport, nodes.Extends)
 
-# str 上会按宽度/填充放大分配的方法；须在调用前拦，不能等 finalize
-_ALLOC_STR_METHODS = frozenset(
-    {"ljust", "rjust", "center", "zfill", "expandtabs", "format", "format_map"}
+# 已知会放大分配的 str 方法：必须预检，不能先造串再拒
+_AMPLIFYING_STR_METHODS = frozenset(
+    {
+        "join",
+        "replace",
+        "format",
+        "format_map",
+        "ljust",
+        "rjust",
+        "center",
+        "zfill",
+        "expandtabs",
+    }
 )
 
 # printf 风格：%[ (name) ] [flags] [width] [.precision] type；%% 单独成字段
@@ -475,32 +485,114 @@ def _literal_format_spec_width(spec: str) -> int | None:
     return None
 
 
+def _format_field_arg(
+    field_name: str,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    auto_idx: list[int],
+) -> Any:
+    """解析 format 字段名对应的实参；auto_idx 为单元素列表以模拟可变计数。"""
+    if field_name == "":
+        i = auto_idx[0]
+        auto_idx[0] = i + 1
+        return args[i] if i < len(args) else None
+    if field_name.isdigit():
+        i = int(field_name)
+        return args[i] if i < len(args) else None
+    key = field_name.split(".", 1)[0].split("[", 1)[0]
+    if key.isdigit():
+        i = int(key)
+        return args[i] if i < len(args) else None
+    return kwargs.get(key)
+
+
+def _value_len_hint(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, (str, bytes, bytearray)):
+        return len(value)
+    if isinstance(value, bool):
+        return 4 if value else 5
+    if isinstance(value, int):
+        return len(str(value))
+    if isinstance(value, float):
+        return len(str(value))
+    return len(str(value))
+
+
 def _guard_str_format(fmt: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
-    """str.format / format_map 分配前：检查字面量与嵌套宽度。"""
+    """str.format / format_map 分配前：宽度 + 各字段代入值长度总和。"""
     if len(fmt) > MAX_OUTPUT_CHARS:
         _raise_output_too_long(len(fmt))
-    for _literal, _field, format_spec, _conv in Formatter().parse(fmt):
-        if not format_spec:
+    total = 0
+    auto_idx = [0]
+    try:
+        fields = list(Formatter().parse(fmt))
+    except ValueError as exc:
+        raise TemplateRenderError(f"invalid format string: {exc}") from exc
+    for literal, field_name, format_spec, _conv in fields:
+        total += len(literal or "")
+        _reject_if_over_limit(total)
+        if field_name is None:
             continue
-        width = _literal_format_spec_width(format_spec)
-        if width is not None:
-            _reject_if_over_limit(width)
-            continue
-        # 嵌套宽度（如 {:>{}} / {:{}s}）：保守检查可能充当宽度的 int 实参
-        if "{" not in format_spec:
-            continue
-        for arg in args:
-            if isinstance(arg, int):
-                _reject_if_over_limit(arg)
-        for val in kwargs.values():
-            if isinstance(val, int):
-                _reject_if_over_limit(val)
+        width = _literal_format_spec_width(format_spec) if format_spec else None
+        if format_spec and "{" in format_spec:
+            # 嵌套宽度：保守拒绝超限 int 实参
+            for arg in args:
+                if isinstance(arg, int):
+                    _reject_if_over_limit(arg)
+            for val in kwargs.values():
+                if isinstance(val, int):
+                    _reject_if_over_limit(val)
+        val = _format_field_arg(field_name, args, kwargs, auto_idx)
+        piece = max(width or 0, _value_len_hint(val))
+        total += piece
+        _reject_if_over_limit(total)
+
+
+def _guard_str_replace(
+    owner: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> None:
+    """replace 分配前按出现次数估算产物长度。"""
+    old = args[0] if args else kwargs.get("old")
+    new = args[1] if len(args) > 1 else kwargs.get("new")
+    count = args[2] if len(args) > 2 else kwargs.get("count", -1)
+    if not isinstance(old, str) or not isinstance(new, str):
+        return
+    if old == "":
+        # 空串替换会在每个间隙插入 new
+        est = len(owner) + (len(owner) + 1) * len(new)
+        _reject_if_over_limit(est)
+        return
+    n = owner.count(old)
+    if isinstance(count, int) and count >= 0:
+        n = min(n, count)
+    est = len(owner) + n * (len(new) - len(old))
+    _reject_if_over_limit(est)
+
+
+def _budgeted_join(sep: str, iterable: Any, budget: _RenderBudget) -> str:
+    """str.join：逐项计入迭代预算并响应 cancel，同时累计输出长度。"""
+    parts: list[str] = []
+    total = 0
+    for item in iterable:
+        budget.consume()
+        text = item if isinstance(item, str) else str(item)
+        add = len(text) if not parts else len(sep) + len(text)
+        total += add
+        _reject_if_over_limit(total)
+        parts.append(text)
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return sep.join(parts)
 
 
 def _guard_str_alloc_method(
     owner: str, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> None:
-    """ljust/rjust/center/zfill/expandtabs/format 调用前按产物长度拒绝。"""
+    """ljust/rjust/center/zfill/expandtabs/format/replace 调用前按产物长度拒绝。"""
     if name in ("ljust", "rjust", "center", "zfill"):
         width = args[0] if args else kwargs.get("width")
         if isinstance(width, int):
@@ -513,6 +605,9 @@ def _guard_str_alloc_method(
             est = len(owner) - ntabs + ntabs * tabsize
             _reject_if_over_limit(est)
         return
+    if name == "replace":
+        _guard_str_replace(owner, args, kwargs)
+        return
     if name == "format":
         _guard_str_format(owner, args, kwargs)
         return
@@ -520,6 +615,42 @@ def _guard_str_alloc_method(
         mapping = args[0] if args else kwargs.get("mapping", {})
         if isinstance(mapping, Mapping):
             _guard_str_format(owner, (), dict(mapping))
+
+
+def _dispatch_str_method(
+    owner: str,
+    method: Any,
+    name: str,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    budget: _RenderBudget,
+) -> Any:
+    """统一分发 str 方法：join 走预算迭代；放大类预检；其余调用后校验长度。"""
+    budget.check_deadline()
+    if name == "join":
+        iterable = args[0] if args else ()
+        return _budgeted_join(owner, iterable, budget)
+    if name in _AMPLIFYING_STR_METHODS:
+        _guard_str_alloc_method(owner, name, args, kwargs)
+    result = method(*args, **kwargs)
+    if isinstance(result, str):
+        _reject_if_over_limit(len(result))
+    elif isinstance(result, (list, tuple)) and len(result) > MAX_LOOP_ITERATIONS:
+        raise TemplateRenderError(
+            f"template sequence length {len(result)} exceeds limit {MAX_LOOP_ITERATIONS}"
+        )
+    return result
+
+
+def _wrap_str_method(
+    owner: str, method: Any, name: str, budget: _RenderBudget
+) -> Callable[..., Any]:
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        return _dispatch_str_method(owner, method, name, args, kwargs, budget)
+
+    guarded.__name__ = name
+    guarded.__doc__ = getattr(method, "__doc__", None)
+    return guarded
 
 
 def _guard_mod_operands(left: Any, right: Any) -> Any:
@@ -560,9 +691,13 @@ def _guard_pow_operands(left: Any, right: Any) -> None:
 
 
 class _GuardedSandboxedEnvironment(SandboxedEnvironment):
-    """拦截 * / ** / % 与会放大分配的 str 方法，在分配前做资源护栏。"""
+    """拦截 * / ** / %，并对 str 方法统一做分配前护栏（含 join 预算）。"""
 
     intercepted_binops = frozenset(["*", "**", "%"])
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._render_budget: _RenderBudget | None = None
 
     def call_binop(
         self, context: Context, op: str, left: Any, right: Any
@@ -577,7 +712,7 @@ class _GuardedSandboxedEnvironment(SandboxedEnvironment):
         return super().call_binop(context, op, left, right)
 
     def wrap_str_format(self, value: Any) -> Callable[..., str] | None:
-        """Jinja 在 getattr 时替换 format；须在 wrapper 内预检，call() 看不到 bound method。"""
+        """Jinja 在 getattr 时替换 format；预检宽度与字段值长度后再调用。"""
         wrapped = super().wrap_str_format(value)
         if wrapped is None:
             return None
@@ -593,11 +728,31 @@ class _GuardedSandboxedEnvironment(SandboxedEnvironment):
                     _guard_str_format(owner, (), dict(mapping))
             else:
                 _guard_str_format(owner, args, kwargs)
-            return wrapped(*args, **kwargs)
+            try:
+                result = wrapped(*args, **kwargs)
+            except (ValueError, TypeError, KeyError, IndexError) as exc:
+                raise TemplateRenderError(f"template format failed: {exc}") from exc
+            _reject_if_over_limit(len(result))
+            return result
 
         guarded.__name__ = getattr(wrapped, "__name__", name)
         guarded.__doc__ = getattr(wrapped, "__doc__", None)
         return guarded
+
+    def getattr(self, obj: Any, attribute: str) -> Any:
+        value = super().getattr(obj, attribute)
+        budget = self._render_budget
+        if (
+            budget is None
+            or not isinstance(obj, str)
+            or not callable(value)
+            or attribute.startswith("_")
+            or attribute in ("format", "format_map")
+        ):
+            # format/format_map 已由 wrap_str_format 接管
+            return value
+        # 统一包装公开 str 方法，避免只维护白名单漏网
+        return _wrap_str_method(obj, value, attribute, budget)
 
     def call(
         self,
@@ -606,18 +761,26 @@ class _GuardedSandboxedEnvironment(SandboxedEnvironment):
         *args: Any,
         **kwargs: Any,
     ) -> Any:
+        budget = self._render_budget
         owner = getattr(obj, "__self__", None)
         name = getattr(obj, "__name__", None)
-        if isinstance(owner, str) and name in _ALLOC_STR_METHODS - {"format", "format_map"}:
-            _guard_str_alloc_method(owner, name, args, kwargs)
-        elif isinstance(owner, (bytes, bytearray)) and name in {
-            "ljust",
-            "rjust",
-            "center",
-            "zfill",
-            "expandtabs",
-        }:
+        if (
+            budget is not None
+            and isinstance(owner, str)
+            and isinstance(name, str)
+            and not name.startswith("_")
+        ):
+            return _dispatch_str_method(owner, obj, name, args, kwargs, budget)
+        if (
+            budget is not None
+            and isinstance(owner, (bytes, bytearray))
+            and isinstance(name, str)
+            and name in _AMPLIFYING_STR_METHODS
+        ):
             text = owner.decode("utf-8", "replace")
+            if name == "join":
+                iterable = args[0] if args else ()
+                return _budgeted_join(text, iterable, budget)
             _guard_str_alloc_method(text, name, args, kwargs)
         return super().call(context, obj, *args, **kwargs)
 
@@ -793,6 +956,7 @@ def _render_with_guards(
     _wrap_for_iters_with_guard(parsed)
 
     budget = _RenderBudget(MAX_LOOP_ITERATIONS, deadline=deadline, cancel=cancel)
+    env._render_budget = budget
     env.globals["range"] = _make_guarded_range(budget)
     env.globals["guard_iter"] = _make_guard_iter(budget)
     _install_filter_guards(env, budget)
