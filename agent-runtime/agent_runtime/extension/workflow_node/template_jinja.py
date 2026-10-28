@@ -699,6 +699,30 @@ class _GuardedSandboxedEnvironment(SandboxedEnvironment):
         super().__init__(*args, **kwargs)
         self._render_budget: _RenderBudget | None = None
 
+    def bind_render_budget(self, budget: _RenderBudget) -> None:
+        """由渲染入口注入预算；避免模块外直接写受保护字段（G.CLS.11）。"""
+        self._render_budget = budget
+
+    @staticmethod
+    def _skip_str_method_wrap(attribute: str, value: Any) -> bool:
+        if not callable(value):
+            return True
+        if attribute.startswith("_"):
+            return True
+        return attribute in ("format", "format_map")
+
+    @staticmethod
+    def _is_public_str_bound(owner: Any, name: Any) -> bool:
+        if not isinstance(owner, str) or not isinstance(name, str):
+            return False
+        return not name.startswith("_")
+
+    @staticmethod
+    def _is_amplifying_bytes_bound(owner: Any, name: Any) -> bool:
+        if not isinstance(owner, (bytes, bytearray)) or not isinstance(name, str):
+            return False
+        return name in _AMPLIFYING_STR_METHODS
+
     def call_binop(
         self, context: Context, op: str, left: Any, right: Any
     ) -> Any:
@@ -742,13 +766,9 @@ class _GuardedSandboxedEnvironment(SandboxedEnvironment):
     def getattr(self, obj: Any, attribute: str) -> Any:
         value = super().getattr(obj, attribute)
         budget = self._render_budget
-        if (
-            budget is None
-            or not isinstance(obj, str)
-            or not callable(value)
-            or attribute.startswith("_")
-            or attribute in ("format", "format_map")
-        ):
+        if budget is None or not isinstance(obj, str):
+            return value
+        if self._skip_str_method_wrap(attribute, value):
             # format/format_map 已由 wrap_str_format 接管
             return value
         # 统一包装公开 str 方法，避免只维护白名单漏网
@@ -764,19 +784,9 @@ class _GuardedSandboxedEnvironment(SandboxedEnvironment):
         budget = self._render_budget
         owner = getattr(obj, "__self__", None)
         name = getattr(obj, "__name__", None)
-        if (
-            budget is not None
-            and isinstance(owner, str)
-            and isinstance(name, str)
-            and not name.startswith("_")
-        ):
+        if budget is not None and self._is_public_str_bound(owner, name):
             return _dispatch_str_method(owner, obj, name, args, kwargs, budget)
-        if (
-            budget is not None
-            and isinstance(owner, (bytes, bytearray))
-            and isinstance(name, str)
-            and name in _AMPLIFYING_STR_METHODS
-        ):
+        if budget is not None and self._is_amplifying_bytes_bound(owner, name):
             text = owner.decode("utf-8", "replace")
             if name == "join":
                 iterable = args[0] if args else ()
@@ -956,7 +966,7 @@ def _render_with_guards(
     _wrap_for_iters_with_guard(parsed)
 
     budget = _RenderBudget(MAX_LOOP_ITERATIONS, deadline=deadline, cancel=cancel)
-    env._render_budget = budget
+    env.bind_render_budget(budget)
     env.globals["range"] = _make_guarded_range(budget)
     env.globals["guard_iter"] = _make_guard_iter(budget)
     _install_filter_guards(env, budget)

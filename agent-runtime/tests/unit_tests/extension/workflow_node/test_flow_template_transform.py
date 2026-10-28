@@ -316,16 +316,15 @@ def test_str_join_infinite_hits_budget_and_stops(monkeypatch):
     monkeypatch.setattr(tj, "MAX_LOOP_ITERATIONS", 10**9)
     iters = {"n": 0}
 
-    class _Inf:
-        def __iter__(self):
-            while True:
-                iters["n"] += 1
-                yield "a"
+    def _infinite_items():
+        while True:
+            iters["n"] += 1
+            yield "a"
 
     with pytest.raises(
         TemplateRenderError, match="timed out|loop iterations|output length"
     ):
-        render_jinja("{{ sep.join(items) }}", {"sep": ",", "items": _Inf()})
+        render_jinja("{{ sep.join(items) }}", {"sep": ",", "items": _infinite_items()})
     n_at_return = iters["n"]
     time.sleep(0.4)
     # 护栏抛错后 worker 应结束；允许少量在途增量，但不能再涨数百万
