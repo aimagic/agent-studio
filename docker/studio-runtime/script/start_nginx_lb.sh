@@ -199,7 +199,12 @@ function start_nginx_process() {
   # change (the whole point of restarting here).
   if [[ -f ${NGINX_PID} ]]; then
     OLD_PID=$(cat ${NGINX_PID} 2>/dev/null)
-    if [[ -n "${OLD_PID}" ]] && kill -0 ${OLD_PID} 2>/dev/null; then
+    # 校验目标进程真的是 nginx master，避免残留 pid 文件 + PID 复用导致
+    # 误向无辜进程（curl、worker 等）发 SIGHUP，从而误判 "reload 成功"
+    # 却从未真正启动 nginx。
+    if [[ -n "${OLD_PID}" ]] && kill -0 ${OLD_PID} 2>/dev/null \
+       && [[ -r "/proc/${OLD_PID}/cmdline" ]] \
+       && tr '\0' ' ' < "/proc/${OLD_PID}/cmdline" 2>/dev/null | grep -q "nginx: master process"; then
       echo "Reloading existing nginx (PID ${OLD_PID})..."
       if nginx -c ${NGINX_CONF} -s reload 2>/dev/null; then
         # Keep NGINX_PID pointing at the live master so the while[1] loop
@@ -213,6 +218,7 @@ function start_nginx_process() {
       kill -9 ${OLD_PID} 2>/dev/null || true
     else
       echo "Stale nginx.pid found (PID=${OLD_PID}, not a running nginx master), removing and starting fresh."
+      # G.FIO.05: 先 mv 再删，避免对目标路径直接 rm
       nginx_pid_to_delete="${NGINX_PID}_to_delete"
       mv "${NGINX_PID}" "${nginx_pid_to_delete}" 2>/dev/null || true
       rm -f "${nginx_pid_to_delete}" 2>/dev/null || true
@@ -262,6 +268,15 @@ function cleanup_previous() {
   # This runs BEFORE any new worker is started, so it cannot touch the new ones.
   pkill -9 -f "EIStart" 2>/dev/null || true
   sleep 1
+
+  # NOTE: Do NOT remove ${NGINX_PID} here. start_nginx_process() already
+  # validates the pid file via /proc/<pid>/cmdline — if the PID belongs to a
+  # live nginx master (same-container re-run), it reloads without releasing
+  # the port; if the PID is stale (cross-container, PID reuse), it removes
+  # the pid file and starts fresh. Removing it here would break the reload
+  # path: start_nginx_process would skip the reload branch entirely, start a
+  # second nginx, and fail with "address already in use" because the old
+  # nginx is still holding SERVER_PORT.
 }
 
 function main() {

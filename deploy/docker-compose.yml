@@ -114,6 +114,8 @@ services:
     environment:
       # DSL 版本对比大 DSL 降级阈值（单侧规范化后文本字节，Monaco 保护阈值），暂定 10MB，压测后调整
       LARGE_DSL_BYTES_THRESHOLD: ${LARGE_DSL_BYTES_THRESHOLD:-10485760}
+      # iframe SSO 极简接入开关（默认空 = 关闭）；值须与后端 auth_sso_header 同值
+      IFRAME_SSO_TOKEN_PARAM: ${IFRAME_SSO_TOKEN_PARAM:-}
     volumes:
       - ./config/nginx.conf:/home/conf/nginx.conf
       - console_logs:/opt/cloud/wiseagent-nginx/logs
@@ -189,6 +191,8 @@ services:
       agent_runtime_endpoint: ${AGENT_RUNTIME_ENDPOINT:-http://studio-runtime:31014}
       user_auth_endpoint: ${USER_AUTH_ENDPOINT:-http://studio-manager:31111}
       agent_builder_endpoint: ${AGENT_BUILDER_ENDPOINT:-http://studio-builder:31015}
+      # manager 出站 header 跳过名单定制（默认空 = 不过滤/全量透传）；逗号分隔、大小写不敏感
+      manager_skip_outbound_header_list: ${MANAGER_SKIP_OUTBOUND_HEADER_LIST:-}
       front_page_block_nodes: ${FRONT_PAGE_BLOCK_NODES:-Sql,DataQuery}
       share_knowledge_enabled: ${SHARE_KNOWLEDGE_ENABLED:-true}
       workflow_async_enable: ${WORKFLOW_ASYNC_ENABLED:-true}
@@ -321,6 +325,10 @@ services:
       GUNICORN_WORK_NUM: ${GUNICORN_WORK_NUM:-1}
       SECURITY_SANDBOX_TYPE: ${SECURITY_SANDBOX_TYPE:-jiuwenbox}
       OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      # Nginx 负载均衡模式（与 k8s studio-runtime.yaml 对齐）。
+      # 开启后 worker 监听 SERVER_PORT+1..+N，nginx 监听 SERVER_PORT。
+      NGINX_LOAD_BALANCING: ${NGINX_LOAD_BALANCING:-false}
+      LB_STRATEGY: ${LB_STRATEGY:-least_conn}
       STORAGE_TYPE: ${STORAGE_TYPE:-OBS}
       STORAGE_CUSTOM_MODULE: ${RUNTIME_STORAGE_CUSTOM_MODULE:-}
       STORAGE_CUSTOM_CLASS: ${RUNTIME_STORAGE_CUSTOM_CLASS:-}
