@@ -121,6 +121,43 @@ def build_finish_reason(usage: Optional[UsageMetadata]) -> str:
     return "" if reason == "null" else reason
 
 
+def build_llm_end_payload(
+    content: str,
+    usage_metadata: Optional[UsageMetadata],
+    total_time: float,
+    tpot_ms: Optional[float] = None,
+) -> dict:
+    """构造 on_llm_end 的 output_on_insights 载荷（含 OTel 双写键）。
+
+    供无既有时延/用量链路的发射点（task_plan / task_understanding /
+    PlanExecute StepExecute）复用：content/latency 与既有发射点形状一致，
+    model_usage/usage_metadata/finish_reason 按 core handler 约定键名双写，
+    缺数据不注入（与其它发射点同一契约）。
+    """
+    output_on_insights: dict = {"role": "assistant", "content": content or ""}
+    output_on_insights[LATENCY] = {"total_latency": total_time}
+    has_tokens = usage_metadata is not None and any(
+        (
+            usage_metadata.input_tokens,
+            usage_metadata.output_tokens,
+            usage_metadata.total_tokens,
+        )
+    )
+    if has_tokens:
+        output_on_insights[MODEL_USAGE] = {
+            "input_tokens": usage_metadata.input_tokens,
+            "output_tokens": usage_metadata.output_tokens,
+            "total_tokens": usage_metadata.total_tokens,
+        }
+    usage_dict = build_usage_metadata(usage_metadata, tpot_ms)
+    if usage_dict:
+        output_on_insights[USAGE_METADATA] = usage_dict
+    finish_reason = build_finish_reason(usage_metadata)
+    if finish_reason:
+        output_on_insights[FINISH_REASON] = finish_reason
+    return output_on_insights
+
+
 def convert_ai_message_to_llm_output(llm_message: AIMessage) -> LlmOutput:
     """convert AIMessage to LLM output"""
     role = "assistant" if llm_message.type == "ai" else llm_message.type

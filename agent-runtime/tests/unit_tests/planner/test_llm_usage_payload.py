@@ -13,9 +13,12 @@ from jiuwen.common.llm_service.messages import AIMessage, UsageMetadata
 from jiuwen.planner.common import stream_post_utils as spu
 from jiuwen.planner.common.stream_post_utils import (
     FINISH_REASON,
+    LATENCY,
+    MODEL_USAGE,
     USAGE_METADATA,
     _format_yield_result,
     build_finish_reason,
+    build_llm_end_payload,
     build_usage_metadata,
     _iso_delta_ms,
 )
@@ -370,3 +373,56 @@ class TestStreamFunctionCallEmit:
         assert stub_manager.payloads  # on_llm_end 仍发出
         assert USAGE_METADATA not in stub_manager.payloads[0]
         assert FINISH_REASON not in stub_manager.payloads[0]
+
+
+class TestBuildLlmEndPayload:
+    """无既有时延/用量链路发射点（task_plan / task_understanding /
+    PlanExecute StepExecute）共用的载荷构造器。"""
+
+    @staticmethod
+    def test_full_usage_payload_shape():
+        """完整 usage → content/latency/model_usage/usage_metadata/finish_reason 齐全。"""
+        payload = build_llm_end_payload("done", _usage(), 1.25)
+        assert payload["role"] == "assistant"
+        assert payload["content"] == "done"
+        assert payload[LATENCY] == {"total_latency": 1.25}
+        assert payload[MODEL_USAGE] == {
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "total_tokens": 30,
+        }
+        usage_dict = payload[USAGE_METADATA]
+        assert usage_dict["input_tokens"] == 10
+        assert usage_dict["first_token_time"] == pytest.approx(0.2)
+        assert payload[FINISH_REASON] == "stop"
+
+    @staticmethod
+    def test_none_usage_keeps_latency_only():
+        """usage 为 None → 保留 content/latency，缺数据键不注入。"""
+        payload = build_llm_end_payload(None, None, 0.5)
+        assert payload["content"] == ""
+        assert payload[LATENCY] == {"total_latency": 0.5}
+        assert MODEL_USAGE not in payload
+        assert USAGE_METADATA not in payload
+        assert FINISH_REASON not in payload
+
+    @staticmethod
+    def test_all_default_usage_skips_injection():
+        """全默认 usage（模型错误/未上报）→ 不注入全零键，与既有契约一致。"""
+        payload = build_llm_end_payload("x", UsageMetadata(), 0.5)
+        assert MODEL_USAGE not in payload
+        assert USAGE_METADATA not in payload
+        # finish_reason 默认值 None → 不注入
+        assert FINISH_REASON not in payload
+
+    @staticmethod
+    def test_null_placeholder_finish_reason_skipped():
+        """finish_reason 为 "null" 占位 → 不注入（沿用 build_finish_reason 语义）。"""
+        payload = build_llm_end_payload("x", _usage(finish_reason="null"), 0.5)
+        assert FINISH_REASON not in payload
+
+    @staticmethod
+    def test_tpot_passthrough():
+        """tpot_ms 可算时随 usage_metadata 透传（批式调用点不传，流式可补）。"""
+        payload = build_llm_end_payload("x", _usage(), 0.5, tpot_ms=15.0)
+        assert payload[USAGE_METADATA]["inter_token_latency_ms"] == 15.0

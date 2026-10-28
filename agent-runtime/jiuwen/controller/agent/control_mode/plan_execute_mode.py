@@ -119,6 +119,8 @@ class PlanExecuteMode(BaseMode):
             # 保存当前请求上下文，便于工具执行时使用
             self._current_query = request.query
             self._runtime_context = request.runtime_context
+            # OTel：保留 trace_handlers 引用，供 StepExecute LLM 调用补遥测载荷
+            self._trace_handlers = request.trace_handlers
             self._workflow_req_params = {}
             self._conversation_id = None
             if request.runtime_context and hasattr(
@@ -915,13 +917,17 @@ class PlanExecuteMode(BaseMode):
         """流式调用LLM并收集响应"""
         llm_output = {"content": "", "role": "assistant"}
         content_parts = []
+        trace_manager = None
+        start_time = time.time()
 
         try:
             from jiuwen.common.llm_service.language_model.base import LanguageModelInput
             from jiuwen.common.llm_service.model_util import ModelUtil
             from jiuwen.common.llm_service.messages import AIMessage
             from jiuwen.planner.common.stream_post_utils import (
+                build_llm_end_payload,
                 convert_ai_message_to_llm_output,
+                create_trace_manager,
             )
 
             llm_messages = ModelUtil.switch_message(messages)
@@ -930,7 +936,18 @@ class PlanExecuteMode(BaseMode):
             )
             self._log_llm_input(messages, tools)
 
+            # OTel：StepExecute LLM 调用经 TraceManager 补用量/时延载荷
+            trace_manager = create_trace_manager(
+                llm=self.model,
+                functions=tools or [],
+                trace_handlers=getattr(self, "_trace_handlers", None),
+            )
+            await trace_manager.on_llm_start(messages)
+            finish_usage = {}
             async for item in self.model.astream(llm_input):
+                # finish 块（stop/function_call）携带 usage_metadata，暂存供载荷构造
+                if getattr(item, "usage_metadata", None):
+                    finish_usage["usage"] = item.usage_metadata
                 self._process_stream_item(
                     item,
                     llm_output,
@@ -941,7 +958,16 @@ class PlanExecuteMode(BaseMode):
 
             if not llm_output.get("content") and content_parts:
                 llm_output["content"] = "".join(content_parts)
+            await trace_manager.on_llm_end(
+                build_llm_end_payload(
+                    llm_output.get("content", ""),
+                    finish_usage.get("usage"),
+                    round(time.time() - start_time, 2),
+                )
+            )
         except Exception as e:
+            if trace_manager is not None:
+                await trace_manager.on_llm_error(e)
             logger.exception(
                 f"task_id: {self.task_id}| [StepExecute] LLM call failed: {e}"
             )

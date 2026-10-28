@@ -9,11 +9,16 @@
 """
 
 import re
+import time
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from jiuwen.common.llm_service.messages import HumanMessage, SystemMessage
 from jiuwen.common.log.base import logger
+from jiuwen.planner.common.stream_post_utils import (
+    build_llm_end_payload,
+    create_trace_manager,
+)
 from jiuwen.prompt.template.template_manager import TemplateManager
 
 
@@ -65,6 +70,7 @@ class TaskUnderstandingModule:
         chat_history: List[Dict],
         available_intents: List[str],
         task_id: str = "",
+        runtime_data: Optional[Dict] = None,
     ) -> TaskUnderstandingOutput:
         """
         判断用户请求是否为复杂意图
@@ -74,6 +80,7 @@ class TaskUnderstandingModule:
             chat_history: 对话历史
             available_intents: 可用意图名称列表
             task_id: 任务ID，用于日志追踪
+            runtime_data: 运行时数据（含 trace_handlers，用于 OTel 遥测）
 
         Returns:
             TaskUnderstandingOutput(is_complex: bool)
@@ -97,14 +104,31 @@ class TaskUnderstandingModule:
             simple_log=f"task_id: {task_id}| [TaskUnderstanding] <LLM Input>",
         )
 
+        # OTel：镜像 intention_detect 的接线，理解 LLM 调用补 on_llm_end 载荷
+        trace_manager = create_trace_manager(
+            llm=self.llm,
+            functions=[],
+            trace_handlers=(runtime_data or {}).get("trace_handlers"),
+        )
         try:
+            await trace_manager.on_llm_start(llm_input["messages"])
+            start_time = time.time()
             result = await self.llm.ainvoke(messages)
+            total_time = round(time.time() - start_time, 2)
+            await trace_manager.on_llm_end(
+                build_llm_end_payload(
+                    result.content,
+                    getattr(result, "usage_metadata", None),
+                    total_time,
+                )
+            )
             output_text = (result.content or "").strip()
             logger.info(
                 f"task_id: {task_id}| [TaskUnderstanding] <LLM Output> {output_text}",
                 simple_log=f"task_id: {task_id}| [TaskUnderstanding] <LLM Output>",
             )
         except Exception as e:
+            await trace_manager.on_llm_error(e)
             logger.error(
                 f"task_id: {task_id}| Task understanding llm error: {e}",
                 simple_log=f"task_id: {task_id}| Task understanding llm error",
