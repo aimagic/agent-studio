@@ -29,13 +29,17 @@ class _ExecResult:
     function_log: str = ""
 
 
+class _ThreadInterrupt(Exception):
+    """用于 PyThreadState_SetAsyncExc 注入工作线程以中断 exec 的内部异常。"""
+
+
 class InprocessCodeRunner(CodeRunner):
     """进程内代码执行器 - 使用 exec() 在当前进程内执行代码
 
     无子进程开销，适用于 exec_env=local 且 LOCAL_CODE_EXEC_MODE=inprocess 的场景。
 
     超时机制：exec() 在独立守护线程中执行，主协程通过 asyncio.wait_for 控制超时；
-    超时后通过 PyThreadState_SetAsyncExc 向工作线程注入 SystemExit 以中断 exec。
+    超时后通过 PyThreadState_SetAsyncExc 向工作线程注入 _ThreadInterrupt 以中断 exec。
     注意：若用户代码进入不可中断的 C 扩展（如 time.sleep 的底层实现），
     注入的异常会延迟到下一次 Python 字节码调度时才生效。
     """
@@ -71,7 +75,7 @@ class InprocessCodeRunner(CodeRunner):
         Args:
             user_code: 用户源代码（包含 main 函数定义）
             inputs: 输入参数字典，传递给 main 函数
-            timeout: 超时时间（秒），超时后向执行线程注入 SystemExit 中断
+            timeout: 超时时间（秒），超时后向执行线程注入 _ThreadInterrupt 中断
 
         Returns:
             dict: main 函数的返回值
@@ -99,14 +103,14 @@ class InprocessCodeRunner(CodeRunner):
                 loop.run_in_executor(None, done_event.wait),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as exc:
             self._interrupt_thread(thread)
             # 给被中断的线程一点时间响应注入的异常（放线程池避免阻塞 event loop）
             await loop.run_in_executor(None, lambda: done_event.wait(timeout=2))
             raise TimeoutError(
                 f"代码执行超时（已超过 {timeout} 秒限制），"
                 f"请优化代码或调整超时配置"
-            )
+            ) from exc
 
         # 正常路径：线程已结束。防御性检查 —— 若线程仍存活（注入异常未生效，
         # 如卡在不可中断的 C 扩展），container 未写入，不应读取到脏数据。
@@ -118,12 +122,12 @@ class InprocessCodeRunner(CodeRunner):
 
         # 线程执行完毕，收集结果
         self.function_log = container.function_log
-        if container.exception is not None:
-            raise container.exception
         if container.error_log:
             self.function_log += container.error_log[
                 container.error_log.find('local_namespace') + 17:
             ]
+        if container.exception is not None:
+            raise container.exception
 
         res = container.result
         if not isinstance(res, dict):
@@ -137,7 +141,7 @@ class InprocessCodeRunner(CodeRunner):
 
     @staticmethod
     def _interrupt_thread(thread: threading.Thread) -> None:
-        """向工作线程注入 SystemExit 以中断 exec。
+        """向工作线程注入 _ThreadInterrupt 以中断 exec。
 
         通过 ctypes 调用 CPython 内部 API 向目标线程的当前帧抛出异常。
         对于纯 Python 字节码（循环、IO 等）可立即中断；
@@ -148,11 +152,10 @@ class InprocessCodeRunner(CodeRunner):
         tid = thread.ident
         if tid is None:
             return
-        exc = SystemExit
         # PyThreadState_SetAsyncExc(thread_id, exception_object)
         # 返回 0 表示线程已结束，1 表示成功注入，>1 表示目标线程有多个栈帧（罕见）
         ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
-            ctypes.c_ulong(tid), ctypes.py_object(exc)
+            ctypes.c_ulong(tid), ctypes.py_object(_ThreadInterrupt)
         )
         if ret > 1:
             # 多帧场景：清除异常注入，避免影响其他线程
