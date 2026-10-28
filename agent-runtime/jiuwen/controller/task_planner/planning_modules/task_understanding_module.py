@@ -18,6 +18,7 @@ from jiuwen.common.log.base import logger
 from jiuwen.planner.common.stream_post_utils import (
     build_llm_end_payload,
     create_trace_manager,
+    emit_trace_event,
 )
 from jiuwen.prompt.template.template_manager import TemplateManager
 
@@ -104,23 +105,28 @@ class TaskUnderstandingModule:
             simple_log=f"task_id: {task_id}| [TaskUnderstanding] <LLM Input>",
         )
 
-        # OTel：镜像 intention_detect 的接线，理解 LLM 调用补 on_llm_end 载荷
+        # OTel：镜像 intention_detect 的接线，理解 LLM 调用补 on_llm_end 载荷；
+        # 事件经 emit_trace_event 隔离发射，遥测异常不改变业务语义
         trace_manager = create_trace_manager(
             llm=self.llm,
             functions=[],
             trace_handlers=(runtime_data or {}).get("trace_handlers"),
         )
         try:
-            await trace_manager.on_llm_start(llm_input["messages"])
+            await emit_trace_event(
+                trace_manager, "on_llm_start", llm_input["messages"]
+            )
             start_time = time.time()
             result = await self.llm.ainvoke(messages)
             total_time = round(time.time() - start_time, 2)
-            await trace_manager.on_llm_end(
+            await emit_trace_event(
+                trace_manager,
+                "on_llm_end",
                 build_llm_end_payload(
                     result.content,
                     getattr(result, "usage_metadata", None),
                     total_time,
-                )
+                ),
             )
             output_text = (result.content or "").strip()
             logger.info(
@@ -128,7 +134,7 @@ class TaskUnderstandingModule:
                 simple_log=f"task_id: {task_id}| [TaskUnderstanding] <LLM Output>",
             )
         except Exception as e:
-            await trace_manager.on_llm_error(e)
+            await emit_trace_event(trace_manager, "on_llm_error", e)
             logger.error(
                 f"task_id: {task_id}| Task understanding llm error: {e}",
                 simple_log=f"task_id: {task_id}| Task understanding llm error",

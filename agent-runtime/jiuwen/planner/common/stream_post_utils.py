@@ -73,10 +73,12 @@ def build_usage_metadata(
         return {}
     ttft_ms = _iso_delta_ms(usage.first_token_time, usage.requests_start_time)
     has_ttft = ttft_ms is not None and ttft_ms >= 0
+    # 真实用量判活只看 token/成本字段：qwen 成功路径总会回填 model_name，
+    # 若计入判活，上游缺 usage 字段（token 全 0）时仍会产出全零用量载荷，
+    # 违背「缺数据路径不注入键」契约；model_name 仅在有真实用量时随带输出
     usage_signals = (
         usage.input_tokens,
         usage.output_tokens,
-        usage.model_name,
         usage.cache_tokens,
         usage.reasoning_tokens,
         usage.input_cost,
@@ -330,6 +332,23 @@ def create_trace_manager(llm: BaseChatModel, functions, trace_handlers):
             ),
         },
     )
+
+
+async def emit_trace_event(trace_manager, method_name, *args):
+    """安全发射 TraceManager 事件：handler 异常不外传。
+
+    insight 层 _trace_event 直接调用 handler(*args) 并传播异常、无兜底；
+    遥测事件若与业务逻辑共用 try 块，任一 handler 抛错会把成功的 LLM 调用
+    误判进业务失败分支（规划被重抛 / 理解兜底 is_complex=False / 步骤变
+    error）。此处统一兜底：遥测失败只告警，不改变调用方业务语义。
+    """
+    try:
+        await getattr(trace_manager, method_name)(*args)
+    except Exception as e:
+        logger.warning(
+            f"trace event {method_name} emit failed: {e}",
+            simple_log="trace event emit failed",
+        )
 
 
 def insert_contexts_before_user_query(contexts, messages):

@@ -7,6 +7,7 @@ pytest 的 AssertionRewritingHook 会盖住 .pth 装的 editable finder，
 sys.path，jiuwen.multi_agent / jiuwen.extension 等模块才能正常 init。
 """
 
+import logging
 import os
 import sys
 
@@ -101,7 +102,9 @@ def _preload_best_effort(modname: str) -> None:
     try:
         _preload_with_stub(modname)
     except ImportError as exc:
-        print(f"[controller-conftest] preload {modname} degraded: {exc}")
+        logging.warning(
+            "[controller-conftest] preload %s degraded: %s", modname, exc
+        )
 
 
 _preload_best_effort("jiuwen.planner.common.stream_post_utils")

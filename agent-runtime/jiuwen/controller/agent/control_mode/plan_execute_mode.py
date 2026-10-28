@@ -928,6 +928,7 @@ class PlanExecuteMode(BaseMode):
                 build_llm_end_payload,
                 convert_ai_message_to_llm_output,
                 create_trace_manager,
+                emit_trace_event,
             )
 
             llm_messages = ModelUtil.switch_message(messages)
@@ -936,13 +937,14 @@ class PlanExecuteMode(BaseMode):
             )
             self._log_llm_input(messages, tools)
 
-            # OTel：StepExecute LLM 调用经 TraceManager 补用量/时延载荷
+            # OTel：StepExecute LLM 调用经 TraceManager 补用量/时延载荷；
+            # 事件经 emit_trace_event 隔离发射，遥测异常不改变业务语义
             trace_manager = create_trace_manager(
                 llm=self.model,
                 functions=tools or [],
                 trace_handlers=getattr(self, "_trace_handlers", None),
             )
-            await trace_manager.on_llm_start(messages)
+            await emit_trace_event(trace_manager, "on_llm_start", messages)
             finish_usage = {}
             async for item in self.model.astream(llm_input):
                 # finish 块（stop/function_call）携带 usage_metadata，暂存供载荷构造
@@ -958,16 +960,18 @@ class PlanExecuteMode(BaseMode):
 
             if not llm_output.get("content") and content_parts:
                 llm_output["content"] = "".join(content_parts)
-            await trace_manager.on_llm_end(
+            await emit_trace_event(
+                trace_manager,
+                "on_llm_end",
                 build_llm_end_payload(
                     llm_output.get("content", ""),
                     finish_usage.get("usage"),
                     round(time.time() - start_time, 2),
-                )
+                ),
             )
         except Exception as e:
             if trace_manager is not None:
-                await trace_manager.on_llm_error(e)
+                await emit_trace_event(trace_manager, "on_llm_error", e)
             logger.exception(
                 f"task_id: {self.task_id}| [StepExecute] LLM call failed: {e}"
             )

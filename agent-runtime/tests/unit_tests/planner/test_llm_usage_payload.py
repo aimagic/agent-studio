@@ -75,13 +75,24 @@ class TestBuildUsageMetadata:
 
     @staticmethod
     def test_all_default_usage_returns_empty():
-        """全默认 UsageMetadata（模型错误/未上报用量）→ 空载荷，不注入全零键。
-
-        有任一有效信号（如 model_name）则正常产出。
-        """
+        """全默认 UsageMetadata（模型错误/未上报用量）→ 空载荷，不注入全零键。"""
         assert build_usage_metadata(UsageMetadata()) == {}
         assert build_usage_metadata(UsageMetadata(input_tokens=0)) == {}
-        assert build_usage_metadata(UsageMetadata(model_name="qwen-max")) != {}
+
+    @staticmethod
+    def test_model_name_alone_is_not_usage():
+        """仅 model_name 不构成真实用量，不得注入全零 token/成本键。
+
+        qwen._chat/_stream 成功路径总会回填 model_name：若把 model_name
+        计入判活，上游缺 usage 字段（token 全 0）时仍会产出全零用量载荷，
+        违背「缺数据路径不注入键」契约；model_name 仅在有真实用量时随带输出。
+        """
+        assert build_usage_metadata(UsageMetadata(model_name="qwen-max")) == {}
+        # 真实用量在场时 model_name 随带输出不受影响
+        result = build_usage_metadata(
+            UsageMetadata(model_name="qwen-max", input_tokens=1)
+        )
+        assert result["model_name"] == "qwen-max"
 
     @staticmethod
     def test_latency_only_usage_still_emits():
@@ -376,8 +387,10 @@ class TestStreamFunctionCallEmit:
 
 
 class TestBuildLlmEndPayload:
-    """无既有时延/用量链路发射点（task_plan / task_understanding /
-    PlanExecute StepExecute）共用的载荷构造器。"""
+    """无既有时延/用量链路发射点共用的载荷构造器。
+
+    覆盖 task_plan / task_understanding / PlanExecute StepExecute。
+    """
 
     @staticmethod
     def test_full_usage_payload_shape():

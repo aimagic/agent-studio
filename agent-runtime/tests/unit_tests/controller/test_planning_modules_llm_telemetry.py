@@ -10,15 +10,24 @@ qwen._chat（ainvoke 落点）不打双时间戳——这些路径的 LLM span �
   载荷按 core handler 约定键名携带 usage_metadata / finish_reason；
 - PlanExecute StepExecute：astream finish 块的 usage_metadata 进入载荷；
 - qwen._chat：requests_start_time / first_token_time 双时间戳打点，
-  批式语义下 TTFT ≈ 整体请求时延（可换算、非负）。
+  批式语义下 TTFT ≈ 整体请求时延（可换算、非负）；
+- 遥测事件经 emit_trace_event 隔离发射：任一 trace handler 抛错不得
+  改变业务语义（规划结果 / 复杂意图判断 / 步骤输出均保持成功路径）。
 """
 
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 
+from jiuwen.common.llm_service.language_model import qwen as qwen_module
 from jiuwen.common.llm_service.messages import AIMessage, HumanMessage, UsageMetadata
+from jiuwen.controller.agent.control_mode.plan_execute_mode import PlanExecuteMode
+from jiuwen.controller.task_planner.planning_modules import (
+    task_plan_module as tpm,
+)
+from jiuwen.controller.task_planner.planning_modules import (
+    task_understanding_module as tum,
+)
 from jiuwen.planner.common import stream_post_utils as spu
 from jiuwen.planner.common.stream_post_utils import (
     FINISH_REASON,
@@ -49,6 +58,11 @@ def _usage(**overrides):
     return UsageMetadata(**base)
 
 
+def _no_template_manager():
+    """TemplateManager 替身：真实单例构造依赖 DB 配置，单测不触达。"""
+    return None
+
+
 class StubManager:
     """记录 TraceManager 事件的桩。"""
 
@@ -65,15 +79,57 @@ class StubManager:
         self.events.append(("error", error))
 
 
+class RaisingManager:
+    """所有事件都抛错的桩：验证遥测失败不污染业务语义。"""
+
+    @staticmethod
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("trace handler down")
+
+    async def on_llm_start(self, messages):
+        await self._boom(messages)
+
+    async def on_llm_end(self, payload):
+        await self._boom(payload)
+
+    async def on_llm_error(self, error):
+        await self._boom(error)
+
+
+class _StubTaskPlanModule(tpm.TaskPlanModule):
+    """固定提示词输出的规划模块：绕开模板加载，聚焦遥测契约。"""
+
+    def _build_system_prompt(self):
+        return "sys-prompt"
+
+    def _build_user_prompt(self, query, matched_scene, filtered_tools):
+        return "usr-prompt"
+
+
+class _StubTaskUnderstandingModule(tum.TaskUnderstandingModule):
+    """固定提示词输出的理解模块：绕开模板加载，聚焦遥测契约。"""
+
+    def _build_system_prompt(self):
+        return "sys-prompt"
+
+    def _build_user_prompt(self, query, chat_history, available_intents):
+        return "usr-prompt"
+
+
+def _install_stub_manager(monkeypatch, namespace, stub_manager):
+    """把 create_trace_manager 打桩为返回给定 TraceManager 桩。"""
+    monkeypatch.setattr(
+        namespace, "create_trace_manager", lambda *args, **kwargs: stub_manager
+    )
+
+
 class TestTaskPlanEmit:
     @staticmethod
     def test_plan_emits_usage_latency_finish_reason(monkeypatch):
-        """plan() 经 TraceManager 发射：trace_handlers 取自 runtime_data，
-        on_llm_end 载荷带约定键名的 usage_metadata / finish_reason。"""
-        from jiuwen.controller.task_planner.planning_modules import (
-            task_plan_module as tpm,
-        )
+        """plan() 经 TraceManager 发射：trace_handlers 取自 runtime_data。
 
+        on_llm_end 载荷带约定键名的 usage_metadata / finish_reason。
+        """
         stub_manager = StubManager()
         captured = {}
 
@@ -82,7 +138,7 @@ class TestTaskPlanEmit:
             return stub_manager
 
         monkeypatch.setattr(tpm, "create_trace_manager", fake_create)
-        monkeypatch.setattr(tpm, "TemplateManager", lambda: None)
+        monkeypatch.setattr(tpm, "TemplateManager", _no_template_manager)
 
         class StubLLM:
             async def ainvoke(self, messages):
@@ -92,11 +148,7 @@ class TestTaskPlanEmit:
                 )
 
         stub_llm = StubLLM()
-        module = tpm.TaskPlanModule(llm=stub_llm, context_manager=None)
-        module._build_system_prompt = lambda: "sys-prompt"
-        module._build_user_prompt = (
-            lambda query, matched_scene, filtered_tools: "usr-prompt"
-        )
+        module = _StubTaskPlanModule(llm=stub_llm, context_manager=None)
 
         handlers = object()
         plan = asyncio.run(
@@ -131,11 +183,10 @@ class TestTaskPlanEmit:
 
     @staticmethod
     def test_plan_without_runtime_data_passes_none(monkeypatch):
-        """runtime_data 缺省（调用方兜底为 None）→ trace_handlers=None，正常发射。"""
-        from jiuwen.controller.task_planner.planning_modules import (
-            task_plan_module as tpm,
-        )
+        """runtime_data 缺省（调用方兜底为 None）→ trace_handlers=None。
 
+        正常发射，行为与既有 stream_function_call(trace_handlers=None) 一致。
+        """
         stub_manager = StubManager()
         captured = {}
 
@@ -144,17 +195,13 @@ class TestTaskPlanEmit:
             return stub_manager
 
         monkeypatch.setattr(tpm, "create_trace_manager", fake_create)
-        monkeypatch.setattr(tpm, "TemplateManager", lambda: None)
+        monkeypatch.setattr(tpm, "TemplateManager", _no_template_manager)
 
         class StubLLM:
             async def ainvoke(self, messages):
                 return AIMessage(content='{"steps": []}', usage_metadata=_usage())
 
-        module = tpm.TaskPlanModule(llm=StubLLM(), context_manager=None)
-        module._build_system_prompt = lambda: "sys-prompt"
-        module._build_user_prompt = (
-            lambda query, matched_scene, filtered_tools: "usr-prompt"
-        )
+        module = _StubTaskPlanModule(llm=StubLLM(), context_manager=None)
 
         asyncio.run(
             module.plan(
@@ -170,29 +217,21 @@ class TestTaskPlanEmit:
     @staticmethod
     def test_plan_llm_error_emits_error_event(monkeypatch):
         """LLM 调用失败 → on_llm_error 发射 + 原有 raise 行为保留。"""
-        from jiuwen.controller.task_planner.planning_modules import (
-            task_plan_module as tpm,
-        )
-
         stub_manager = StubManager()
-        monkeypatch.setattr(
-            tpm, "create_trace_manager", lambda *args, **kwargs: stub_manager
-        )
-        monkeypatch.setattr(tpm, "TemplateManager", lambda: None)
+        _install_stub_manager(monkeypatch, tpm, stub_manager)
+        monkeypatch.setattr(tpm, "TemplateManager", _no_template_manager)
 
         class StubLLM:
             async def ainvoke(self, messages):
                 raise RuntimeError("llm down")
 
-        module = tpm.TaskPlanModule(llm=StubLLM(), context_manager=None)
-        module._build_system_prompt = lambda: "sys-prompt"
-        module._build_user_prompt = (
-            lambda query, matched_scene, filtered_tools: "usr-prompt"
-        )
+        module = _StubTaskPlanModule(llm=StubLLM(), context_manager=None)
 
         with pytest.raises(RuntimeError):
             asyncio.run(
-                module.plan(query="q", chat_history=[], matched_scene=None, filtered_tools=[])
+                module.plan(
+                    query="q", chat_history=[], matched_scene=None, filtered_tools=[]
+                )
             )
         kinds = [e[0] for e in stub_manager.events]
         assert kinds == ["start", "error"]
@@ -203,10 +242,6 @@ class TestTaskUnderstandingEmit:
     @staticmethod
     def test_invoke_emits_usage_latency_finish_reason(monkeypatch):
         """invoke() 经 TraceManager 发射，复杂意图判断行为不变。"""
-        from jiuwen.controller.task_planner.planning_modules import (
-            task_understanding_module as tum,
-        )
-
         stub_manager = StubManager()
         captured = {}
 
@@ -215,17 +250,13 @@ class TestTaskUnderstandingEmit:
             return stub_manager
 
         monkeypatch.setattr(tum, "create_trace_manager", fake_create)
-        monkeypatch.setattr(tum, "TemplateManager", lambda: None)
+        monkeypatch.setattr(tum, "TemplateManager", _no_template_manager)
 
         class StubLLM:
             async def ainvoke(self, messages):
                 return AIMessage(content="1", usage_metadata=_usage())
 
-        module = tum.TaskUnderstandingModule(llm=StubLLM(), context_manager=None)
-        module._build_system_prompt = lambda: "sys-prompt"
-        module._build_user_prompt = (
-            lambda query, chat_history, available_intents: "usr-prompt"
-        )
+        module = _StubTaskUnderstandingModule(llm=StubLLM(), context_manager=None)
 
         handlers = object()
         result = asyncio.run(
@@ -251,25 +282,15 @@ class TestTaskUnderstandingEmit:
     @staticmethod
     def test_invoke_llm_error_emits_error_and_falls_back(monkeypatch):
         """LLM 调用失败 → on_llm_error 发射 + 原有兜底（is_complex=False）保留。"""
-        from jiuwen.controller.task_planner.planning_modules import (
-            task_understanding_module as tum,
-        )
-
         stub_manager = StubManager()
-        monkeypatch.setattr(
-            tum, "create_trace_manager", lambda *args, **kwargs: stub_manager
-        )
-        monkeypatch.setattr(tum, "TemplateManager", lambda: None)
+        _install_stub_manager(monkeypatch, tum, stub_manager)
+        monkeypatch.setattr(tum, "TemplateManager", _no_template_manager)
 
         class StubLLM:
             async def ainvoke(self, messages):
                 raise RuntimeError("llm down")
 
-        module = tum.TaskUnderstandingModule(llm=StubLLM(), context_manager=None)
-        module._build_system_prompt = lambda: "sys-prompt"
-        module._build_user_prompt = (
-            lambda query, chat_history, available_intents: "usr-prompt"
-        )
+        module = _StubTaskUnderstandingModule(llm=StubLLM(), context_manager=None)
 
         result = asyncio.run(
             module.invoke(query="q", chat_history=[], available_intents=[])
@@ -282,22 +303,16 @@ class TestTaskUnderstandingEmit:
 class TestPlanExecuteStreamLlmEmit:
     @staticmethod
     def _make_mode(monkeypatch, stub_manager, model):
-        """绕过重量级 __init__，只装配 _stream_llm_response 依赖的属性。
+        """装配 _stream_llm_response 依赖的最小属性。
 
         方法内部 from stream_post_utils import create_trace_manager 在
         调用时解析模块属性，故打桩打在 spu 命名空间。
         """
-        from jiuwen.controller.agent.control_mode.plan_execute_mode import (
-            PlanExecuteMode,
-        )
-
-        monkeypatch.setattr(
-            spu, "create_trace_manager", lambda *args, **kwargs: stub_manager
-        )
+        _install_stub_manager(monkeypatch, spu, stub_manager)
         mode = object.__new__(PlanExecuteMode)
         mode.task_id = "t-pe"
         mode.model = model
-        mode._trace_handlers = None
+        monkeypatch.setattr(mode, "_trace_handlers", None, raising=False)
         return mode
 
     @staticmethod
@@ -359,22 +374,81 @@ class TestPlanExecuteStreamLlmEmit:
         assert kinds == ["start", "error"]
 
 
+class TestTelemetryFailureIsolation:
+    """遥测 handler 抛错不得把成功的业务调用误判进失败分支。"""
+
+    @staticmethod
+    def test_task_plan_result_survives_handler_error(monkeypatch):
+        """on_llm_start/on_llm_end 抛错 → 规划结果正常返回，不再重抛。"""
+        _install_stub_manager(monkeypatch, tpm, RaisingManager())
+        monkeypatch.setattr(tpm, "TemplateManager", _no_template_manager)
+
+        class StubLLM:
+            async def ainvoke(self, messages):
+                return AIMessage(
+                    content='{"steps": [{"step_idx": 1, "step_name": "s1"}]}',
+                    usage_metadata=_usage(),
+                )
+
+        module = _StubTaskPlanModule(llm=StubLLM(), context_manager=None)
+        plan = asyncio.run(
+            module.plan(query="q", chat_history=[], matched_scene=None, filtered_tools=[])
+        )
+        assert len(plan.steps) == 1
+
+    @staticmethod
+    def test_task_understanding_result_survives_handler_error(monkeypatch):
+        """on_llm_start/on_llm_end 抛错 → 复杂意图判断不被兜底成简单意图。"""
+        _install_stub_manager(monkeypatch, tum, RaisingManager())
+        monkeypatch.setattr(tum, "TemplateManager", _no_template_manager)
+
+        class StubLLM:
+            async def ainvoke(self, messages):
+                return AIMessage(content="1", usage_metadata=_usage())
+
+        module = _StubTaskUnderstandingModule(llm=StubLLM(), context_manager=None)
+        result = asyncio.run(
+            module.invoke(query="q", chat_history=[], available_intents=[])
+        )
+        assert result.is_complex is True
+
+    @staticmethod
+    def test_plan_execute_step_survives_handler_error(monkeypatch):
+        """on_llm_start/on_llm_end 抛错 → 步骤输出正常，不落入 error 分支。"""
+
+        class StubModel:
+            def astream(self, inputs, **kwargs):
+                async def gen():
+                    yield AIMessage(content="done", usage_metadata=_usage())
+
+                return gen()
+
+        mode = TestPlanExecuteStreamLlmEmit._make_mode(
+            monkeypatch, RaisingManager(), StubModel()
+        )
+        llm_output = asyncio.run(
+            mode._stream_llm_response(
+                [{"role": "user", "content": "hi"}], []
+            )
+        )
+        assert llm_output["content"] == "done"
+        assert "error" not in llm_output
+
+
 class TestQwenChatTimestamps:
     @staticmethod
     def test_chat_stamps_dual_timestamps(monkeypatch):
-        """qwen._chat（ainvoke 落点）打双时间戳：批式语义下首 token 即
-        完整响应到达，TTFT 可换算且非负（≈ 整体请求时延）。"""
-        from jiuwen.common.llm_service.language_model import qwen as qwen_module
-        from jiuwen.common.llm_service.language_model.base import BaseChatModel
+        """qwen._chat（ainvoke 落点）打双时间戳。
 
-        # 假 self：_request_params 直接挂在实例上，绕开 Crypt/TemplateManager；
-        # token 抽取用基类真实现（静态方法），api_base/model_name 供
-        # requests.post 的 url 与 dict.get 默认值引用
-        fake_self = SimpleNamespace(
-            api_base="http://unit-test",
-            model_name="qwen-max",
-            _request_params=lambda messages, tools: ({"model": "qwen-max"}, {}),
-            _extract_tokens_from_response=BaseChatModel._extract_tokens_from_response,
+        批式语义下首 token 即完整响应到达，TTFT 可换算且非负
+        （≈ 整体请求时延）。
+        """
+
+        def fake_request_params(messages, tools):
+            return ({"model": "qwen-max"}, {})
+
+        monkeypatch.setattr(
+            qwen_module.Qwen, "_request_params", staticmethod(fake_request_params)
         )
 
         class FakeResponse:
@@ -403,9 +477,12 @@ class TestQwenChatTimestamps:
 
         monkeypatch.setattr(qwen_module.requests, "post", fake_post)
 
-        result = qwen_module.Qwen._chat(
-            fake_self, [HumanMessage(content="hi")]
+        model = qwen_module.Qwen(
+            api_key="unit-test", api_base="http://unit-test", model_name="qwen-max"
         )
+        # 走公有入口 ainvoke（task_plan/task_understanding 的真实调用形态），
+        # 其经 _achat 直通 _chat，被测路径不变
+        result = asyncio.run(model.ainvoke([HumanMessage(content="hi")]))
 
         assert captured["json"]["model"] == "qwen-max"
         assert isinstance(result, AIMessage)
