@@ -187,6 +187,41 @@ def test_moderate_string_mul_still_ok(monkeypatch):
     assert render_jinja("{{ 'ab' * 2 * 3 }}", {}) == "abababababab"
 
 
+def test_list_repeat_rejected_before_alloc(monkeypatch):
+    """list*int 应在分配前拒绝，不能等 OOM。"""
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_LOOP_ITERATIONS", 1000)
+    with pytest.raises(TemplateRenderError, match="sequence length"):
+        render_jinja("{{ [0] * 1000000000 }}", {})
+
+
+def test_list_repeat_from_variable_rejected(monkeypatch):
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_LOOP_ITERATIONS", 100)
+    with pytest.raises(TemplateRenderError, match="sequence length"):
+        render_jinja("{{ items * n }}", {"items": [0], "n": 10_000})
+
+
+def test_int_pow_rejected_before_compute(monkeypatch):
+    """大整数幂应在计算前拒绝。"""
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_POW_EXPONENT", 100)
+    with pytest.raises(TemplateRenderError, match="exponent|power result bits"):
+        render_jinja("{{ 10 ** 1000000000 }}", {})
+
+
+def test_moderate_list_repeat_and_pow_ok(monkeypatch):
+    import agent_runtime.extension.workflow_node.template_jinja as tj
+
+    monkeypatch.setattr(tj, "MAX_LOOP_ITERATIONS", 100)
+    monkeypatch.setattr(tj, "MAX_POW_EXPONENT", 100)
+    assert render_jinja("{{ ([1,2] * 2)|join(',') }}", {}) == "1,2,1,2"
+    assert render_jinja("{{ 2 ** 10 }}", {}) == "1024"
+
+
 def test_moderate_nested_loops_still_ok():
     text = render_jinja(
         "{% for i in range(3) %}{% for j in range(2) %}{{ i }}{{ j }};{% endfor %}{% endfor %}",
@@ -248,6 +283,16 @@ def test_static_range_zero_outer_not_false_positive(monkeypatch):
         {},
     )
     assert text == ""
+
+
+def test_filter_last_and_random_still_work():
+    """|last / |random 需要下标或 reversed，包装后不能破坏合法模板。"""
+    items = ["a", "b", "c"]
+    assert render_jinja("{{ items|last }}", {"items": items}) == "c"
+    assert render_jinja("{{ items|first }}", {"items": items}) == "a"
+    assert render_jinja("{{ 'xyz'|last }}", {}) == "z"
+    picked = render_jinja("{{ items|random }}", {"items": items})
+    assert picked in items
 
 
 def test_filter_list_hits_loop_budget(monkeypatch):

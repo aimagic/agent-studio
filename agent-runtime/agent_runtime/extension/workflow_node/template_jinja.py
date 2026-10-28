@@ -63,6 +63,9 @@ MAX_OUTPUT_CHARS = _positive_int_env("TEMPLATE_JINJA_MAX_OUTPUT_CHARS", 1_000_00
 RENDER_TIMEOUT_SEC = _positive_int_env("TEMPLATE_JINJA_TIMEOUT_SEC", 10)
 # 含超时后仍存活的 orphan worker；槽位由 worker finally 释放，避免无限堆积线程
 MAX_CONCURRENT_RENDERS = _positive_int_env("TEMPLATE_JINJA_MAX_CONCURRENT", 8)
+# 整数幂：限制指数与结果比特数，避免 10**1e9 拖死 CPU/内存
+MAX_POW_EXPONENT = _positive_int_env("TEMPLATE_JINJA_MAX_POW_EXP", 10_000)
+MAX_POW_RESULT_BITS = _positive_int_env("TEMPLATE_JINJA_MAX_POW_BITS", 1_000_000)
 
 _render_slots = threading.BoundedSemaphore(MAX_CONCURRENT_RENDERS)
 
@@ -107,7 +110,7 @@ class _RenderBudget:
 
 
 class _CountingIterable:
-    """对 for 可迭代对象计数，超限即抛错（含 list/dict 与 range）。"""
+    """对 for / 过滤器可迭代对象计数；补齐下标与 reversed，兼容 |last / |random。"""
 
     def __init__(self, iterable: Iterable[Any], budget: _RenderBudget) -> None:
         self._iterable = iterable
@@ -120,6 +123,30 @@ class _CountingIterable:
 
     def __len__(self) -> int:
         return len(self._iterable)  # type: ignore[arg-type]
+
+    def __getitem__(self, index: Any) -> Any:
+        """供 |random（random.choice）等需要下标的路径使用。"""
+        self._budget.check_deadline()
+        inner = self._iterable
+        try:
+            return inner[index]  # type: ignore[index]
+        except TypeError:
+            # 底层不支持下标时先按计数迭代物化再取
+            return list(self)[index]
+
+    def __reversed__(self) -> Iterator[Any]:
+        """供 |last（reversed(seq)）使用；每取出一项计入预算。"""
+        inner = self._iterable
+        try:
+            iterator: Iterator[Any] = reversed(inner)  # type: ignore[arg-type]
+        except TypeError:
+            materialized = list(self)
+            for item in reversed(materialized):
+                yield item
+            return
+        for item in iterator:
+            self._budget.consume()
+            yield item
 
 
 def _make_guard_iter(budget: _RenderBudget):
@@ -224,6 +251,10 @@ def _make_guarded_finalize():
             raise TemplateRenderError(
                 f"template output length {len(value)} exceeds limit {MAX_OUTPUT_CHARS}"
             )
+        if isinstance(value, (list, tuple)) and len(value) > MAX_LOOP_ITERATIONS:
+            raise TemplateRenderError(
+                f"template sequence length {len(value)} exceeds limit {MAX_LOOP_ITERATIONS}"
+            )
         return value
 
     return guarded_finalize
@@ -241,44 +272,105 @@ def _const_int(node: nodes.Node) -> int | None:
     return None
 
 
+def _const_seq(node: nodes.Node) -> list[Any] | tuple[Any, ...] | None:
+    if isinstance(node, nodes.Const) and isinstance(node.value, (list, tuple)):
+        return node.value
+    return None
+
+
 def _raise_output_too_long(size: int) -> None:
     raise TemplateRenderError(
         f"template output length {size} exceeds limit {MAX_OUTPUT_CHARS}"
     )
 
 
-def _product_len_or_raise(base_len: int, times: int) -> int:
-    """计算 base_len * times；超限则抛错，避免先分配再检查。"""
+def _raise_seq_too_long(size: int) -> None:
+    raise TemplateRenderError(
+        f"template sequence length {size} exceeds limit {MAX_LOOP_ITERATIONS}"
+    )
+
+
+def _product_against_limit(base_len: int, times: int, limit: int) -> int:
+    """base_len * times，超 limit 则由 caller 抛错；返回乘积。"""
     if times <= 0 or base_len <= 0:
         return 0
-    if base_len > MAX_OUTPUT_CHARS:
-        _raise_output_too_long(base_len)
-    # times > MAX // base_len ⇔ base_len * times > MAX（整数安全）
-    if times > MAX_OUTPUT_CHARS // base_len:
-        # 仅用于错误信息；可能极大，用近似描述避免真乘爆 int 展示
-        _raise_output_too_long(MAX_OUTPUT_CHARS + 1)
+    if base_len > limit:
+        return limit + 1
+    if times > limit // base_len:
+        return limit + 1
     return base_len * times
 
 
-def _guard_string_repeat(left: Any, right: Any) -> None:
-    """字符串重复乘法执行前检查最终长度。"""
+def _product_len_or_raise(base_len: int, times: int) -> int:
+    """计算 base_len * times；超限则抛错，避免先分配再检查。"""
+    size = _product_against_limit(base_len, times, MAX_OUTPUT_CHARS)
+    if size > MAX_OUTPUT_CHARS:
+        _raise_output_too_long(size)
+    return size
+
+
+def _product_seq_or_raise(base_len: int, times: int) -> int:
+    size = _product_against_limit(base_len, times, MAX_LOOP_ITERATIONS)
+    if size > MAX_LOOP_ITERATIONS:
+        _raise_seq_too_long(size)
+    return size
+
+
+def _guard_int_pow(base: int, exp: int) -> None:
+    """整数幂运算前检查指数与结果比特上限。"""
+    if exp < 0:
+        return
+    if exp > MAX_POW_EXPONENT:
+        raise TemplateRenderError(
+            f"integer exponent {exp} exceeds limit {MAX_POW_EXPONENT}"
+        )
+    if base in (0, 1, -1) or exp == 0:
+        return
+    bits = abs(base).bit_length() * exp
+    if bits > MAX_POW_RESULT_BITS:
+        raise TemplateRenderError(
+            f"integer power result bits {bits} exceeds limit {MAX_POW_RESULT_BITS}"
+        )
+
+
+def _guard_mul_operands(left: Any, right: Any) -> None:
+    """* 运算分配前：str/bytes 按输出长度；list/tuple 按元素数。"""
     if isinstance(left, str) and isinstance(right, int):
         _product_len_or_raise(len(left), right)
         return
     if isinstance(right, str) and isinstance(left, int):
         _product_len_or_raise(len(right), left)
+        return
+    if isinstance(left, (bytes, bytearray)) and isinstance(right, int):
+        _product_len_or_raise(len(left), right)
+        return
+    if isinstance(right, (bytes, bytearray)) and isinstance(left, int):
+        _product_len_or_raise(len(right), left)
+        return
+    if isinstance(left, (list, tuple)) and isinstance(right, int):
+        _product_seq_or_raise(len(left), right)
+        return
+    if isinstance(right, (list, tuple)) and isinstance(left, int):
+        _product_seq_or_raise(len(right), left)
+
+
+def _guard_pow_operands(left: Any, right: Any) -> None:
+    if isinstance(left, int) and isinstance(right, int):
+        _guard_int_pow(left, right)
 
 
 class _GuardedSandboxedEnvironment(SandboxedEnvironment):
-    """拦截 *，在 str*int 分配前做输出长度护栏。"""
+    """拦截 * / **，在分配或重计算前做资源护栏。"""
 
-    intercepted_binops = frozenset(["*"])
+    intercepted_binops = frozenset(["*", "**"])
 
     def call_binop(
         self, context: Context, operator: str, left: Any, right: Any
     ) -> Any:
         if operator == "*":
-            _guard_string_repeat(left, right)
+            _guard_mul_operands(left, right)
+        elif operator == "**":
+            _guard_pow_operands(left, right)
         return super().call_binop(context, operator, left, right)
 
 
@@ -300,10 +392,38 @@ def _fold_static_str_len(node: nodes.Node) -> int | None:
     return None
 
 
-def _reject_static_huge_string_mul(parsed: nodes.Template) -> None:
-    """解析期拒绝可静态折叠的超大字符串重复（含链式乘法）。"""
+def _static_seq_len(node: nodes.Node) -> int | None:
+    seq = _const_seq(node)
+    if seq is not None:
+        return len(seq)
+    # Jinja 字面量 [0] / (0,1) 是 List/Tuple 节点，不是 Const
+    if isinstance(node, (nodes.List, nodes.Tuple)):
+        return len(node.items)
+    return None
+
+
+def _reject_static_huge_seq_mul(node: nodes.Mul) -> None:
+    """字面量 list/tuple * int 静态拒绝。"""
+    left_len = _static_seq_len(node.left)
+    times = _const_int(node.right)
+    if left_len is None:
+        left_len = _static_seq_len(node.right)
+        times = _const_int(node.left)
+    if left_len is None or times is None:
+        return
+    _product_seq_or_raise(left_len, times)
+
+
+def _reject_static_huge_ops(parsed: nodes.Template) -> None:
+    """解析期拒绝可静态折叠的超大 str/seq 重复与整数幂。"""
     for node in parsed.find_all(nodes.Mul):
         _fold_static_str_len(node)
+        _reject_static_huge_seq_mul(node)
+    for node in parsed.find_all(nodes.Pow):
+        base = _const_int(node.left)
+        exp = _const_int(node.right)
+        if base is not None and exp is not None:
+            _guard_int_pow(base, exp)
 
 
 def _wrap_for_iters_with_guard(parsed: nodes.Template) -> None:
@@ -396,7 +516,7 @@ def _render_with_guards(
 
     # 静态检查必须在 AST 改写之前（改写后 for 目标变成 guard_iter(...)）
     _reject_static_nested_range_blowup(parsed)
-    _reject_static_huge_string_mul(parsed)
+    _reject_static_huge_ops(parsed)
     _wrap_for_iters_with_guard(parsed)
 
     budget = _RenderBudget(MAX_LOOP_ITERATIONS, deadline=deadline, cancel=cancel)
@@ -438,7 +558,9 @@ def render_jinja(template: str, variables: dict[str, Any]) -> str:
         raise TemplateRenderError("template variables must be a dict")
 
     slots = _render_slots
-    if not slots.acquire(blocking=False):
+    # 短等：给超时 cancel 后的 orphan 一点释放槽位的时间，减轻「槽满即全拒绝」
+    slot_wait = min(1.0, float(RENDER_TIMEOUT_SEC))
+    if not slots.acquire(blocking=True, timeout=slot_wait):
         raise TemplateRenderError(
             f"template render concurrency limit exceeded ({MAX_CONCURRENT_RENDERS})"
         )
