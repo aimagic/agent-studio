@@ -88,21 +88,12 @@ def test_range_overflow_becomes_template_render_error():
         render_jinja("{{ range(10 ** 100) }}", {})
 
 
-def test_const_range_len_swallows_overflow():
-    """静态路径对非法/溢出 range 返回 None，不向外抛 OverflowError。"""
-    from jinja2 import nodes
-    from jinja2.sandbox import SandboxedEnvironment
-
-    import agent_runtime.extension.workflow_node.template_jinja as tj
-
-    env = SandboxedEnvironment()
-    parsed = env.parse("{% for i in range(1, 2, 0) %}x{% endfor %}")
-    for_node = next(parsed.find_all(nodes.For))
-    assert tj._const_range_len(for_node.iter) is None
-
-    huge = env.parse("{% for i in range(" + ("9" * 100) + ") %}x{% endfor %}")
-    for_node = next(huge.find_all(nodes.For))
-    assert tj._const_range_len(for_node.iter) is None
+def test_static_invalid_range_does_not_leak_raw_errors():
+    """非法/溢出常量 range 经静态分析与渲染均须 TemplateRenderError，不泄漏裸异常。"""
+    with pytest.raises(TemplateRenderError, match="invalid range"):
+        render_jinja("{% for i in range(1, 2, 0) %}x{% endfor %}", {})
+    with pytest.raises(TemplateRenderError, match="invalid range"):
+        render_jinja("{% for i in range(" + ("9" * 100) + ") %}x{% endfor %}", {})
 
 
 def test_loop_iteration_budget_runtime(monkeypatch):
@@ -494,7 +485,6 @@ def test_render_waits_for_slot_within_timeout(monkeypatch):
         return "first"
 
     calls = {"n": 0}
-    orig = tj._render_with_guards
 
     def _dispatch(*args, **kwargs):
         calls["n"] += 1
@@ -502,6 +492,7 @@ def test_render_waits_for_slot_within_timeout(monkeypatch):
             return _first_guard(*args, **kwargs)
         return "second"
 
+    # 用字符串名 setattr，避免测试里直接访问受保护成员（G.CLS.11）
     monkeypatch.setattr(tj, "_render_with_guards", _dispatch)
 
     results: list[str] = []

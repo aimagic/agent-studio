@@ -565,15 +565,16 @@ class _GuardedSandboxedEnvironment(SandboxedEnvironment):
     intercepted_binops = frozenset(["*", "**", "%"])
 
     def call_binop(
-        self, context: Context, operator: str, left: Any, right: Any
+        self, context: Context, op: str, left: Any, right: Any
     ) -> Any:
-        if operator == "%":
+        # 参数名用 op，避免遮蔽模块级 import operator（G.VAR.03）
+        if op == "%":
             return _guard_mod_operands(left, right)
-        if operator == "*":
+        if op == "*":
             _guard_mul_operands(left, right)
-        elif operator == "**":
+        elif op == "**":
             _guard_pow_operands(left, right)
-        return super().call_binop(context, operator, left, right)
+        return super().call_binop(context, op, left, right)
 
     def wrap_str_format(self, value: Any) -> Callable[..., str] | None:
         """Jinja 在 getattr 时替换 format；须在 wrapper 内预检，call() 看不到 bound method。"""
