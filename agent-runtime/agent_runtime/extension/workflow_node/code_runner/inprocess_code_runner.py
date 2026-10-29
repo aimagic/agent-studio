@@ -178,8 +178,9 @@ class InprocessCodeRunner(CodeRunner):
         try:
             if hasattr(sys.stdout, 'getvalue'):
                 sys.stdout = sys.__stdout__
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to restore sys.stdout in _force_cleanup: {e}")
 
     @staticmethod
     def _interrupt_thread(thread: threading.Thread) -> None:
@@ -247,8 +248,11 @@ class InprocessCodeRunner(CodeRunner):
             exec_exception = e
             try:
                 os_system_patcher.stop()
-            except Exception:
-                pass
+            except Exception as stop_err:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Failed to stop os.system patcher: {stop_err}"
+                )
 
         # 4. 提取结果
         res = local_namespace.get("res", {})
