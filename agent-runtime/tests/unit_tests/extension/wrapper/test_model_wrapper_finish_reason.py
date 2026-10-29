@@ -235,8 +235,9 @@ class TestAInvokeTimestampFallback:
             return _FakeModel()
 
         class _FakeRunner:
-            class resource_mgr:
-                get_model = staticmethod(_get_model)
+            # SimpleNamespace 充当 resource_mgr 替身：属性即函数、无绑定语义，
+            # 也避免为桩再引入一个不符合 PascalCase 的嵌套类名（G.NAM.01）
+            resource_mgr = types.SimpleNamespace(get_model=_get_model)
 
         def _fake_session(session_id=None, **kwargs):
             # 真实 trace_compat 为同步返回（wrapper 不 await 直接使用）
