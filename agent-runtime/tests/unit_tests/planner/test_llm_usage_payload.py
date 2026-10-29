@@ -142,6 +142,17 @@ class TestBuildUsageMetadata:
         assert result == {"inter_token_latency_ms": 5.0}
 
     @staticmethod
+    def test_malformed_usage_degrades_not_raises():
+        """usage_metadata 类型异常（如 dict）→ 告警降级空载荷，不抛错。
+
+        构造器承诺不抛：求值点常在业务 try 内（emit_trace_event 实参位），
+        抛错会把遥测构造失败灌进业务分支（plan 重抛 / 理解兜底 / 步骤
+        误标 error），违背「遥测失败只告警、不改变业务语义」。
+        """
+        result = build_usage_metadata({"input_tokens": 1})  # type: ignore[arg-type]
+        assert result == {}
+
+    @staticmethod
     def test_none_usage_with_tpot_still_emits():
         """无 finish 块（如 finish_reason=length 截断）时不丢 TPOT。
 
@@ -472,3 +483,24 @@ class TestBuildLlmEndPayload:
         """tpot_ms 可算时随 usage_metadata 透传（批式调用点不传，流式可补）。"""
         payload = build_llm_end_payload("x", _usage(), 0.5, tpot_ms=15.0)
         assert payload[USAGE_METADATA]["inter_token_latency_ms"] == 15.0
+
+    @staticmethod
+    def test_list_content_normalized_to_empty():
+        """content 为 list（AIMessage 契约允许）→ 载荷按空串兜底。
+
+        `content or ""` 只兜空值，非空 list 会原样进载荷造成 OTel 载荷
+        畸形；所有调用点（含 task_plan 直传 result.content）统一在此兜底。
+        """
+        payload = build_llm_end_payload(["非字符串内容"], _usage(), 0.5)
+        assert payload["content"] == ""
+        assert payload[USAGE_METADATA]["input_tokens"] == 10
+
+    @staticmethod
+    def test_malformed_usage_degrades_to_base_payload():
+        """usage_metadata 类型异常 → 降级为基础载荷（content/latency），不抛。"""
+        payload = build_llm_end_payload("x", {"input_tokens": 1}, 0.5)  # type: ignore[arg-type]
+        assert payload["role"] == "assistant"
+        assert payload["content"] == "x"
+        assert payload[LATENCY] == {"total_latency": 0.5}
+        assert USAGE_METADATA not in payload
+        assert MODEL_USAGE not in payload

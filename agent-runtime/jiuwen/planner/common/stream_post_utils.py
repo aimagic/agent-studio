@@ -62,7 +62,24 @@ def build_usage_metadata(
     守卫跳过。TTFT 由模型层双时间戳（first_token_time/requests_start_time，
     ISO 串）换算，消费端 gen_ai.response.time_to_first_chunk 按 GenAI semconv
     为秒（double），故直接给出 float 秒值。
+
+    构造器承诺不抛：发射点的求值位置（emit_trace_event 实参位、业务 try
+    内、发射器尾部）形态各异，边界输入（usage_metadata 类型异常等）抛错
+    会把遥测故障灌进业务分支——异常只告警并降级为空载荷（缺数据不注入）。
     """
+    try:
+        return _build_usage_metadata_impl(usage, tpot_ms)
+    except Exception as e:
+        logger.warning(
+            f"build_usage_metadata failed, skip injection: {e}",
+            simple_log="build_usage_metadata failed",
+        )
+        return {}
+
+
+def _build_usage_metadata_impl(
+    usage: Optional[UsageMetadata], tpot_ms: Optional[float] = None
+) -> dict:
     has_tpot = tpot_ms is not None and tpot_ms > 0
     if usage is None:
         # finish 块缺失（如 finish_reason=length 截断、流提前结束）时无 usage，
@@ -140,7 +157,29 @@ def build_llm_end_payload(
     PlanExecute StepExecute）复用：content/latency 与既有发射点形状一致，
     model_usage/usage_metadata/finish_reason 按 core handler 约定键名双写，
     缺数据不注入（与其它发射点同一契约）。
+
+    与 build_usage_metadata 同一承诺：构造不抛。求值点常在业务 try 内
+    （emit_trace_event 实参位），构造失败只降级为 content/latency 基础
+    载荷，不把遥测故障灌进业务分支。content 契约允许
+    List[Union[str, Dict]]，非 str 统一兜底为空串（不外泄畸形形态）。
     """
+    safe_content = content if isinstance(content, str) else ""
+    try:
+        return _build_llm_end_payload_impl(safe_content, usage_metadata, total_time, tpot_ms)
+    except Exception as e:
+        logger.warning(
+            f"build_llm_end_payload failed, degrade to base payload: {e}",
+            simple_log="build_llm_end_payload failed",
+        )
+        return {"role": "assistant", "content": safe_content, LATENCY: {"total_latency": total_time}}
+
+
+def _build_llm_end_payload_impl(
+    content: str,
+    usage_metadata: Optional[UsageMetadata],
+    total_time: float,
+    tpot_ms: Optional[float] = None,
+) -> dict:
     output_on_insights: dict = {"role": "assistant", "content": content or ""}
     output_on_insights[LATENCY] = {"total_latency": total_time}
     has_tokens = usage_metadata is not None and any(
