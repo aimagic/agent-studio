@@ -110,18 +110,9 @@ class PromptObsServiceTest {
     }
 
     @Test
-    void testDownloadObsFile_NotFound_ReturnsNull() {
-        // read 在 OBS 404（对象不存在）时返回 null，downloadObsFile 透传 null（不抛异常）。
-        // 与 MgObsService.downloadObsFile 行为对齐。
-        when(fileStore.read(anyString())).thenReturn(null);
-
-        String result = obsService.downloadObsFile("nonexistent.txt");
-        assertNull(result, "404 对象不存在应透传 null，不抛异常");
-    }
-
-    @Test
     void testDownloadObsFile_AgentStudioException_Passthrough() {
-        // read 真实 OBS 故障抛 AgentStudioException(OBS_FAILED)，downloadObsFile 透传不二次包装。
+        // read 抛 AgentStudioException(OBS_FAILED)（404 与 5xx 均抛 OBS_FAILED），downloadObsFile 透传不二次包装。
+        // 注：404→null 语义已收敛到 MgObsService.getObjectOrNull，PromptObsService.downloadObsFile 404 抛 OBS_FAILED。
         AgentStudioException obsFailed = new AgentStudioException(StudioError.OBS_FAILED);
         when(fileStore.read(anyString())).thenThrow(obsFailed);
 

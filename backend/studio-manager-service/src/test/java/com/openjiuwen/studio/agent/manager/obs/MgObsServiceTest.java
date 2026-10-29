@@ -196,17 +196,9 @@ class MgObsServiceTest {
     }
 
     @Test
-    void testDownloadObsFile_NotFound_ReturnsNull() {
-        // read 在 OBS 404（对象不存在）时返回 null，downloadObsFile 透传 null（不抛异常）。
-        // 未发布资源导出走此路径：getPublish 返回 null → 导出抛 EXPORT_RESOURCE_NOT_EXISTS(400)。
-        when(fileStore.read(anyString())).thenReturn(null);
-        String result = mgObsService.downloadObsFile("key");
-        assertNull(result, "404 对象不存在应透传 null，不抛异常");
-    }
-
-    @Test
     void testDownloadObsFile_AgentStudioException_Passthrough() {
-        // read 真实 OBS 故障抛 AgentStudioException(OBS_FAILED)，downloadObsFile 透传不二次包装。
+        // read 抛 AgentStudioException(OBS_FAILED)（404 与 5xx 均抛 OBS_FAILED），downloadObsFile 透传不二次包装。
+        // 注：404→null 语义已收敛到 getObjectOrNull（发布元数据读取专用），downloadObsFile 404 抛 OBS_FAILED（数据不一致故障）。
         AgentStudioException obsFailed = new AgentStudioException(StudioError.OBS_FAILED);
         when(fileStore.read(anyString())).thenThrow(obsFailed);
         AgentStudioException thrown = assertThrows(AgentStudioException.class,

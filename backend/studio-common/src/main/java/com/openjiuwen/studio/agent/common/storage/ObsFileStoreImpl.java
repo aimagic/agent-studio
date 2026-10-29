@@ -147,16 +147,42 @@ public class ObsFileStoreImpl implements FileStore {
             }
             return null;
         } catch (ObsException e) {
-            // 404（对象不存在=未发布）返回 null，走调用方 null 契约；其他故障抛 OBS_FAILED 不掩盖。
-            // 与 getMeta()/exists() 全吞 ObsException 有意不同（后两者会把 500 也当不存在，待治理）。
-            if (e.getResponseCode() == 404) {
-                log.warn("obs object not found, treat as unpublished: {}", path);
-                return null;
-            }
+            // read：对象不存在（404）与其他 OBS 故障统一抛 OBS_FAILED（透传 cause，便于上层排查）。
+            // 404 在多数调用方（downloadObsFile → JSON.parseObject 解引用）属数据不一致故障，应 500 而非 NPE。
+            // 需要"404=业务语义 null"的调用方（发布元数据读取）用 readOrNull。
             log.error("read failed: {}", path, e);
-            throw new AgentStudioException(StudioError.OBS_FAILED);
+            throw new AgentStudioException(StudioError.OBS_FAILED, e);
         } catch (Exception e) {
             log.error("read failed: {}", path, e);
+            throw new AgentStudioException(StudioError.OBS_FAILED, e);
+        } finally {
+            IOUtils.closeQuietly(is);
+        }
+    }
+
+    @Override
+    public String readOrNull(String path) {
+        String[] parts = splitPath(path);
+        InputStream is = null;
+        try {
+            ObsObject obj = obsClient.getObject(parts[0], parts[1]);
+            is = obj.getObjectContent();
+            if (is != null) {
+                return IOUtils.toString(is, StandardCharsets.UTF_8);
+            }
+            return null;
+        } catch (ObsException e) {
+            // readOrNull：404（对象不存在）语义化为 null（用于"对象不存在=业务语义"的调用方，
+            // 如发布元数据读取：未发布资源的元数据对象不存在 → null → 调用方据此判未发布）；
+            // 其他故障（5xx）仍抛 OBS_FAILED，不掩盖真实故障。
+            if (e.getResponseCode() == 404) {
+                log.warn("obs object not found, treat as absent: {}", path);
+                return null;
+            }
+            log.error("readOrNull failed: {}", path, e);
+            throw new AgentStudioException(StudioError.OBS_FAILED, e);
+        } catch (Exception e) {
+            log.error("readOrNull failed: {}", path, e);
             throw new AgentStudioException(StudioError.OBS_FAILED, e);
         } finally {
             IOUtils.closeQuietly(is);

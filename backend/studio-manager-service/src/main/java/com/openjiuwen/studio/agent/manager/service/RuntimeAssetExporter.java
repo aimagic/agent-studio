@@ -309,9 +309,10 @@ public class RuntimeAssetExporter {
      */
     private String resolvePublishVersion(String resourceType, String resourceId, String version) {
         if (StringUtils.isBlank(version) || Constants.LATEST_PUBLISH_VERSION.equals(version)) {
-            // SDD 5.0: Redis 优先回退 OBS。未发布资源在 OBS 无元数据 → read 特判 404 返回 null
-            // （注意: 与 getMeta/exists 全吞 ObsException 有意不同, read 只吞 404, 5xx 仍抛）,
+            // SDD 5.0: Redis 优先回退 OBS。未发布资源在 OBS 无元数据 → PublishUtils.getPublish 经
+            // getObjectOrNull→fileStore.readOrNull 特判 404 返回 null（仅此收敛点 404→null），
             // getPublish 据此返回 null → meta==null 抛 EXPORT_RESOURCE_NOT_EXISTS(400)。{0} 占位填 resourceType。
+            // 注：read/downloadObsFile 在 404 时仍抛 OBS_FAILED（5xx 亦抛），404→null 语义仅经 readOrNull 收敛于此。
             com.openjiuwen.studio.agent.common.bo.AgentMetadata meta =
                 publishUtils.getPublish(resourceId, Constants.LATEST_PUBLISH_VERSION, mgObsService);
             if (meta == null || StringUtils.isBlank(meta.getVersionId())) {
@@ -1023,7 +1024,8 @@ public class RuntimeAssetExporter {
      * 读取 OBS 对象，按 object key 缓存（单次导出内去重，避免收集阶段与打包阶段重复读同一对象）。
      * <p>异常不缓存：抛出由调用方处理（收集阶段 catch 后 skip/标 missing；打包阶段 catch 后按 critical 终止或标 missing），
      * 下次同一 key 重读，行为与无缓存时一致。
-     * <p>含 null 缓存：mgObsService 返回 null 时缓存 null，用 containsKey 区分"已读过且为空"与"未读过"。
+     * <p>含 null 缓存：getObject 在内容为空时缓存 null（用 containsKey 区分"已读过且为空"与"未读过"）；
+     * 404 不返 null（read 404→抛 OBS_FAILED），由调用方 catch 后标 missing。
      */
     private String getCachedObject(String key, Map<String, String> obsCache) {
         if (obsCache.containsKey(key)) {
