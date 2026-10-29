@@ -96,17 +96,19 @@ class TestBuildUsageMetadata:
 
     @staticmethod
     def test_total_tokens_only_counts_as_usage():
-        """仅 total_tokens 有值也构成真实用量，不得跳过注入。
+        """仅 total_tokens 有值也构成真实用量，且随载荷输出。
 
         判活口径须与 build_llm_end_payload 的 has_tokens（含 total_tokens）
         一致：只上报 total_tokens 的实现下，若 usage_metadata 判活漏掉
         total_tokens 而跳过，同一 span 会 model_usage 有数、usage_metadata
-        缺席，两载荷口径不一致。
+        缺席，两载荷口径不一致；载荷内也不得丢 total_tokens（用量桥按
+        input+output 推 total 会得全零）。
         """
         result = build_usage_metadata(UsageMetadata(total_tokens=30))
         assert result != {}
         assert result["input_tokens"] == 0
         assert result["output_tokens"] == 0
+        assert result["total_tokens"] == 30
 
     @staticmethod
     def test_latency_only_usage_still_emits():

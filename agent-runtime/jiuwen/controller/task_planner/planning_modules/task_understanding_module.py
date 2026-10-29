@@ -120,19 +120,16 @@ class TaskUnderstandingModule:
             start_time = time.time()
             result = await self.llm.ainvoke(messages)
             total_time = round(time.time() - start_time, 2)
+            # AIMessage.content 契约允许 list；载荷与后处理统一按 str 兜底
+            content = result.content if isinstance(result.content, str) else ""
             await emit_trace_event(
                 trace_manager,
                 "on_llm_end",
                 build_llm_end_payload(
-                    result.content,
+                    content,
                     getattr(result, "usage_metadata", None),
                     total_time,
                 ),
-            )
-            output_text = (result.content or "").strip()
-            logger.info(
-                f"task_id: {task_id}| [TaskUnderstanding] <LLM Output> {output_text}",
-                simple_log=f"task_id: {task_id}| [TaskUnderstanding] <LLM Output>",
             )
         except Exception as e:
             await emit_trace_event(trace_manager, "on_llm_error", e)
@@ -142,6 +139,15 @@ class TaskUnderstandingModule:
             )
             return TaskUnderstandingOutput(is_complex=False)
 
+        # 后处理在 try 外：on_llm_end 已发射，此处再抛错进 except 会补发
+        # on_llm_error，同一 trace 出现 end/error 双终止；与 task_plan 的
+        # 「try 只罩 LLM 调用，解析在 try 外」约定对齐。空串经
+        # _parse_is_complex 判 False，与原错误分支兜底语义一致
+        output_text = content.strip()
+        logger.info(
+            f"task_id: {task_id}| [TaskUnderstanding] <LLM Output> {output_text}",
+            simple_log=f"task_id: {task_id}| [TaskUnderstanding] <LLM Output>",
+        )
         is_complex = self._parse_is_complex(output_text)
         logger.info(
             f"task_id: {task_id}| Task understanding result: is_complex={is_complex}",

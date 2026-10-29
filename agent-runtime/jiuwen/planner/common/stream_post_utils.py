@@ -96,9 +96,13 @@ def build_usage_metadata(
             return {}
     usage_dict: dict = {}
     if has_usage:
+        # total_tokens 一并输出：core handler 不消费该键（schema 透明、透传
+        # 无害），但用量桥/insight 侧按 input+output 推 total 会与
+        # model_usage.total_tokens 口径分裂——仅上报 total 的实现下甚至全零
         usage_dict = {
             "input_tokens": usage.input_tokens or 0,
             "output_tokens": usage.output_tokens or 0,
+            "total_tokens": usage.total_tokens or 0,
             "model_name": usage.model_name or "",
             "total_cost": usage.total_cost or 0.0,
             "input_cost": usage.input_cost or 0.0,

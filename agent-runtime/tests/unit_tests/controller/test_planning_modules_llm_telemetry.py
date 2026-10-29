@@ -340,6 +340,35 @@ class TestTaskUnderstandingEmit:
         kinds = [e[0] for e in stub_manager.events]
         assert kinds == ["start", "error"]
 
+    @staticmethod
+    def test_invoke_list_content_single_termination(monkeypatch):
+        """content 为 list（AIMessage 契约允许）→ 不得 end/error 双终止。
+
+        on_llm_end 发射后若后处理（strip 等）仍在 try 内抛错，except 会
+        补发 on_llm_error，同一 trace 双终止且业务落入错误分支；后处理
+        须在 try 外、且非 str 内容按空串兜底（_parse_is_complex 判 False）。
+        """
+        stub_manager = StubManager()
+        _install_stub_manager(monkeypatch, tum, stub_manager)
+        monkeypatch.setattr(tum, "TemplateManager", _no_template_manager)
+
+        class StubLLM:
+            async def ainvoke(self, messages):
+                return AIMessage(
+                    content=["非字符串内容"], usage_metadata=_usage()
+                )
+
+        module = _StubTaskUnderstandingModule(llm=StubLLM(), context_manager=None)
+
+        result = asyncio.run(
+            module.invoke(query="q", chat_history=[], available_intents=[])
+        )
+        assert result.is_complex is False
+        kinds = [e[0] for e in stub_manager.events]
+        assert kinds == ["start", "end"]
+        # 载荷 content 按 str 兜底，不外泄 list 形态
+        assert stub_manager.events[1][1]["content"] == ""
+
 
 def make_stream_mode(monkeypatch, stub_manager, model):
     """装配 _stream_llm_response 依赖的最小 PlanExecuteMode。
