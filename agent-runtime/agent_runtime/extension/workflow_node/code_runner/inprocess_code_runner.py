@@ -3,9 +3,15 @@
 
 对齐旧版 custom_code.py 的 _execute_code_safely() 实现。
 无子进程开销，适用于 exec_env=local 且 LOCAL_CODE_EXEC_MODE=inprocess 的场景。
+
+注意：进程内模式（inprocess）的超时中断为 best-effort：
+- 纯 Python 字节码（循环、IO 等）可被中断；
+- 若用户代码进入不可中断的 C 扩展或吞掉 BaseException，超时注入可能不生效。
+  如需可靠硬超时，请使用 LOCAL_CODE_EXEC_MODE=subprocess。
 """
 
 import asyncio
+import concurrent.futures
 import copy
 import ctypes
 import threading
@@ -29,12 +35,15 @@ class _ExecResult:
     function_log: str = ""
 
 
-class _ThreadInterrupt(Exception):
-    """用于 PyThreadState_SetAsyncExc 注入工作线程以中断 exec 的内部异常。"""
+class _ThreadInterrupt(BaseException):
+    """用于 PyThreadState_SetAsyncExc 注入工作线程以中断 exec 的内部异常。
+
+    继承 BaseException 而非 Exception，避免被用户代码的 except Exception 吞掉。
+    """
 
 
-# 进程级锁：os.system 为进程级全局属性，实例级锁在线程并发下无法串行化补丁。
-# 改为进程级锁确保任意 InprocessCodeRunner 实例的 exec 串行执行。
+# 进程级锁：os.system 为进程级全局属性，sys.stdout 重定向也是进程级操作，
+# 必须串行化以避免并发执行交错修改全局状态。
 _exec_process_lock = threading.Lock()
 
 
@@ -102,44 +111,54 @@ class InprocessCodeRunner(CodeRunner):
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
 
-        loop = asyncio.get_running_loop()
+        # 使用专用单线程 executor 等待 done_event，避免占用默认线程池；
+        # 超时/取消后可直接关闭 executor，释放等待线程。
+        waiter_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
-            await asyncio.wait_for(
-                loop.run_in_executor(None, done_event.wait),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError as exc:
-            self._interrupt_thread(thread)
-            # 给被中断的线程一点时间响应注入的异常（放线程池避免阻塞 event loop）
-            await loop.run_in_executor(None, lambda: done_event.wait(timeout=2))
-            raise TimeoutError(
-                f"代码执行超时（已超过 {timeout} 秒限制），"
-                f"请优化代码或调整超时配置"
-            ) from exc
-        except asyncio.CancelledError:
-            # 协程被取消（断连/外层 wait_for 超时）：中断 worker 线程，避免补丁/锁泄漏
-            self._interrupt_thread(thread)
-            await loop.run_in_executor(None, lambda: done_event.wait(timeout=2))
-            raise
+            loop = asyncio.get_running_loop()
+            try:
+                await asyncio.wait_for(
+                    loop.run_in_executor(waiter_executor, done_event.wait),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError as exc:
+                self._interrupt_thread(thread)
+                # 给被中断的线程一点时间响应注入的异常
+                await loop.run_in_executor(
+                    waiter_executor, lambda: done_event.wait(timeout=2)
+                )
+                raise TimeoutError(
+                    f"代码执行超时（已超过 {timeout} 秒限制），"
+                    f"请优化代码或调整超时配置"
+                ) from exc
+            except asyncio.CancelledError:
+                # 协程被取消（断连/外层 wait_for 超时）：中断 worker 线程，避免补丁/锁泄漏
+                self._interrupt_thread(thread)
+                await loop.run_in_executor(
+                    waiter_executor, lambda: done_event.wait(timeout=2)
+                )
+                raise
 
-        # 线程执行完毕，收集结果（先拼 function_log 再 raise，确保异常时也能拿到堆栈）
-        self.function_log = container.function_log
-        if container.error_log:
-            self.function_log += container.error_log[
-                container.error_log.find('local_namespace') + 17:
-            ]
-        if container.exception is not None:
-            raise container.exception
+            # 线程执行完毕，收集结果（先拼 function_log 再 raise，确保异常时也能拿到堆栈）
+            self.function_log = container.function_log
+            if container.error_log:
+                self.function_log += container.error_log[
+                    container.error_log.find('local_namespace') + 17:
+                ]
+            if container.exception is not None:
+                raise container.exception
 
-        res = container.result
-        if not isinstance(res, dict):
-            raise build_error(
-                StatusCode.WORKFLOW_COMPONENT_SCHEMA_INVALID,
-                comp_id="flow_code",
-                reason="main() must return a dict",
-                workflow="n/a",
-            )
-        return res
+            res = container.result
+            if not isinstance(res, dict):
+                raise build_error(
+                    StatusCode.WORKFLOW_COMPONENT_SCHEMA_INVALID,
+                    comp_id="flow_code",
+                    reason="main() must return a dict",
+                    workflow="n/a",
+                )
+            return res
+        finally:
+            waiter_executor.shutdown(wait=False)
 
     @staticmethod
     def _interrupt_thread(thread: threading.Thread) -> None:
@@ -187,13 +206,9 @@ class InprocessCodeRunner(CodeRunner):
         error_log = None
 
         os_system_patcher = mock.patch('os.system', return_value=-1)
-        # 带超时获取锁：如果前一次执行因卡在不可中断的 C 扩展而未释放锁，
-        # 当前调用不会永久阻塞，而是降级执行（不串行化 os.system 补丁）。
-        lock_acquired = _exec_process_lock.acquire(timeout=5)
-        if not lock_acquired:
-            # 日志记录后降级：不加锁直接执行，os.system 补丁仍通过 try/finally 保证清理
-            pass
-        try:
+        # 锁必须获取：sys.stdout 重定向和 os.system patch 都是进程级操作，
+        # 并发执行会交错修改全局状态导致输出丢失。获取失败时直接报错，不降级。
+        with _exec_process_lock:
             os_system_patcher.start()
             try:
                 exec(exec_code, global_namespace, local_namespace)
@@ -202,9 +217,6 @@ class InprocessCodeRunner(CodeRunner):
                 exec_exception = e
             finally:
                 os_system_patcher.stop()
-        finally:
-            if lock_acquired:
-                _exec_process_lock.release()
 
         # 4. 提取结果
         res = local_namespace.get("res", {})
