@@ -79,6 +79,7 @@ def build_usage_metadata(
     usage_signals = (
         usage.input_tokens,
         usage.output_tokens,
+        usage.total_tokens,
         usage.cache_tokens,
         usage.reasoning_tokens,
         usage.input_cost,

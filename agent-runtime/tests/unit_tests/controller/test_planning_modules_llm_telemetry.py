@@ -464,22 +464,29 @@ class TestPlanExecuteStreamLlmEmit:
 
     @staticmethod
     def test_trailing_empty_usage_does_not_drop_real_usage(monkeypatch):
-        """尾随块的默认空 usage（pydantic 恒真）不得覆盖 finish 块真实用量。
+        """带 "null" 标记的块不得覆盖 finish 块真实用量。
 
-        无差别 last-wins 暂存下，finish 块之后到达的恒真空 usage 会把
-        真实用量静默替换成空值；只在带终止标记（finish_reason 非空）
-        的块上暂存即可锁住真实用量。
+        qwen 中间/尾随信号块的 finish_reason 为 "null"（非空）：若暂存条件
+        按"finish_reason 非空"判，逐块挂 usage 的实现或真实 finish 块之后的
+        尾随块都会把真实用量静默替换成空值；暂存必须与 is_finish_block
+        （仅 stop/function_call）同源。
         """
         class StubModel:
             @staticmethod
             def astream(inputs, **kwargs):
                 async def gen():
-                    # 中间块：usage_metadata 恒真但为默认空值
-                    yield AIMessage(content="he", usage_metadata=UsageMetadata())
+                    # 中间块：finish_reason="null"（非空）+ 默认空 usage
+                    yield AIMessage(
+                        content="he",
+                        usage_metadata=UsageMetadata(finish_reason="null"),
+                    )
                     # finish 块：终止标记 + 真实用量
                     yield AIMessage(content="done", usage_metadata=_usage())
-                    # 尾随信号块：恒真默认空 usage，无终止标记
-                    yield AIMessage(content="", usage_metadata=UsageMetadata())
+                    # 尾随信号块："null"（非空）+ 恒真默认空 usage
+                    yield AIMessage(
+                        content="",
+                        usage_metadata=UsageMetadata(finish_reason="null"),
+                    )
 
                 return gen()
 
@@ -494,7 +501,7 @@ class TestPlanExecuteStreamLlmEmit:
 
         assert llm_output["content"] == "done"
         payload = stub_manager.events[-1][1]
-        # finish 块的真实用量不被尾随空 usage 覆盖丢弃
+        # finish 块的真实用量不被 "null" 块覆盖丢弃
         assert payload[MODEL_USAGE]["total_tokens"] == 30
         assert payload[USAGE_METADATA]["input_tokens"] == 10
         assert payload[FINISH_REASON] == "stop"

@@ -214,6 +214,24 @@ class TestPostStreamMessageFinishReason:
             )
             assert ai_message.usage_metadata.finish_reason == ""
 
+    @staticmethod
+    def test_copy_finish_reason_normalizes_tool_calls():
+        """OpenAI 风格工具调用终态归一化为 function_call（与 astream 一致）。
+
+        core 若用 "tool_calls" 表达工具调用终态，原样复制会让非流式工具
+        调用响应的 finish_reason 脱离 jiuwen 约定（stop/function_call）；
+        其它值（如 "length"）保持原样透传。
+        """
+        for variant in ("tool_calls", "tool_call"):
+            ai_message, _ = _ModelWrapperHarness.call_post_stream_message(
+                _core_response(variant), copy_finish_reason=True
+            )
+            assert ai_message.usage_metadata.finish_reason == "function_call"
+        ai_message, _ = _ModelWrapperHarness.call_post_stream_message(
+            _core_response("length"), copy_finish_reason=True
+        )
+        assert ai_message.usage_metadata.finish_reason == "length"
+
 
 class TestAInvokeTimestampFallback:
     """ainvoke 批式兜底打戳（#1583）：core 未自报时间戳时代打、自报时不覆盖。"""

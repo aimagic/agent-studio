@@ -95,6 +95,20 @@ class TestBuildUsageMetadata:
         assert result["model_name"] == "qwen-max"
 
     @staticmethod
+    def test_total_tokens_only_counts_as_usage():
+        """仅 total_tokens 有值也构成真实用量，不得跳过注入。
+
+        判活口径须与 build_llm_end_payload 的 has_tokens（含 total_tokens）
+        一致：只上报 total_tokens 的实现下，若 usage_metadata 判活漏掉
+        total_tokens 而跳过，同一 span 会 model_usage 有数、usage_metadata
+        缺席，两载荷口径不一致。
+        """
+        result = build_usage_metadata(UsageMetadata(total_tokens=30))
+        assert result != {}
+        assert result["input_tokens"] == 0
+        assert result["output_tokens"] == 0
+
+    @staticmethod
     def test_latency_only_usage_still_emits():
         """token 未上报但时间戳在（model_wrapper 无条件打点）→ 仅时延键。
 

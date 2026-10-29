@@ -312,6 +312,11 @@ class ModelWrapper:
                 core_finish_reason = (
                     getattr(model_response, "finish_reason", "") or ""
                 )
+                # OpenAI 风格工具调用终态归一化为 jiuwen 约定的
+                # function_call（astream 组装工具调用末块同样置
+                # function_call，下游仅认 stop/function_call）
+                if core_finish_reason in ("tool_calls", "tool_call"):
+                    core_finish_reason = "function_call"
                 if core_finish_reason and core_finish_reason != "null":
                     usage_metadata.finish_reason = core_finish_reason
 

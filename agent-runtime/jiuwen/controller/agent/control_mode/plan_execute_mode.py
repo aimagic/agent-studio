@@ -962,7 +962,10 @@ class PlanExecuteMode(BaseMode):
                 is_finish_block = item_usage is not None and (
                     item_usage.finish_reason in ("stop", "function_call")
                 )
-                if item_usage is not None and item_usage.finish_reason:
+                # 暂存条件必须与 is_finish_block 同源：qwen 中间块的
+                # finish_reason 为 "null"（非空），按"非空"暂存会块块覆盖，
+                # 逐块挂 usage 的模型实现下真实用量被空值静默替换
+                if is_finish_block:
                     finish_usage["usage"] = item_usage
                 if (
                     isinstance(item, AIMessage)
