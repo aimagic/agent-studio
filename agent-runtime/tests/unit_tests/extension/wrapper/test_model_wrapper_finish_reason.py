@@ -4,12 +4,19 @@
 core 侧 finish_reason 在消息顶层，OTel 载荷约定放 usage_metadata 内；但复制
 只允许发生在非流式（ainvoke）路径——流式路径的中途内容块一旦带上 finish_reason，
 会被 _format_yield_result 当作 finish 块提前截断增量输出（原业务回归）。
+
+另覆盖 ainvoke 批式兜底打戳：core 模型不上报 TTFT 双时间戳（恒空串），批式
+链路（AgentCoreModelLayer.ainvoke → ModelWrapper.ainvoke → core model.invoke）
+无人打戳，控制器批式 span 会恒缺 TTFT——由 wrapper 在请求前/响应到达代打，
+与 astream 的自打戳、qwen._chat 的批式打戳语义对齐。
 """
 
+import asyncio
 import importlib.util
 import os
 import sys
 import types
+from datetime import datetime
 from typing import Optional
 
 # packages/（位于 agent-studio 仓库根，agent-runtime 上一级）下的 editable 包
@@ -206,3 +213,75 @@ class TestPostStreamMessageFinishReason:
                 _core_response(placeholder), copy_finish_reason=True
             )
             assert ai_message.usage_metadata.finish_reason == ""
+
+
+class TestAInvokeTimestampFallback:
+    """ainvoke 批式兜底打戳（#1583）：core 未自报时间戳时代打、自报时不覆盖。"""
+
+    @staticmethod
+    def _run_ainvoke(core_usage, monkeypatch):
+        """桩掉会话/资源管理后驱动 ainvoke，返回转换后的 AIMessage。"""
+
+        class _FakeModel:
+            @staticmethod
+            async def invoke(messages, **kwargs):
+                return AssistantMessage(
+                    content="done",
+                    finish_reason="stop",
+                    usage_metadata=core_usage,
+                )
+
+        async def _get_model(model_id, session):
+            return _FakeModel()
+
+        class _FakeRunner:
+            class resource_mgr:
+                get_model = staticmethod(_get_model)
+
+        def _fake_session(session_id=None, **kwargs):
+            # 真实 trace_compat 为同步返回（wrapper 不 await 直接使用）
+            return None
+
+        monkeypatch.setattr(_model_wrapper, "Runner", _FakeRunner)
+        monkeypatch.setattr(
+            _model_wrapper, "create_agent_session_with_trace", _fake_session
+        )
+        wrapper = ModelWrapper()
+        return asyncio.run(
+            wrapper.ainvoke([{"role": "user", "content": "hi"}], "m1", "s1")
+        )
+
+    @staticmethod
+    def test_core_empty_timestamps_get_stamped(monkeypatch):
+        """core 未填时间戳（默认空串）→ wrapper 代打双时间戳，TTFT 可算。"""
+        ai_message = TestAInvokeTimestampFallback._run_ainvoke(
+            CoreUsageMetadata(model_name="test-model", input_tokens=1), monkeypatch
+        )
+        usage = ai_message.usage_metadata
+        assert usage.requests_start_time and usage.first_token_time
+        start = datetime.fromisoformat(usage.requests_start_time)
+        first = datetime.fromisoformat(usage.first_token_time)
+        assert first >= start  # 响应到达不早于请求发出
+
+    @staticmethod
+    def test_core_stamped_timestamps_not_overwritten(monkeypatch):
+        """core 已自报时间戳 → 保留原值，兜底不覆盖。"""
+        core_usage = CoreUsageMetadata(
+            model_name="test-model",
+            input_tokens=1,
+            request_start_time="2026-10-23T10:00:00+08:00",
+            first_token_time="2026-10-23T10:00:00.500+08:00",
+        )
+        ai_message = TestAInvokeTimestampFallback._run_ainvoke(
+            core_usage, monkeypatch
+        )
+        usage = ai_message.usage_metadata
+        assert usage.requests_start_time == "2026-10-23T10:00:00+08:00"
+        assert usage.first_token_time == "2026-10-23T10:00:00.500+08:00"
+
+    @staticmethod
+    def test_no_usage_metadata_no_crash(monkeypatch):
+        """core 无 usage_metadata → 无处打戳，不得崩溃。"""
+        ai_message = TestAInvokeTimestampFallback._run_ainvoke(None, monkeypatch)
+        assert ai_message.usage_metadata is None
+        assert ai_message.content == "done"

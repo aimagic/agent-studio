@@ -372,6 +372,11 @@ class ModelWrapper:
                 StatusCode.MODEL_CALL_FAILED,
                 msg=f"Model resource not found or failed to instantiate: model_id={model_id}",
             )
+        # 批式无首块事件可观测，TTFT 双时间戳由 wrapper 代打：请求前取起点，
+        # 响应到达即首 token 时刻（与 qwen._chat 批式打戳语义一致）。core 模型
+        # 不上报这俩字段（恒空串），已填（模型自报）则不覆盖；流式路径 astream
+        # 已自行打戳，不经此处
+        request_start_time = datetime.datetime.now(tz=BJ_TZ).isoformat()
         try:
             model_response = await model.invoke(
                 messages,
@@ -394,6 +399,13 @@ class ModelWrapper:
         cur_ai_message, tool_calls = self._post_stream_message(
             model_response, copy_finish_reason=True
         )
+        usage_metadata = cur_ai_message.usage_metadata
+        if usage_metadata is not None:
+            first_token_time = datetime.datetime.now(tz=BJ_TZ).isoformat()
+            if not usage_metadata.requests_start_time:
+                usage_metadata.requests_start_time = request_start_time
+            if not usage_metadata.first_token_time:
+                usage_metadata.first_token_time = first_token_time
         tcs = []
         if tool_calls is not None:
             for tc in tool_calls:
