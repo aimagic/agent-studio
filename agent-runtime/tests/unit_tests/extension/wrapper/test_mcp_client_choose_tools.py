@@ -11,7 +11,6 @@ BUG2026091603141 回归单测：MCP 客户端 call_tool 按 mcp_choose_tools 过
 - 字符串等非法形态归一化为空集（防子串匹配绕过白名单，P3）。
 """
 
-import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -208,8 +207,3 @@ async def test_string_choose_tools_normalized_to_empty(
         assert fake_session.called_tools == [], (
             f"DEFECT_STILL_PRESENT: 字符串形态绕过白名单: {fake_session.called_tools}"
         )
-
-
-if __name__ == "__main__":
-    asyncio.run(test_unselected_tool_is_rejected(*CLIENTS[0]))
-    print("probe run finished")
