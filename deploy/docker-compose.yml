@@ -373,6 +373,9 @@ services:
       # 客户 Header 改写规则引擎：默认关闭，客户部署时置 true
       CUSTOMER_HEADER_ENABLED: ${CUSTOMER_HEADER_ENABLED:-false}
       CUSTOMER_HEADER_MAPPINGS: ${CUSTOMER_HEADER_MAPPINGS:-}
+      # ======== [选填] SQL节点配置 ========
+      AGENT_MANAGER_ENDPOINT: ${AGENT_MANAGER_ENDPOINT:-http://studio-manager:31111}
+      DATASOURCE_EXECUTE_TIMEOUT: ${DATASOURCE_EXECUTE_TIMEOUT:-25}
     depends_on:
       redis:
         condition: service_healthy

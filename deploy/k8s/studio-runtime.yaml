@@ -250,6 +250,13 @@ spec:
               value: ''
             - name: STORAGE_LOCAL_BUCKET
               value: ''
+            # ======== [选填] SQL节点配置 ========
+            # Java manager 服务地址（SQL节点通过HTTP调用manager执行SQL），HTTPS启动需改成https
+            - name: AGENT_MANAGER_ENDPOINT
+              value: 'http://studio-manager:31111'
+            # SQL执行HTTP调用超时时间（秒）
+            - name: DATASOURCE_EXECUTE_TIMEOUT
+              value: '25'
           resources:
             limits:
               cpu: '2'
