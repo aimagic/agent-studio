@@ -534,9 +534,12 @@ class FlowCode(WorkflowComponent):
             from agent_runtime.common.config import settings
 
             exec_env = self._conf.exec_env or "sandbox"
-            # 内层超时优先取异常处理配置的 exceptionProcess.timeout（与外层 asyncio.wait_for 同值）；
-            # local 路径下内外层同值，内层负责中断 exec 线程并释放 _exec_lock，避免重试死锁。
-            # 读不到时按执行环境回退：local 用 LOCAL_CODE_EXEC_TIMEOUT，sandbox 用 SECURITY_SANDBOX_TIMEOUT。
+            # 内层超时优先取异常处理配置的 exceptionProcess.timeout（与外层 asyncio.wait_for 同值），
+            # 与沙箱超时（SECURITY_SANDBOX_TIMEOUT）/本地兜底超时取小生效：
+            # - 两层取小，先到者触发，异常汇入 _do_invoke_with_exception_handle 按 handleType 兜底。
+            # - local 路径下内层负责中断 exec 线程并释放锁，避免重试死锁。
+            # 读不到 exceptionProcess.timeout 时按执行环境回退：
+            #   sandbox 用 SECURITY_SANDBOX_TIMEOUT，local 用 LOCAL_CODE_EXEC_TIMEOUT。
             exec_timeout = self._get_exception_timeout(session)
             if exec_timeout is None:
                 if exec_env == "sandbox":

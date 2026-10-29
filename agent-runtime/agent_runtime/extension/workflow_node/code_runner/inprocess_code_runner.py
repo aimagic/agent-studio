@@ -187,7 +187,13 @@ class InprocessCodeRunner(CodeRunner):
         error_log = None
 
         os_system_patcher = mock.patch('os.system', return_value=-1)
-        with _exec_process_lock:
+        # 带超时获取锁：如果前一次执行因卡在不可中断的 C 扩展而未释放锁，
+        # 当前调用不会永久阻塞，而是降级执行（不串行化 os.system 补丁）。
+        lock_acquired = _exec_process_lock.acquire(timeout=5)
+        if not lock_acquired:
+            # 日志记录后降级：不加锁直接执行，os.system 补丁仍通过 try/finally 保证清理
+            pass
+        try:
             os_system_patcher.start()
             try:
                 exec(exec_code, global_namespace, local_namespace)
@@ -196,6 +202,9 @@ class InprocessCodeRunner(CodeRunner):
                 exec_exception = e
             finally:
                 os_system_patcher.stop()
+        finally:
+            if lock_acquired:
+                _exec_process_lock.release()
 
         # 4. 提取结果
         res = local_namespace.get("res", {})
