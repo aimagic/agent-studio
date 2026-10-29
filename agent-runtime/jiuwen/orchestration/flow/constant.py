@@ -114,6 +114,9 @@ TASK_EXECUTE_TIMEOUT = 300
 # 节点超时时间设置，默认为2小时
 DEFAULT_EXECUTION_NODE_TIMEOUT = 7200
 
+# MCP 超时兜底上限，默认 900s
+DEFAULT_MCP_TIME_OUT_SECONDS = 900.0
+
 # workflow节点循环执行的默认次数限制
 WORKFLOW_DEFAULT_LOOP_MAX_NUM = 30
 # loop节点循环执行的默认次数限制
