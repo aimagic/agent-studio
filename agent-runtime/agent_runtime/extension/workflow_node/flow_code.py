@@ -541,11 +541,14 @@ class FlowCode(WorkflowComponent):
             # 读不到 exceptionProcess.timeout 时按执行环境回退：
             #   sandbox 用 SECURITY_SANDBOX_TIMEOUT，local 用 LOCAL_CODE_EXEC_TIMEOUT。
             exec_timeout = self._get_exception_timeout(session)
+            timeout_source = "exceptionProcess.timeout"
             if exec_timeout is None:
                 if exec_env == "sandbox":
                     exec_timeout = settings.security_sandbox.timeout_seconds
+                    timeout_source = "SECURITY_SANDBOX_TIMEOUT"
                 else:
                     exec_timeout = settings.code_execution.local_exec_timeout
+                    timeout_source = "LOCAL_CODE_EXEC_TIMEOUT"
             workflow_logger.info(
                 "[FlowCode] exec_env=%s, exec_timeout=%s",
                 exec_env,
@@ -562,8 +565,8 @@ class FlowCode(WorkflowComponent):
                 if exec_env == "sandbox":
                     if "timeout" in str(e).lower():
                         raise RuntimeError(
-                            f"代码执行超时（已超过 {exec_timeout} 秒限制），"
-                            f"请优化代码或调整 SECURITY_SANDBOX_TIMEOUT 配置"
+                            f"代码执行超时（已超过 {exec_timeout} 秒限制，来源 {timeout_source}），"
+                            f"请优化代码或调整超时配置"
                         ) from e
                     raise build_error(
                         StatusCode.WORKFLOW_COMPONENT_EXECUTION_ERROR,
