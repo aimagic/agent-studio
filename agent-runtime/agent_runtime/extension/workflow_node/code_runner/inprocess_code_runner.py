@@ -11,7 +11,6 @@
 """
 
 import asyncio
-import concurrent.futures
 import copy
 import ctypes
 import threading
@@ -111,54 +110,57 @@ class InprocessCodeRunner(CodeRunner):
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
 
-        # 使用专用单线程 executor 等待 done_event，避免占用默认线程池；
-        # 超时/取消后可直接关闭 executor，释放等待线程。
-        waiter_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        # 在 event loop 上轮询 done_event，不占用任何线程池线程；
+        # 超时/取消后可直接中断，不受阻塞的 run_in_executor 约束。
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
         try:
-            loop = asyncio.get_running_loop()
-            try:
-                await asyncio.wait_for(
-                    loop.run_in_executor(waiter_executor, done_event.wait),
-                    timeout=timeout,
-                )
-            except asyncio.TimeoutError as exc:
-                self._interrupt_thread(thread)
-                # 给被中断的线程一点时间响应注入的异常
-                await loop.run_in_executor(
-                    waiter_executor, lambda: done_event.wait(timeout=2)
-                )
-                raise TimeoutError(
-                    f"代码执行超时（已超过 {timeout} 秒限制），"
-                    f"请优化代码或调整超时配置"
-                ) from exc
-            except asyncio.CancelledError:
-                # 协程被取消（断连/外层 wait_for 超时）：中断 worker 线程，避免补丁/锁泄漏
-                self._interrupt_thread(thread)
-                await loop.run_in_executor(
-                    waiter_executor, lambda: done_event.wait(timeout=2)
-                )
-                raise
+            while not done_event.is_set():
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(0.05, remaining))
+        except asyncio.CancelledError:
+            # 协程被取消（断连/外层 wait_for 超时）：中断 worker 线程，避免补丁/锁泄漏
+            self._interrupt_thread(thread)
+            # 有限等待线程响应中断（轮询，不占线程池）
+            await self._wait_done(done_event, loop, grace=2)
+            raise
 
-            # 线程执行完毕，收集结果（先拼 function_log 再 raise，确保异常时也能拿到堆栈）
-            self.function_log = container.function_log
-            if container.error_log:
-                self.function_log += container.error_log[
-                    container.error_log.find('local_namespace') + 17:
-                ]
-            if container.exception is not None:
-                raise container.exception
+        if not done_event.is_set():
+            # 超时：注入中断异常并有限等待线程响应
+            self._interrupt_thread(thread)
+            await self._wait_done(done_event, loop, grace=2)
+            raise TimeoutError(
+                f"代码执行超时（已超过 {timeout} 秒限制），"
+                f"请优化代码或调整超时配置"
+            )
 
-            res = container.result
-            if not isinstance(res, dict):
-                raise build_error(
-                    StatusCode.WORKFLOW_COMPONENT_SCHEMA_INVALID,
-                    comp_id="flow_code",
-                    reason="main() must return a dict",
-                    workflow="n/a",
-                )
-            return res
-        finally:
-            waiter_executor.shutdown(wait=False)
+        # 线程执行完毕，收集结果（先拼 function_log 再 raise，确保异常时也能拿到堆栈）
+        self.function_log = container.function_log
+        if container.error_log:
+            self.function_log += container.error_log[
+                container.error_log.find('local_namespace') + 17:
+            ]
+        if container.exception is not None:
+            raise container.exception
+
+        res = container.result
+        if not isinstance(res, dict):
+            raise build_error(
+                StatusCode.WORKFLOW_COMPONENT_SCHEMA_INVALID,
+                comp_id="flow_code",
+                reason="main() must return a dict",
+                workflow="n/a",
+            )
+        return res
+
+    @staticmethod
+    async def _wait_done(done_event: threading.Event, loop: asyncio.AbstractEventLoop, grace: float) -> None:
+        """有限等待 done_event 置位（轮询，不占线程池线程）。"""
+        deadline = loop.time() + grace
+        while not done_event.is_set() and loop.time() < deadline:
+            await asyncio.sleep(0.05)
 
     @staticmethod
     def _interrupt_thread(thread: threading.Thread) -> None:
