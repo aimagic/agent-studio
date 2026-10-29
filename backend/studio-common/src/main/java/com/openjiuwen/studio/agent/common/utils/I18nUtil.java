@@ -52,7 +52,10 @@ public class I18nUtil {
      */
     public String getMessage(String code, Object[] args, Locale locale) {
         try {
-            return messageSource.getMessage(code, args, code, locale);
+            // 空 args 归一为 null：MessageFormat 对 null/空数组 + {0} 占位符不抛异常（已实证），
+            // 但留 {0} 原文。归一为 null 统一"空 args"契约，便于上层判断；defaultMessage=code 兜底防崩。
+            Object[] effective = (args != null && args.length == 0) ? null : args;
+            return messageSource.getMessage(code, effective, code, locale);
         } catch (Exception e) {
             return code;
         }

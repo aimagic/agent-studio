@@ -290,7 +290,8 @@ public class RuntimeAssetExporter {
             && !Constants.LATEST_PUBLISH_VERSION.equals(version);
         // 收集阶段缓存只用于避免重复 OBS 往返；打包前释放，避免全部文本资产随缓存常驻内存。
         obsCache.clear();
-        Resource zipResource = buildZipWithManifest(manifest, assets, rootIrKey, isHistoryExport, resolvedVersion);
+        Resource zipResource = buildZipWithManifest(manifest, assets, rootIrKey, isHistoryExport,
+            resolvedVersion, resourceType);
 
         // 返回临时文件资源（供前端下载，不走 staging bucket）：写响应时流式读取，关流后删除临时文件。
         long durationMs = System.currentTimeMillis() - startMs;
@@ -1265,7 +1266,7 @@ public class RuntimeAssetExporter {
      * @param rootIrKey 根 IR 的 object key（用于区分根 IR vs 子 IR 的缺失处理）
      */
     private Resource buildZipWithManifest(RuntimeAssetManifest manifest, List<ManifestAsset> assets,
-        String rootIrKey, boolean isHistoryExport, String resolvedVersion) {
+        String rootIrKey, boolean isHistoryExport, String resolvedVersion, String resourceType) {
         int missingCount = 0;
         long totalSize = 0;
         int irCount = 0, modelCount = 0, kbCount = 0, skillCount = 0, metadataCount = 0;
@@ -1279,8 +1280,10 @@ public class RuntimeAssetExporter {
                     if (sizeSha == null) {
                         // 读取失败/空：critical 终止（技能非 critical，此处理论上不触发）；否则已标 missing
                         if (isCriticalAsset(asset, rootIrKey)) {
-                            throw new AgentStudioException(StudioError.EXPORT_RESOURCE_NOT_EXISTS,
-                                "critical asset missing: " + asset.getKey());
+                            // key 串进日志（运维可追溯，不进 i18n error_msg）；{0} 填 resourceType（与 03601001 语义一致，不泄露 OBS 路径）。
+                            log.error("runtime_asset_export_critical_asset_missing|key={}|type={}",
+                                asset.getKey(), asset.getType());
+                            throw new AgentStudioException(StudioError.EXPORT_RESOURCE_NOT_EXISTS, resourceType);
                         }
                         missingCount++;
                         continue;
@@ -1295,8 +1298,10 @@ public class RuntimeAssetExporter {
                     content = mgObsService.getObject(asset.getKey());
                 } catch (Exception e) {
                     if (isCriticalAsset(asset, rootIrKey)) {
-                        throw new AgentStudioException(StudioError.EXPORT_RESOURCE_NOT_EXISTS,
-                            "critical asset missing: " + asset.getKey());
+                        // key 串进日志（运维可追溯，不进 i18n error_msg）；{0} 填 resourceType（与 03601001 语义一致，不泄露 OBS 路径）。
+                        log.error("runtime_asset_export_critical_asset_missing|key={}|type={}",
+                            asset.getKey(), asset.getType());
+                        throw new AgentStudioException(StudioError.EXPORT_RESOURCE_NOT_EXISTS, resourceType);
                     }
                     log.warn("runtime_asset_export_asset_missing|key={}|type={}|reason={}",
                         asset.getKey(), asset.getType(), e.getMessage());
@@ -1308,8 +1313,10 @@ public class RuntimeAssetExporter {
                 }
                 if (StringUtils.isBlank(content)) {
                     if (isCriticalAsset(asset, rootIrKey)) {
-                        throw new AgentStudioException(StudioError.EXPORT_RESOURCE_NOT_EXISTS,
-                            "critical asset empty: " + asset.getKey());
+                        // key 串进日志（运维可追溯，不进 i18n error_msg）；{0} 填 resourceType（与 03601001 语义一致，不泄露 OBS 路径）。
+                        log.error("runtime_asset_export_critical_asset_empty|key={}|type={}",
+                            asset.getKey(), asset.getType());
+                        throw new AgentStudioException(StudioError.EXPORT_RESOURCE_NOT_EXISTS, resourceType);
                     }
                     asset.setStatus("missing");
                     asset.setErrorReason("OBS object empty");

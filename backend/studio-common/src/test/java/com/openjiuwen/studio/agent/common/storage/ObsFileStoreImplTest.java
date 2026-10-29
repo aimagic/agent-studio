@@ -49,11 +49,11 @@ class ObsFileStoreImplTest {
         ReflectionTestUtils.setField(fileStore, "obsClient", obsClient);
     }
 
-    /** read: OBS 404 → 抛 OBS_FAILED（不降级 null，404 在多数调用方是数据不一致故障）。 */
+    /** read: OBS 404 → 抛 OBS_FAILED（不降级 null，404 在多数调用方是数据不一致故障；read 不区分 errorCode）。 */
     @Test
     void read_obsNotFound404_throwsObsFailed() {
         when(obsClient.getObject(eq("bucket"), eq("missing-key")))
-            .thenThrow(obsException(404));
+            .thenThrow(obsException(404, "NoSuchKey"));
         AgentStudioException thrown = assertThrows(AgentStudioException.class,
             () -> fileStore.read("bucket/missing-key"));
         assertEquals(StudioError.OBS_FAILED, thrown.getErrorCode(),
@@ -64,7 +64,7 @@ class ObsFileStoreImplTest {
     @Test
     void read_obsFailure500_throwsObsFailed() {
         when(obsClient.getObject(eq("bucket"), eq("key")))
-            .thenThrow(obsException(500));
+            .thenThrow(obsException(500, null));
         AgentStudioException thrown = assertThrows(AgentStudioException.class,
             () -> fileStore.read("bucket/key"));
         assertEquals(StudioError.OBS_FAILED, thrown.getErrorCode(),
@@ -80,20 +80,31 @@ class ObsFileStoreImplTest {
         assertEquals("hello", fileStore.read("bucket/key"));
     }
 
-    /** readOrNull: OBS 404 → 返回 null（仅此 404 语义化为 null，收敛到发布元数据读取）。 */
+    /** readOrNull: OBS 404 + NoSuchKey（对象不存在=未发布）→ 返回 null（仅此语义化为 null，收敛到发布元数据读取）。 */
     @Test
     void readOrNull_obsNotFound404_returnsNull() {
         when(obsClient.getObject(eq("bucket"), eq("missing-key")))
-            .thenThrow(obsException(404));
+            .thenThrow(obsException(404, "NoSuchKey"));
         assertNull(fileStore.readOrNull("bucket/missing-key"),
-            "readOrNull 404 应返回 null（对象不存在=业务语义），不抛 500");
+            "readOrNull 404+NoSuchKey 应返回 null（对象不存在=业务语义），不抛 500");
+    }
+
+    /** readOrNull: OBS 404 + NoSuchBucket（桶缺失/配置错）→ 抛 OBS_FAILED（不误判为未发布，避免掩盖真实 OBS 故障）。 */
+    @Test
+    void readOrNull_noSuchBucket404_throwsObsFailed() {
+        when(obsClient.getObject(eq("bucket"), eq("key")))
+            .thenThrow(obsException(404, "NoSuchBucket"));
+        AgentStudioException thrown = assertThrows(AgentStudioException.class,
+            () -> fileStore.readOrNull("bucket/key"));
+        assertEquals(StudioError.OBS_FAILED, thrown.getErrorCode(),
+            "readOrNull NoSuchBucket 应抛 OBS_FAILED，不误判为未发布返回 null");
     }
 
     /** readOrNull: 真实 OBS 故障（非 404，如 500）→ 抛 OBS_FAILED（不掩盖真实故障）。 */
     @Test
     void readOrNull_obsFailure500_throwsObsFailed() {
         when(obsClient.getObject(eq("bucket"), eq("key")))
-            .thenThrow(obsException(500));
+            .thenThrow(obsException(500, null));
         AgentStudioException thrown = assertThrows(AgentStudioException.class,
             () -> fileStore.readOrNull("bucket/key"));
         assertEquals(StudioError.OBS_FAILED, thrown.getErrorCode(),
@@ -109,10 +120,11 @@ class ObsFileStoreImplTest {
         assertEquals("hello", fileStore.readOrNull("bucket/key"));
     }
 
-    /** 构造指定 responseCode 的 ObsException（SDK 构造器 + 反射设 responseCode）。 */
-    private static ObsException obsException(int responseCode) {
+    /** 构造指定 responseCode + errorCode 的 ObsException（SDK 构造器 + 反射设字段）。 */
+    private static ObsException obsException(int responseCode, String errorCode) {
         ObsException e = new ObsException("test-" + responseCode);
         ReflectionTestUtils.setField(e, "responseCode", responseCode);
+        ReflectionTestUtils.setField(e, "errorCode", errorCode);
         return e;
     }
 }

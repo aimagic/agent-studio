@@ -172,11 +172,13 @@ public class ObsFileStoreImpl implements FileStore {
             }
             return null;
         } catch (ObsException e) {
-            // readOrNull：404（对象不存在）语义化为 null（用于"对象不存在=业务语义"的调用方，
+            // readOrNull：仅 NoSuchKey（对象不存在=未发布）语义化为 null（用于"对象不存在=业务语义"的调用方，
             // 如发布元数据读取：未发布资源的元数据对象不存在 → null → 调用方据此判未发布）；
             // 其他故障（5xx）仍抛 OBS_FAILED，不掩盖真实故障。
-            if (e.getResponseCode() == 404) {
-                log.warn("obs object not found, treat as absent: {}", path);
+            // 注：NoSuchBucket（桶缺失/配置错）虽 HTTP 404 但 errorCode 不同，属真实故障 → 抛 OBS_FAILED，
+            // 避免桶缺失被误判为未发布→400 掩盖 OBS 配置问题。
+            if (e.getResponseCode() == 404 && "NoSuchKey".equals(e.getErrorCode())) {
+                log.warn("obs object not found (NoSuchKey), treat as absent: {}", path);
                 return null;
             }
             log.error("readOrNull failed: {}", path, e);
