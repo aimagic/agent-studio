@@ -234,7 +234,10 @@ async def _format_yield_result(
             (time.time() - start_time) if (time.time() - start_time) > 0 else 0.0
         )
         if isinstance(item, AIMessage):
-            if item.usage_metadata.finish_reason in [
+            # usage_metadata 可为 None（AIMessage 声明 Optional；非逐块挂 usage
+            # 的模型实现），此时按普通内容块处理，不得在判 finish 时解引用崩溃
+            item_usage = getattr(item, "usage_metadata", None)
+            if item_usage is not None and item_usage.finish_reason in [
                 "stop",
                 "function_call",
             ]:  # only process last message

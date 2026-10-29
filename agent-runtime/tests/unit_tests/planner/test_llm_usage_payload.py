@@ -240,6 +240,23 @@ class TestFormatYieldResult:
         _, finish_usage = self._consume(items, dict())
         assert "tpot_ms" not in finish_usage
 
+    def test_chunk_without_usage_metadata_is_content_not_crash(self):
+        """中间块 usage_metadata=None → 按内容块处理，不得解引用崩溃。
+
+        AIMessage.usage_metadata 声明 Optional；非逐块挂 usage 的模型
+        实现会出现 None 块，原先判 finish 时直接 .finish_reason 解引用
+        会 AttributeError 中断整个流处理。
+        """
+        items = self._stream(
+            AIMessage(content="a", usage_metadata=None),
+            AIMessage(content="b", usage_metadata=None),
+            AIMessage(content="done", usage_metadata=_usage()),
+        )
+        outputs, finish_usage = self._consume(items, dict())
+        assert finish_usage.get("usage") is not None
+        assert "tpot_ms" in finish_usage
+        assert any(out.get("content") == "a" for out in outputs)
+
     def test_tpot_unit_is_milliseconds(self, monkeypatch):
         """tpot_ms 单位锁定：time.time() 秒差须 ×1000 入毫秒键。
 
