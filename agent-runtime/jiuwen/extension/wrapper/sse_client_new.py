@@ -56,6 +56,20 @@ def exception_group_to_str_simple(eg: ExceptionGroup) -> str:
     )
 
 
+def _normalize_choose_tools(value):
+    """归一化 mcp_choose_tools：None 保持放行，序列转为 frozenset，
+    字符串/其他非法形态按空集处理（防子串匹配绕过白名单）。"""
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return frozenset(value)
+    logger.error(
+        "invalid mcp_choose_tools type %s, treat as empty (reject all tools)",
+        type(value).__name__,
+    )
+    return frozenset()
+
+
 class SSEClientNew(McpClient):
     """
     新版 SSE Client
@@ -77,7 +91,9 @@ class SSEClientNew(McpClient):
 
         self._plugin_dependency = config.params.get("plugin_dependency", {})
         self._tool_params = config.params.get("tool_params", [])
-        self._mcp_choose_tools = config.params.get("mcp_choose_tools")
+        self._mcp_choose_tools = _normalize_choose_tools(
+            config.params.get("mcp_choose_tools")
+        )
         self._auth = config.params.get("auth", {})
         self._input_parameters = config.params.get("input_parameters", {})
 
