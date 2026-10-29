@@ -927,7 +927,7 @@ class PlanExecuteMode(BaseMode):
             from jiuwen.planner.common.stream_post_utils import (
                 build_llm_end_payload,
                 convert_ai_message_to_llm_output,
-                create_trace_manager,
+                create_trace_manager_safely,
                 emit_trace_event,
             )
 
@@ -938,8 +938,9 @@ class PlanExecuteMode(BaseMode):
             self._log_llm_input(messages, tools)
 
             # OTel：StepExecute LLM 调用经 TraceManager 补用量/时延载荷；
-            # 事件经 emit_trace_event 隔离发射，遥测异常不改变业务语义
-            trace_manager = create_trace_manager(
+            # 事件经 emit_trace_event 隔离发射，manager 初始化走 safely 兜底，
+            # 遥测整体失效时步骤行为与接线前一致
+            trace_manager = create_trace_manager_safely(
                 llm=self.model,
                 functions=tools or [],
                 trace_handlers=getattr(self, "_trace_handlers", None),
@@ -947,9 +948,12 @@ class PlanExecuteMode(BaseMode):
             await emit_trace_event(trace_manager, "on_llm_start", messages)
             finish_usage = {}
             async for item in self.model.astream(llm_input):
-                # finish 块（stop/function_call）携带 usage_metadata，暂存供载荷构造
-                if getattr(item, "usage_metadata", None):
-                    finish_usage["usage"] = item.usage_metadata
+                # 仅 finish 块（stop/function_call 等终止标记）携带真实用量；
+                # 中间块的 usage_metadata 为默认空值但 pydantic 模型恒真，
+                # 无差别暂存会把空值滞留到载荷、真实用量被覆盖静默丢弃
+                item_usage = getattr(item, "usage_metadata", None)
+                if item_usage is not None and item_usage.finish_reason:
+                    finish_usage["usage"] = item_usage
                 self._process_stream_item(
                     item,
                     llm_output,

@@ -17,7 +17,7 @@ from jiuwen.common.llm_service.messages import HumanMessage, SystemMessage
 from jiuwen.common.log.base import logger
 from jiuwen.planner.common.stream_post_utils import (
     build_llm_end_payload,
-    create_trace_manager,
+    create_trace_manager_safely,
     emit_trace_event,
 )
 from jiuwen.prompt.template.template_manager import TemplateManager
@@ -106,8 +106,9 @@ class TaskUnderstandingModule:
         )
 
         # OTel：镜像 intention_detect 的接线，理解 LLM 调用补 on_llm_end 载荷；
-        # 事件经 emit_trace_event 隔离发射，遥测异常不改变业务语义
-        trace_manager = create_trace_manager(
+        # 事件经 emit_trace_event 隔离发射，manager 初始化走 safely 兜底——
+        # 遥测整体失效时 invoke 行为与接线前一致
+        trace_manager = create_trace_manager_safely(
             llm=self.llm,
             functions=[],
             trace_handlers=(runtime_data or {}).get("trace_handlers"),

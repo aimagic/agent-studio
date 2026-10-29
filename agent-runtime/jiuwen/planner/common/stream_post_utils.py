@@ -334,14 +334,38 @@ def create_trace_manager(llm: BaseChatModel, functions, trace_handlers):
     )
 
 
+def create_trace_manager_safely(llm: BaseChatModel, functions, trace_handlers):
+    """create_trace_manager 的兜底版：初始化失败返回 None（遥测停用）。
+
+    generate_manager 对非法 trace_handlers 形态可能抛错；plan/invoke 等
+    业务路径原本没有遥测依赖，初始化异常外传会把遥测故障变成业务故障
+    （规划重抛 / 理解兜底被跳过 / 步骤落入 error 分支）。失败只告警，
+    配合 emit_trace_event 的 None 容忍静默停用事件发射。
+    """
+    try:
+        return create_trace_manager(
+            llm=llm, functions=functions, trace_handlers=trace_handlers
+        )
+    except Exception as e:
+        logger.warning(
+            f"trace manager init failed, telemetry disabled: {e}",
+            simple_log="trace manager init failed",
+        )
+        return None
+
+
 async def emit_trace_event(trace_manager, method_name, *args):
-    """安全发射 TraceManager 事件：handler 异常不外传。
+    """安全发射 TraceManager 事件：handler 异常不外传，manager 为 None 时跳过。
 
     insight 层 _trace_event 直接调用 handler(*args) 并传播异常、无兜底；
     遥测事件若与业务逻辑共用 try 块，任一 handler 抛错会把成功的 LLM 调用
     误判进业务失败分支（规划被重抛 / 理解兜底 is_complex=False / 步骤变
-    error）。此处统一兜底：遥测失败只告警，不改变调用方业务语义。
+    error）。此处统一兜底：遥测失败只告警，不改变调用方业务语义；manager
+    初始化失败（create_trace_manager_safely 返回 None）时事件直接跳过
+    （初始化处已告警，不重复）。
     """
+    if trace_manager is None:
+        return
     try:
         await getattr(trace_manager, method_name)(*args)
     except Exception as e:

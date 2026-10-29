@@ -12,7 +12,10 @@ qwen._chat（ainvoke 落点）不打双时间戳——这些路径的 LLM span �
 - qwen._chat：requests_start_time / first_token_time 双时间戳打点，
   批式语义下 TTFT ≈ 整体请求时延（可换算、非负）；
 - 遥测事件经 emit_trace_event 隔离发射：任一 trace handler 抛错不得
-  改变业务语义（规划结果 / 复杂意图判断 / 步骤输出均保持成功路径）。
+  改变业务语义（规划结果 / 复杂意图判断 / 步骤输出均保持成功路径）；
+- 遥测初始化失败（create_trace_manager_safely 返回 None）停用事件不外传，
+  业务行为与接线前一致；LLM 成功后的解析/构建错误按原语义裸抛，
+  不在同一 trace 上补发 on_llm_error。
 """
 
 import asyncio
@@ -117,10 +120,15 @@ class _StubTaskUnderstandingModule(tum.TaskUnderstandingModule):
 
 
 def _install_stub_manager(monkeypatch, namespace, stub_manager):
-    """把 create_trace_manager 打桩为返回给定 TraceManager 桩。"""
+    """把 create_trace_manager_safely 打桩为返回给定 TraceManager 桩。"""
     monkeypatch.setattr(
-        namespace, "create_trace_manager", lambda *args, **kwargs: stub_manager
+        namespace, "create_trace_manager_safely", lambda *args, **kwargs: stub_manager
     )
+
+
+def _broken_create(*args, **kwargs):
+    """非法 trace_handlers 形态：模拟 generate_manager 初始化抛错。"""
+    raise TypeError("bad trace_handlers shape")
 
 
 class TestTaskPlanEmit:
@@ -137,7 +145,7 @@ class TestTaskPlanEmit:
             captured.update(kwargs)
             return stub_manager
 
-        monkeypatch.setattr(tpm, "create_trace_manager", fake_create)
+        monkeypatch.setattr(tpm, "create_trace_manager_safely", fake_create)
         monkeypatch.setattr(tpm, "TemplateManager", _no_template_manager)
 
         class StubLLM:
@@ -194,7 +202,7 @@ class TestTaskPlanEmit:
             captured.update(kwargs)
             return stub_manager
 
-        monkeypatch.setattr(tpm, "create_trace_manager", fake_create)
+        monkeypatch.setattr(tpm, "create_trace_manager_safely", fake_create)
         monkeypatch.setattr(tpm, "TemplateManager", _no_template_manager)
 
         class StubLLM:
@@ -237,6 +245,37 @@ class TestTaskPlanEmit:
         assert kinds == ["start", "error"]
         assert isinstance(stub_manager.events[-1][1], RuntimeError)
 
+    @staticmethod
+    def test_plan_parse_error_emits_no_llm_error(monkeypatch):
+        """LLM 成功但计划解析失败 → 按原语义裸抛，不补发 on_llm_error。
+
+        try 只罩 LLM 调用：同一 trace 上不得同时出现 on_llm_end 与
+        on_llm_error 双终止事件，规划错误也不得误报为 LLM 调用错误。
+        """
+        stub_manager = StubManager()
+        _install_stub_manager(monkeypatch, tpm, stub_manager)
+        monkeypatch.setattr(tpm, "TemplateManager", _no_template_manager)
+
+        class StubLLM:
+            async def ainvoke(self, messages):
+                return AIMessage(content='{"steps": []}', usage_metadata=_usage())
+
+        module = _StubTaskPlanModule(llm=StubLLM(), context_manager=None)
+
+        def bad_parse(content, task_id):
+            raise AttributeError("bad plan shape")
+
+        monkeypatch.setattr(module, "_parse_plan_result", bad_parse)
+
+        with pytest.raises(AttributeError):
+            asyncio.run(
+                module.plan(
+                    query="q", chat_history=[], matched_scene=None, filtered_tools=[]
+                )
+            )
+        # LLM 调用已成功终止（start/end），解析失败不得再叠加 error 事件
+        assert [e[0] for e in stub_manager.events] == ["start", "end"]
+
 
 class TestTaskUnderstandingEmit:
     @staticmethod
@@ -249,7 +288,7 @@ class TestTaskUnderstandingEmit:
             captured.update(kwargs)
             return stub_manager
 
-        monkeypatch.setattr(tum, "create_trace_manager", fake_create)
+        monkeypatch.setattr(tum, "create_trace_manager_safely", fake_create)
         monkeypatch.setattr(tum, "TemplateManager", _no_template_manager)
 
         class StubLLM:
@@ -303,11 +342,14 @@ class TestTaskUnderstandingEmit:
 def make_stream_mode(monkeypatch, stub_manager, model):
     """装配 _stream_llm_response 依赖的最小 PlanExecuteMode。
 
-    方法内部 from stream_post_utils import create_trace_manager 在
-    调用时解析模块属性，故打桩打在 spu 命名空间。多个测试类共用，
-    置于模块级（类内受保护成员跨类访问会触 G.CLS.11）。
+    被测方法内部 from stream_post_utils import create_trace_manager_safely
+    在调用时解析模块属性；这里打内层 create_trace_manager（safely 兜底
+    保持真实），初始化失败用例可对其二次覆盖。多个测试类共用，置于
+    模块级（类内受保护成员跨类访问会触 G.CLS.11）。
     """
-    _install_stub_manager(monkeypatch, spu, stub_manager)
+    monkeypatch.setattr(
+        spu, "create_trace_manager", lambda *args, **kwargs: stub_manager
+    )
     mode = object.__new__(PlanExecuteMode)
     mode.task_id = "t-pe"
     mode.model = model
@@ -374,6 +416,43 @@ class TestPlanExecuteStreamLlmEmit:
         kinds = [e[0] for e in stub_manager.events]
         assert kinds == ["start", "error"]
 
+    @staticmethod
+    def test_trailing_empty_usage_does_not_drop_real_usage(monkeypatch):
+        """尾随块的默认空 usage（pydantic 恒真）不得覆盖 finish 块真实用量。
+
+        无差别 last-wins 暂存下，finish 块之后到达的恒真空 usage 会把
+        真实用量静默替换成空值；只在带终止标记（finish_reason 非空）
+        的块上暂存即可锁住真实用量。
+        """
+        class StubModel:
+            @staticmethod
+            def astream(inputs, **kwargs):
+                async def gen():
+                    # 中间块：usage_metadata 恒真但为默认空值
+                    yield AIMessage(content="he", usage_metadata=UsageMetadata())
+                    # finish 块：终止标记 + 真实用量
+                    yield AIMessage(content="done", usage_metadata=_usage())
+                    # 尾随信号块：恒真默认空 usage，无终止标记
+                    yield AIMessage(content="", usage_metadata=UsageMetadata())
+
+                return gen()
+
+        stub_manager = StubManager()
+        mode = make_stream_mode(monkeypatch, stub_manager, StubModel())
+
+        llm_output = asyncio.run(
+            getattr(mode, "_stream_llm_response")(
+                [{"role": "user", "content": "hi"}], []
+            )
+        )
+
+        assert llm_output["content"] == "done"
+        payload = stub_manager.events[-1][1]
+        # finish 块的真实用量不被尾随空 usage 覆盖丢弃
+        assert payload[MODEL_USAGE]["total_tokens"] == 30
+        assert payload[USAGE_METADATA]["input_tokens"] == 10
+        assert payload[FINISH_REASON] == "stop"
+
 
 class TestTelemetryFailureIsolation:
     """遥测 handler 抛错不得把成功的业务调用误判进失败分支。"""
@@ -427,6 +506,65 @@ class TestTelemetryFailureIsolation:
 
         mode = make_stream_mode(monkeypatch, RaisingManager(), StubModel())
         # G.CLS.11：被测私有方法按字符串属性访问（测试直测内部路径）
+        llm_output = asyncio.run(
+            getattr(mode, "_stream_llm_response")(
+                [{"role": "user", "content": "hi"}], []
+            )
+        )
+        assert llm_output["content"] == "done"
+        assert "error" not in llm_output
+
+    @staticmethod
+    def test_task_plan_survives_manager_init_failure(monkeypatch):
+        """create_trace_manager 抛错 → 遥测停用（无事件），规划照常返回。"""
+        monkeypatch.setattr(spu, "create_trace_manager", _broken_create)
+        monkeypatch.setattr(tpm, "TemplateManager", _no_template_manager)
+
+        class StubLLM:
+            async def ainvoke(self, messages):
+                return AIMessage(
+                    content='{"steps": [{"step_idx": 1, "step_name": "s1"}]}',
+                    usage_metadata=_usage(),
+                )
+
+        module = _StubTaskPlanModule(llm=StubLLM(), context_manager=None)
+        plan = asyncio.run(
+            module.plan(
+                query="q", chat_history=[], matched_scene=None, filtered_tools=[]
+            )
+        )
+        assert len(plan.steps) == 1
+
+    @staticmethod
+    def test_task_understanding_survives_manager_init_failure(monkeypatch):
+        """create_trace_manager 抛错 → 复杂意图判断不被兜底成 False。"""
+        monkeypatch.setattr(spu, "create_trace_manager", _broken_create)
+        monkeypatch.setattr(tum, "TemplateManager", _no_template_manager)
+
+        class StubLLM:
+            async def ainvoke(self, messages):
+                return AIMessage(content="1", usage_metadata=_usage())
+
+        module = _StubTaskUnderstandingModule(llm=StubLLM(), context_manager=None)
+        result = asyncio.run(
+            module.invoke(query="q", chat_history=[], available_intents=[])
+        )
+        assert result.is_complex is True
+
+    @staticmethod
+    def test_plan_execute_step_survives_manager_init_failure(monkeypatch):
+        """create_trace_manager 抛错 → 步骤输出正常，不落入 error 分支。"""
+        class StubModel:
+            @staticmethod
+            def astream(inputs, **kwargs):
+                async def gen():
+                    yield AIMessage(content="done", usage_metadata=_usage())
+
+                return gen()
+
+        mode = make_stream_mode(monkeypatch, StubManager(), StubModel())
+        monkeypatch.setattr(spu, "create_trace_manager", _broken_create)
+
         llm_output = asyncio.run(
             getattr(mode, "_stream_llm_response")(
                 [{"role": "user", "content": "hi"}], []

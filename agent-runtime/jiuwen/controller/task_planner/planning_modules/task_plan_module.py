@@ -24,7 +24,7 @@ from jiuwen.controller.task_planner.planning_modules.plan_tracker import (
 )
 from jiuwen.planner.common.stream_post_utils import (
     build_llm_end_payload,
-    create_trace_manager,
+    create_trace_manager_safely,
     emit_trace_event,
 )
 from jiuwen.prompt.template.template_manager import TemplateManager
@@ -209,12 +209,16 @@ class TaskPlanModule:
         )
 
         # OTel：镜像 intention_detect 的接线，规划 LLM 调用补 on_llm_end 载荷；
-        # 事件经 emit_trace_event 隔离发射，遥测异常不改变业务语义
-        trace_manager = create_trace_manager(
+        # 事件经 emit_trace_event 隔离发射，manager 初始化走 safely 兜底——
+        # 遥测整体失效时 plan 行为与接线前一致
+        trace_manager = create_trace_manager_safely(
             llm=self.llm,
             functions=[],
             trace_handlers=(runtime_data or {}).get("trace_handlers"),
         )
+        # try 只罩 LLM 调用与其遥测：解析/构建失败属业务错误，按原语义直接
+        # 抛出，不得在同一 trace 上补发 on_llm_error（避免 end/error 双终止，
+        # 且规划错误不得误报为 LLM 调用错误）
         try:
             await emit_trace_event(
                 trace_manager, "on_llm_start", llm_input["messages"]
@@ -231,22 +235,6 @@ class TaskPlanModule:
                     total_time,
                 ),
             )
-
-            logger.info(
-                f"task_id: {task_id}| [TaskPlan] <LLM Output> {result.content}",
-                simple_log=f"task_id: {task_id}| [TaskPlan] <LLM Output>",
-            )
-
-            plan_dict = self._parse_plan_result(result.content, task_id)
-            execution_plan = self._build_execution_plan(plan_dict, matched_scene)
-
-            step_count = len(execution_plan.steps)
-            logger.info(
-                f"task_id: {task_id}| Task planning completed, total steps: {step_count}",
-                simple_log=f"task_id: {task_id}| Task planning completed",
-            )
-            return execution_plan
-
         except Exception as e:
             await emit_trace_event(trace_manager, "on_llm_error", e)
             logger.error(
@@ -254,6 +242,21 @@ class TaskPlanModule:
                 simple_log=f"task_id: {task_id}| Error during task planning",
             )
             raise
+
+        logger.info(
+            f"task_id: {task_id}| [TaskPlan] <LLM Output> {result.content}",
+            simple_log=f"task_id: {task_id}| [TaskPlan] <LLM Output>",
+        )
+
+        plan_dict = self._parse_plan_result(result.content, task_id)
+        execution_plan = self._build_execution_plan(plan_dict, matched_scene)
+
+        step_count = len(execution_plan.steps)
+        logger.info(
+            f"task_id: {task_id}| Task planning completed, total steps: {step_count}",
+            simple_log=f"task_id: {task_id}| Task planning completed",
+        )
+        return execution_plan
 
     def _build_system_prompt(self) -> str:
         """
