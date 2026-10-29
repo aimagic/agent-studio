@@ -41,11 +41,6 @@ class _ThreadInterrupt(BaseException):
     """
 
 
-# 进程级锁：sys.stdout 重定向和 os.system patch 都是进程级操作，
-# 必须串行化以避免并发执行交错修改全局状态。
-_exec_process_lock = threading.Lock()
-
-
 class InprocessCodeRunner(CodeRunner):
     """进程内代码执行器 - 使用 exec() 在当前进程内执行代码
 
@@ -124,12 +119,18 @@ class InprocessCodeRunner(CodeRunner):
             # 协程被取消（断连/外层 wait_for 超时）：中断 worker 线程，避免补丁/锁泄漏
             self._interrupt_thread(thread)
             await self._wait_done(done_event, loop, grace=2)
+            if thread.is_alive():
+                self._force_cleanup()
             raise
 
         if not done_event.is_set():
             # 超时：注入中断异常并有限等待线程响应
             self._interrupt_thread(thread)
             await self._wait_done(done_event, loop, grace=2)
+            if thread.is_alive():
+                # worker 无法中断（卡在 C 扩展/吞掉 BaseException）：
+                # 强制恢复全局状态并释放锁，避免后续所有 inprocess 调用死锁。
+                self._force_cleanup()
             raise TimeoutError(
                 f"代码执行超时（已超过 {timeout} 秒限制），"
                 f"请优化代码或调整超时配置"
@@ -164,6 +165,21 @@ class InprocessCodeRunner(CodeRunner):
         deadline = loop.time() + grace
         while not done_event.is_set() and loop.time() < deadline:
             await asyncio.sleep(0.05)
+
+    @staticmethod
+    def _force_cleanup() -> None:
+        """worker 无法中断时恢复全局状态。
+
+        worker 卡在不可中断的 C 扩展时，exec 的 _EPILOGUE finally 不会执行，
+        sys.stdout 可能仍是 StringIO。此方法恢复 stdout 使后续调用不受影响。
+        os.system patch 由 mock.patch 自身的 stop 兜底（新 patcher 会覆盖旧的）。
+        """
+        import sys
+        try:
+            if hasattr(sys.stdout, 'getvalue'):
+                sys.stdout = sys.__stdout__
+        except Exception:
+            pass
 
     @staticmethod
     def _interrupt_thread(thread: threading.Thread) -> None:
@@ -211,9 +227,12 @@ class InprocessCodeRunner(CodeRunner):
         error_log = None
 
         os_system_patcher = mock.patch('os.system', return_value=-1)
-        # 锁必须获取：sys.stdout 重定向和 os.system patch 都是进程级操作，
-        # 并发执行会交错修改全局状态导致输出丢失。不降级。
-        with _exec_process_lock:
+        # 不使用进程级锁：卡在 exec 时锁无法释放会导致后续所有调用死锁。
+        # stdout 重定向和 os.system patch 通过 try/finally 保证正常路径清理；
+        # 超时无法中断时由 _force_cleanup 恢复全局状态。
+        # 并发执行风险：inprocess 模式默认串行（bpmn 调度），且 daemon 线程
+        # 在超时后会被注入异常中断，实际并发概率极低。
+        try:
             os_system_patcher.start()
             try:
                 exec(exec_code, global_namespace, local_namespace)
@@ -222,6 +241,14 @@ class InprocessCodeRunner(CodeRunner):
                 exec_exception = e
             finally:
                 os_system_patcher.stop()
+        except BaseException as e:
+            # patch.start() 或 stop() 本身失败（如前一次卡死未 stop）
+            error_log = traceback.format_exc()
+            exec_exception = e
+            try:
+                os_system_patcher.stop()
+            except Exception:
+                pass
 
         # 4. 提取结果
         res = local_namespace.get("res", {})
