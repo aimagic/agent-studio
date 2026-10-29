@@ -947,13 +947,33 @@ class PlanExecuteMode(BaseMode):
             )
             await emit_trace_event(trace_manager, "on_llm_start", messages)
             finish_usage = {}
+            # TPOT（inter-token）掐表：与 _format_yield_result 同语义——只统计
+            # 非 finish 的内容块，首末块间隔 /（块数-1），×1000 入毫秒键；
+            # 单块/零块无意义不产出
+            tpot_baseline = time.time()
+            first_chunk_elapsed = None
+            last_chunk_elapsed = None
+            chunk_count = 0
             async for item in self.model.astream(llm_input):
                 # 仅 finish 块（stop/function_call 等终止标记）携带真实用量；
                 # 中间块的 usage_metadata 为默认空值但 pydantic 模型恒真，
                 # 无差别暂存会把空值滞留到载荷、真实用量被覆盖静默丢弃
                 item_usage = getattr(item, "usage_metadata", None)
+                is_finish_block = item_usage is not None and (
+                    item_usage.finish_reason in ("stop", "function_call")
+                )
                 if item_usage is not None and item_usage.finish_reason:
                     finish_usage["usage"] = item_usage
+                if (
+                    isinstance(item, AIMessage)
+                    and not is_finish_block
+                    and item.content
+                ):
+                    chunk_elapsed = time.time() - tpot_baseline
+                    if first_chunk_elapsed is None:
+                        first_chunk_elapsed = chunk_elapsed
+                    last_chunk_elapsed = chunk_elapsed
+                    chunk_count += 1
                 self._process_stream_item(
                     item,
                     llm_output,
@@ -964,6 +984,16 @@ class PlanExecuteMode(BaseMode):
 
             if not llm_output.get("content") and content_parts:
                 llm_output["content"] = "".join(content_parts)
+            if (
+                chunk_count > 1
+                and first_chunk_elapsed is not None
+                and last_chunk_elapsed is not None
+            ):
+                finish_usage["tpot_ms"] = (
+                    (last_chunk_elapsed - first_chunk_elapsed)
+                    * 1000
+                    / (chunk_count - 1)
+                )
             await emit_trace_event(
                 trace_manager,
                 "on_llm_end",
@@ -971,6 +1001,7 @@ class PlanExecuteMode(BaseMode):
                     llm_output.get("content", ""),
                     finish_usage.get("usage"),
                     round(time.time() - start_time, 2),
+                    tpot_ms=finish_usage.get("tpot_ms"),
                 ),
             )
         except Exception as e:

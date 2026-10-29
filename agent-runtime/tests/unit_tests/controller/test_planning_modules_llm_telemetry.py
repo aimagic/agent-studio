@@ -8,7 +8,8 @@ qwen._chat（ainvoke 落点）不打双时间戳——这些路径的 LLM span �
 
 - task_plan / task_understanding：镜像 intention_detect 接线，on_llm_end
   载荷按 core handler 约定键名携带 usage_metadata / finish_reason；
-- PlanExecute StepExecute：astream finish 块的 usage_metadata 进入载荷；
+- PlanExecute StepExecute：astream finish 块的 usage_metadata 进入载荷，
+  内容块掐表产出 TPOT（inter-token，单位毫秒）；
 - qwen._chat：requests_start_time / first_token_time 双时间戳打点，
   批式语义下 TTFT ≈ 整体请求时延（可换算、非负）；
 - 遥测事件经 emit_trace_event 隔离发射：任一 trace handler 抛错不得
@@ -24,6 +25,7 @@ import pytest
 
 from jiuwen.common.llm_service.language_model import qwen as qwen_module
 from jiuwen.common.llm_service.messages import AIMessage, HumanMessage, UsageMetadata
+from jiuwen.controller.agent.control_mode import plan_execute_mode as pem
 from jiuwen.controller.agent.control_mode.plan_execute_mode import PlanExecuteMode
 from jiuwen.controller.task_planner.planning_modules import (
     task_plan_module as tpm,
@@ -392,6 +394,50 @@ class TestPlanExecuteStreamLlmEmit:
         assert payload[MODEL_USAGE]["total_tokens"] == 30
         assert payload[USAGE_METADATA]["first_token_time"] == pytest.approx(0.2)
         assert payload[FINISH_REASON] == "stop"
+        # 两个内容块 → TPOT 可算（真实掐表，只锁存在性与非负）
+        assert payload[USAGE_METADATA]["inter_token_latency_ms"] >= 0
+
+    @staticmethod
+    def test_stream_tpot_unit_is_milliseconds(monkeypatch):
+        """StepExecute TPOT 单位锁定：time.time() 秒差须 ×1000 入毫秒键。
+
+        假钟每调用前进 0.1s：两内容块间隔 0.1s → TPOT 应为 100ms
+        （若漏乘 1000 会得到 0.1）。
+        """
+
+        class _StepClock:
+            def __init__(self):
+                self._now = 1000.0
+
+            def time(self):
+                self._now += 0.1
+                return self._now
+
+        monkeypatch.setattr(pem.time, "time", _StepClock().time)
+
+        class StubModel:
+            @staticmethod
+            def astream(inputs, **kwargs):
+                async def gen():
+                    yield AIMessage(content="a", usage_metadata=UsageMetadata())
+                    yield AIMessage(content="b", usage_metadata=UsageMetadata())
+                    yield AIMessage(content="done", usage_metadata=_usage())
+
+                return gen()
+
+        stub_manager = StubManager()
+        mode = make_stream_mode(monkeypatch, stub_manager, StubModel())
+
+        asyncio.run(
+            getattr(mode, "_stream_llm_response")(
+                [{"role": "user", "content": "hi"}], []
+            )
+        )
+
+        payload = stub_manager.events[-1][1]
+        assert payload[USAGE_METADATA]["inter_token_latency_ms"] == pytest.approx(
+            100.0
+        )
 
     @staticmethod
     def test_stream_llm_response_error_emits_error_event(monkeypatch):
@@ -452,6 +498,8 @@ class TestPlanExecuteStreamLlmEmit:
         assert payload[MODEL_USAGE]["total_tokens"] == 30
         assert payload[USAGE_METADATA]["input_tokens"] == 10
         assert payload[FINISH_REASON] == "stop"
+        # 单内容块无 inter-token 间隔，TPOT 不产出
+        assert "inter_token_latency_ms" not in payload[USAGE_METADATA]
 
 
 class TestTelemetryFailureIsolation:
