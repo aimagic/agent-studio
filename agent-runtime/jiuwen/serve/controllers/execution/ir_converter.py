@@ -2712,6 +2712,12 @@ class IRConverter:
             _timeout = -1.0
             _max_retries = 0
             exception_config = None
+        # MCP 节点：Vertex 层 asyncio.wait_for 直接用 node_config.timeout，
+        # 需在此处与 MCP_TIME_OUT_SECONDS 取小，使兜底上限在编排层生效。
+        if node_type in {"jiuwen.mcp", "jiuwen.flowMcp"} and _timeout > 0:
+            from jiuwen.orchestration.flow.mcp_timeout import parse_mcp_time_out_seconds
+
+            _timeout = min(_timeout, parse_mcp_time_out_seconds())
         _comp_reg: dict[str, Any] = {
             "timeout": _timeout,
             "max_retries": _max_retries,
