@@ -554,9 +554,9 @@ class FlowCode(WorkflowComponent):
                 exec_env,
                 exec_timeout,
             )
-            active_runner = self._code_runner
+            run_function_log = ""
             try:
-                result_dict = await self._code_runner.run(
+                run_ret = await self._code_runner.run(
                     user_code=self._conf.code,
                     inputs=user_fields,
                     timeout=exec_timeout,
@@ -582,8 +582,13 @@ class FlowCode(WorkflowComponent):
                 else:
                     raise
 
+            # 所有 runner 的 run() 统一返回 CodeRunResult（含 result + function_log），
+            # 从返回值获取 function_log，避免并发调用下实例属性被覆盖。
+            result_dict = run_ret.result
+            run_function_log = run_ret.function_log
+
             # 4.5 将 function_log（用户 print 输出）通过 tracer 发送到 onInvokeData
-            function_log = getattr(active_runner, "function_log", "")
+            function_log = run_function_log
             if function_log:
                 try:
                     await session.trace(data={"function_log": function_log})

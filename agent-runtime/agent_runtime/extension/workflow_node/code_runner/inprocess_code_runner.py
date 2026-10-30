@@ -14,6 +14,7 @@ import asyncio
 import copy
 import ctypes
 import logging
+import os
 import sys
 import threading
 import traceback
@@ -21,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 from unittest import mock
 
-from agent_runtime.extension.workflow_node.code_runner.base_code_runner import CodeRunner
+from agent_runtime.extension.workflow_node.code_runner.base_code_runner import CodeRunner, CodeRunResult
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
 
@@ -30,12 +31,17 @@ _logger = logging.getLogger(__name__)
 
 @dataclass
 class _ExecResult:
-    """线程执行结果容器"""
+    """线程执行结果容器（内部）"""
 
     result: Any = None
     exception: Optional[BaseException] = None
     error_log: Optional[str] = None
     function_log: str = ""
+    # 锁内基线：在 _exec_process_lock 获取成功后、stdout 重定向和 os.system
+    # patch 前捕获。供超时后 _force_cleanup 恢复全局状态使用。
+    # 必须在锁内捕获，否则可能保存到别的并发执行遗留的 StringIO / mock。
+    saved_stdout: Any = None
+    saved_os_system: Any = None
 
 
 class _ThreadInterrupt(BaseException):
@@ -78,9 +84,11 @@ class InprocessCodeRunner(CodeRunner):
     )
 
     def __init__(self):
+        # 向后兼容：仍保留实例属性，供 getattr(active_runner, "function_log") 使用。
+        # 并发安全版本应从 run() 的返回值 CodeRunResult.function_log 读取。
         self.function_log: str = ""
 
-    async def run(self, user_code: str, inputs: dict, timeout: int = 900) -> dict:
+    async def run(self, user_code: str, inputs: dict, timeout: int = 900) -> CodeRunResult:
         """在进程内执行用户代码（带超时控制）
 
         Args:
@@ -89,15 +97,14 @@ class InprocessCodeRunner(CodeRunner):
             timeout: 超时时间（秒），超时后向执行线程注入 _ThreadInterrupt 中断
 
         Returns:
-            dict: main 函数的返回值
+            CodeRunResult: 包含 result(dict) 和 function_log(str) 的结果对象。
+            兼容旧调用方：self.function_log 也会同步更新。
 
         Raises:
             TimeoutError: 执行超时
             Exception: 用户代码抛出的原始异常
             BuildError: 返回值非 dict 时抛出
         """
-        saved_stdout = sys.stdout
-
         container = _ExecResult()
         done_event = threading.Event()
 
@@ -113,6 +120,7 @@ class InprocessCodeRunner(CodeRunner):
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
 
+        # 在 event loop 上轮询 done_event，不占用任何线程池线程。
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         try:
@@ -125,24 +133,30 @@ class InprocessCodeRunner(CodeRunner):
             self._interrupt_thread(thread)
             await self._wait_done(done_event, loop, grace=2)
             if thread.is_alive():
-                self._force_cleanup(saved_stdout)
+                self._force_cleanup(container)
             raise
 
         if not done_event.is_set():
+            # 超时：注入中断异常并有限等待线程响应
             self._interrupt_thread(thread)
             await self._wait_done(done_event, loop, grace=2)
             if thread.is_alive():
-                self._force_cleanup(saved_stdout)
+                self._force_cleanup(container)
             raise TimeoutError(
                 f"代码执行超时（已超过 {timeout} 秒限制），"
                 f"请优化代码或调整超时配置"
             )
 
-        self.function_log = container.function_log
+        # 线程执行完毕，收集结果（先拼 function_log 再 raise，确保异常时也能拿到堆栈）
+        function_log = container.function_log
         if container.error_log:
-            self.function_log += container.error_log[
-                container.error_log.find('local_namespace') + 17:
-            ]
+            idx = container.error_log.find('local_namespace')
+            if idx != -1:
+                function_log += container.error_log[idx + 17:]
+            else:
+                function_log += container.error_log
+        # 向后兼容：同步设置实例属性
+        self.function_log = function_log
         if container.exception is not None:
             raise container.exception
 
@@ -154,7 +168,7 @@ class InprocessCodeRunner(CodeRunner):
                 reason="main() must return a dict",
                 workflow="n/a",
             )
-        return res
+        return CodeRunResult(result=res, function_log=function_log)
 
     @staticmethod
     async def _wait_done(
@@ -168,17 +182,28 @@ class InprocessCodeRunner(CodeRunner):
             await asyncio.sleep(0.05)
 
     @staticmethod
-    def _force_cleanup(saved_stdout: Any) -> None:
+    def _force_cleanup(container: _ExecResult) -> None:
         """worker 无法中断时恢复全局状态。
 
-        恢复 sys.stdout 为执行前保存的值（不用 sys.__stdout__，避免破坏宿主自定义 stdout）。
-        _exec_process_lock 可能仍被 worker 持有，后续调用会在 _LOCK_ACQUIRE_TIMEOUT 秒后报错。
+        使用 _exec_sync 在锁内捕获的基线（container.saved_stdout /
+        container.saved_os_system）恢复全局 stdout 和 os.system，
+        确保超时后进程级状态回到执行前基线，而非其他并发执行遗留的 StringIO / mock。
+
+        注意：_exec_process_lock 可能仍被 worker 持有，后续调用会在
+        _LOCK_ACQUIRE_TIMEOUT 秒后抛出明确错误，不会永久死锁。
         """
+        saved_stdout = container.saved_stdout
+        saved_os_system = container.saved_os_system
         try:
-            if sys.stdout is not saved_stdout:
+            if saved_stdout is not None and sys.stdout is not saved_stdout:
                 sys.stdout = saved_stdout
         except Exception as e:
             _logger.warning(f"Failed to restore sys.stdout in _force_cleanup: {e}")
+        try:
+            if saved_os_system is not None and os.system is not saved_os_system:
+                os.system = saved_os_system
+        except Exception as e:
+            _logger.warning(f"Failed to restore os.system in _force_cleanup: {e}")
 
     @staticmethod
     def _interrupt_thread(thread: threading.Thread) -> None:
@@ -214,12 +239,19 @@ class InprocessCodeRunner(CodeRunner):
         error_log = None
 
         os_system_patcher = mock.patch('os.system', return_value=-1)
+        # 进程级锁串行化：sys.stdout 重定向和 os.system patch 都是进程级操作，
+        # bpmn 并发调度时必须串行以避免交错破坏全局状态。
+        # 带超时获取：前一次执行卡死时，后续调用在 _LOCK_ACQUIRE_TIMEOUT 秒后报错，不永久阻塞。
         lock_acquired = _exec_process_lock.acquire(timeout=_LOCK_ACQUIRE_TIMEOUT)
         if not lock_acquired:
             raise RuntimeError(
                 "代码执行锁获取超时：前一次 inprocess 执行可能因不可中断的 C 扩展"
                 "而未释放锁。建议改用 LOCAL_CODE_EXEC_MODE=subprocess 获取可靠硬超时。"
             )
+        # 锁内捕获全局基线：此时不可能有别的并发执行正在重定向 stdout / patch os.system，
+        # 因此保存到的一定是真实基线。供超时后 _force_cleanup 使用。
+        container.saved_stdout = sys.stdout
+        container.saved_os_system = os.system
         try:
             os_system_patcher.start()
             try:
