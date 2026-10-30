@@ -119,6 +119,12 @@ class McpAPI(Invokable, ABC):
         )
         await trace_manager.on_plugin_start(inputs)
 
+        # 从编排层获取节点超时，与 MCP_TIME_OUT_SECONDS 取小作为客户端实际超时
+        node_timeout = kwargs.pop("node_timeout", 0)
+        effective_timeout = mcp_time_out_seconds
+        if node_timeout > 0:
+            effective_timeout = min(mcp_time_out_seconds, node_timeout)
+
         try:
             request_params = await self.request_params_creator.create(inputs, **kwargs)
             # D-02（SYNC-01 P3.4）：不向第三方（MCP）传播平台关联 Header
@@ -160,8 +166,8 @@ class McpAPI(Invokable, ABC):
                 async with streamablehttp_client(
                     tmp_url,
                     headers=request_params.headers,
-                    sse_read_timeout=mcp_time_out_seconds,
-                    timeout=mcp_time_out_seconds,
+                    sse_read_timeout=effective_timeout,
+                    timeout=effective_timeout,
                 ) as (
                     read_stream,
                     write_stream,
@@ -182,8 +188,8 @@ class McpAPI(Invokable, ABC):
                 async with sse_client(
                     tmp_url,
                     headers=request_params.headers,
-                    sse_read_timeout=mcp_time_out_seconds,
-                    timeout=mcp_time_out_seconds,
+                    sse_read_timeout=effective_timeout,
+                    timeout=effective_timeout,
                 ) as streams:
                     async with ClientSession(*streams) as session:
                         await session.initialize()

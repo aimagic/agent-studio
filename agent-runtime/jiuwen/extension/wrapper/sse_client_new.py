@@ -313,13 +313,18 @@ class SSEClientNew(McpClient):
         )
         tmp_url = self._build_mcp_url(request_params)
 
+        # 节点超时与 MCP_TIME_OUT_SECONDS 取小
+        effective_timeout = mcp_time_out_seconds
+        if timeout > 0:
+            effective_timeout = min(mcp_time_out_seconds, timeout)
+
         logger.info(f"Calling tool '{tool_name}' via SSE with arguments: {arguments}")
 
         async with sse_client(
             tmp_url,
             headers=request_params.headers,
-            sse_read_timeout=mcp_time_out_seconds,
-            timeout=mcp_time_out_seconds,
+            sse_read_timeout=effective_timeout,
+            timeout=effective_timeout,
         ) as streams:
             async with ClientSession(*streams) as session:
                 await session.initialize()
