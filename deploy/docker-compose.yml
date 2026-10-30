@@ -303,6 +303,8 @@ services:
       CODE_BLACK_LIST: ${CODE_BLACK_LIST:-["subprocess","os.system","os.popen","os.exec","os.spawn","os.fork","os.kill","os.remove","os.unlink","os.rmdir","os.rename","os.chmod","os.chown","__import__","importlib","ctypes","socket","shutil","multiprocessing"]}
       # 是否允许本地代码执行（默认 false，仅限可信内网设为 true）
       ALLOW_LOCAL_CODE_EXEC: ${ALLOW_LOCAL_CODE_EXEC:-false}
+      # 本地代码执行兜底超时（秒）
+      LOCAL_CODE_EXEC_TIMEOUT: ${LOCAL_CODE_EXEC_TIMEOUT:-900}
       OPENSEARCH_HOSTS: ${OPENSEARCH_HOSTS:-}
       OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-admin}
       OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD:-admin}
