@@ -19,7 +19,7 @@ from jiuwen.controller.common.constants import WorkflowConstants
 from jiuwen.insight.manager import TraceManager
 from jiuwen.insight.utils import get_instance_info
 from jiuwen.orchestration import Invokable
-from jiuwen.orchestration.flow.exception_handler import parse_mcp_time_out_seconds
+from jiuwen.orchestration.flow.mcp_timeout import parse_mcp_time_out_seconds
 from jiuwen.orchestration.flow.string_utils import is_boolean_string, string_to_bool
 from jiuwen.orchestration.utils import Input, Output
 from jiuwen.plugin.common import constant

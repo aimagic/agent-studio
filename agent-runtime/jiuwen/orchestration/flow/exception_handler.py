@@ -1,18 +1,13 @@
 #  Copyright (c) Huawei Technologies Co., Ltd. 2024-2024. All rights reserved.
 
-import math
-import os
-
 from jiuwen.orchestration.common.runtime_env import (
     REQUEST_TIMEOUT_MCP,
     REQUEST_TIMEOUT_WORKFLOW,
 )
 from jiuwen.orchestration.flow.base_workflow import Node
-from jiuwen.orchestration.flow.constant import (
-    DEFAULT_MCP_TIME_OUT_SECONDS,
-    ENVIRONMENT_VARIABLES,
-)
+from jiuwen.orchestration.flow.constant import ENVIRONMENT_VARIABLES
 from jiuwen.orchestration.flow.enum import NodeType
+from jiuwen.orchestration.flow.mcp_timeout import parse_mcp_time_out_seconds
 from jiuwen.orchestration.flow.runtime_context import RuntimeContext
 
 MS_P_S = 1000
@@ -57,20 +52,6 @@ def _get_timeout(env: dict, key: str, timeout: float) -> float:
     # 返回转换后的超时时间（毫秒转秒）
     new_timeout = val / MS_P_S
     return max(new_timeout, timeout)
-
-
-def parse_mcp_time_out_seconds() -> float:
-    """读取 MCP_TIME_OUT_SECONDS 环境变量，缺失/非数字/非正值时回退到默认值。"""
-    raw = os.getenv("MCP_TIME_OUT_SECONDS")
-    if raw is None:
-        return DEFAULT_MCP_TIME_OUT_SECONDS
-    try:
-        value = float(raw)
-    except ValueError:
-        return DEFAULT_MCP_TIME_OUT_SECONDS
-    if value <= 0 or math.isnan(value):
-        return DEFAULT_MCP_TIME_OUT_SECONDS
-    return value
 
 
 def _get_mcp_timeout(env: dict, key: str, timeout: float) -> float:

@@ -18,7 +18,7 @@ from urllib.parse import urlencode
 
 from jiuwen.common.configs.env_constants import PLUGIN_SSL_API_CERT_KEY
 from jiuwen.extension.wrapper.mcp_tool_wrapper import JIUWEN_RUNTIME_KWARGS
-from jiuwen.orchestration.flow.exception_handler import parse_mcp_time_out_seconds
+from jiuwen.orchestration.flow.mcp_timeout import parse_mcp_time_out_seconds
 from jiuwen.orchestration.flow.string_utils import is_boolean_string, string_to_bool
 from jiuwen.plugin.common import exception
 from jiuwen.plugin.models.api_utils import ApiUtils
