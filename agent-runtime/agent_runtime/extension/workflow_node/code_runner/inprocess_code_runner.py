@@ -13,6 +13,8 @@
 import asyncio
 import copy
 import ctypes
+import logging
+import sys
 import threading
 import traceback
 from dataclasses import dataclass
@@ -22,6 +24,8 @@ from unittest import mock
 from agent_runtime.extension.workflow_node.code_runner.base_code_runner import CodeRunner
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -41,6 +45,13 @@ class _ThreadInterrupt(BaseException):
     """
 
 
+# 进程级锁：sys.stdout 重定向和 os.system patch 都是进程级全局操作，
+# bpmn 会并发调度组件（MAX_PARALLEL_COMPONENT_NUM），必须串行化避免交错破坏全局状态。
+# 带超时获取：前一次执行卡死时，后续调用不永久阻塞，而是抛出明确错误。
+_exec_process_lock = threading.Lock()
+_LOCK_ACQUIRE_TIMEOUT = 30
+
+
 class InprocessCodeRunner(CodeRunner):
     """进程内代码执行器 - 使用 exec() 在当前进程内执行代码
 
@@ -48,11 +59,9 @@ class InprocessCodeRunner(CodeRunner):
 
     超时机制：exec() 在独立守护线程中执行，主协程在 event loop 上轮询完成状态；
     超时后通过 PyThreadState_SetAsyncExc 向工作线程注入 _ThreadInterrupt 以中断 exec。
-    注意：若用户代码进入不可中断的 C 扩展（如 time.sleep 的底层实现），
-    注入的异常会延迟到下一次 Python 字节码调度时才生效。
+    注意：若用户代码进入不可中断的 C 扩展，注入的异常会延迟到下一次 Python 字节码调度时生效。
     """
 
-    # stdout 重定向前缀：exec 体内先建 StringIO 并接管 sys.stdout
     _PROLOGUE = (
         "import sys\n"
         "import io\n"
@@ -60,7 +69,6 @@ class InprocessCodeRunner(CodeRunner):
         "original_stdout = sys.stdout\n"
         "sys.stdout = buffer\n"
     )
-    # stdout 恢复 + console_log 提取后缀：在 try/finally 中还原并收集 print 输出
     _EPILOGUE = (
         "\ntry:\n"
         "    res = main(args)\n"
@@ -88,6 +96,8 @@ class InprocessCodeRunner(CodeRunner):
             Exception: 用户代码抛出的原始异常
             BuildError: 返回值非 dict 时抛出
         """
+        saved_stdout = sys.stdout
+
         container = _ExecResult()
         done_event = threading.Event()
 
@@ -95,8 +105,6 @@ class InprocessCodeRunner(CodeRunner):
             try:
                 self._exec_sync(user_code, inputs, container)
             except BaseException as e:
-                # _exec_sync 之外的异常（如 deepcopy 失败）也要写入 container，
-                # 否则主协程会因 container.result 为 None 误报 "main() must return a dict"
                 container.exception = e
                 container.error_log = traceback.format_exc()
             finally:
@@ -105,8 +113,6 @@ class InprocessCodeRunner(CodeRunner):
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
 
-        # 在 event loop 上轮询 done_event，不占用任何线程池线程；
-        # 超时/取消后可直接进入中断逻辑，不受阻塞的 run_in_executor 约束。
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         try:
@@ -116,27 +122,22 @@ class InprocessCodeRunner(CodeRunner):
                     break
                 await asyncio.sleep(min(0.05, remaining))
         except asyncio.CancelledError:
-            # 协程被取消（断连/外层 wait_for 超时）：中断 worker 线程，避免补丁/锁泄漏
             self._interrupt_thread(thread)
             await self._wait_done(done_event, loop, grace=2)
             if thread.is_alive():
-                self._force_cleanup()
+                self._force_cleanup(saved_stdout)
             raise
 
         if not done_event.is_set():
-            # 超时：注入中断异常并有限等待线程响应
             self._interrupt_thread(thread)
             await self._wait_done(done_event, loop, grace=2)
             if thread.is_alive():
-                # worker 无法中断（卡在 C 扩展/吞掉 BaseException）：
-                # 强制恢复全局状态并释放锁，避免后续所有 inprocess 调用死锁。
-                self._force_cleanup()
+                self._force_cleanup(saved_stdout)
             raise TimeoutError(
                 f"代码执行超时（已超过 {timeout} 秒限制），"
                 f"请优化代码或调整超时配置"
             )
 
-        # 线程执行完毕，收集结果（先拼 function_log 再 raise，确保异常时也能拿到堆栈）
         self.function_log = container.function_log
         if container.error_log:
             self.function_log += container.error_log[
@@ -167,41 +168,30 @@ class InprocessCodeRunner(CodeRunner):
             await asyncio.sleep(0.05)
 
     @staticmethod
-    def _force_cleanup() -> None:
+    def _force_cleanup(saved_stdout: Any) -> None:
         """worker 无法中断时恢复全局状态。
 
-        worker 卡在不可中断的 C 扩展时，exec 的 _EPILOGUE finally 不会执行，
-        sys.stdout 可能仍是 StringIO。此方法恢复 stdout 使后续调用不受影响。
-        os.system patch 由 mock.patch 自身的 stop 兜底（新 patcher 会覆盖旧的）。
+        恢复 sys.stdout 为执行前保存的值（不用 sys.__stdout__，避免破坏宿主自定义 stdout）。
+        _exec_process_lock 可能仍被 worker 持有，后续调用会在 _LOCK_ACQUIRE_TIMEOUT 秒后报错。
         """
-        import sys
         try:
-            if hasattr(sys.stdout, 'getvalue'):
-                sys.stdout = sys.__stdout__
+            if sys.stdout is not saved_stdout:
+                sys.stdout = saved_stdout
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"Failed to restore sys.stdout in _force_cleanup: {e}")
+            _logger.warning(f"Failed to restore sys.stdout in _force_cleanup: {e}")
 
     @staticmethod
     def _interrupt_thread(thread: threading.Thread) -> None:
-        """向工作线程注入 _ThreadInterrupt 以中断 exec。
-
-        通过 ctypes 调用 CPython 内部 API 向目标线程的当前帧抛出异常。
-        对于纯 Python 字节码（循环、IO 等）可立即中断；
-        若线程正阻塞在不可中断的 C 扩展中，异常会延迟到返回 Python 层时生效。
-        """
+        """向工作线程注入 _ThreadInterrupt 以中断 exec。"""
         if not thread.is_alive():
             return
         tid = thread.ident
         if tid is None:
             return
-        # PyThreadState_SetAsyncExc(thread_id, exception_object)
-        # 返回 0 表示线程已结束，1 表示成功注入，>1 表示目标线程有多个栈帧（罕见）
         ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
             ctypes.c_ulong(tid), ctypes.py_object(_ThreadInterrupt)
         )
         if ret > 1:
-            # 多帧场景：清除异常注入，避免影响其他线程
             ctypes.pythonapi.PyThreadState_SetAsyncExc(
                 ctypes.c_ulong(tid), ctypes.c_long(0)
             )
@@ -210,13 +200,9 @@ class InprocessCodeRunner(CodeRunner):
         self, user_code: str, inputs: dict, container: _ExecResult
     ) -> None:
         """同步执行用户代码（在工作线程中调用，结果写入 container）"""
-        # 1. 深拷贝 inputs 防止污染
         inputs = copy.deepcopy(inputs)
-
-        # 2. 构建执行代码：stdout 重定向 + 用户代码 + try/finally 恢复
         exec_code = self._PROLOGUE + user_code + self._EPILOGUE
 
-        # 3. 执行代码（每次创建局部 os.system patcher，避免实例级补丁在并发下残留）
         env = {
             "args": inputs,
             "__builtins__": __builtins__,
@@ -228,11 +214,12 @@ class InprocessCodeRunner(CodeRunner):
         error_log = None
 
         os_system_patcher = mock.patch('os.system', return_value=-1)
-        # 不使用进程级锁：卡在 exec 时锁无法释放会导致后续所有调用死锁。
-        # stdout 重定向和 os.system patch 通过 try/finally 保证正常路径清理；
-        # 超时无法中断时由 _force_cleanup 恢复全局状态。
-        # 并发执行风险：inprocess 模式默认串行（bpmn 调度），且 daemon 线程
-        # 在超时后会被注入异常中断，实际并发概率极低。
+        lock_acquired = _exec_process_lock.acquire(timeout=_LOCK_ACQUIRE_TIMEOUT)
+        if not lock_acquired:
+            raise RuntimeError(
+                "代码执行锁获取超时：前一次 inprocess 执行可能因不可中断的 C 扩展"
+                "而未释放锁。建议改用 LOCAL_CODE_EXEC_MODE=subprocess 获取可靠硬超时。"
+            )
         try:
             os_system_patcher.start()
             try:
@@ -243,22 +230,18 @@ class InprocessCodeRunner(CodeRunner):
             finally:
                 os_system_patcher.stop()
         except BaseException as e:
-            # patch.start() 或 stop() 本身失败（如前一次卡死未 stop）
             error_log = traceback.format_exc()
             exec_exception = e
             try:
                 os_system_patcher.stop()
             except Exception as stop_err:
-                import logging
-                logging.getLogger(__name__).warning(
-                    f"Failed to stop os.system patcher: {stop_err}"
-                )
+                _logger.warning(f"Failed to stop os.system patcher: {stop_err}")
+        finally:
+            _exec_process_lock.release()
 
-        # 4. 提取结果
         res = local_namespace.get("res", {})
         console_log = local_namespace.get("console_log", "")
 
-        # 5. 写入容器（主协程读取）
         container.result = res
         container.function_log = console_log
         if error_log is not None:

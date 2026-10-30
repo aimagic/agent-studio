@@ -180,3 +180,15 @@ class TestInprocessCodeRunnerTimeout:
         code = "def main(args): return {'ok': True}"
         result = await runner.run(user_code=code, inputs={}, timeout=10)
         assert result == {"ok": True}
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_stdout_restored_after_timeout():
+        """超时后 sys.stdout 恢复为执行前的值"""
+        import sys
+        runner = InprocessCodeRunner()
+        original_stdout = sys.stdout
+        code = "def main(args):\n    while True:\n        pass\n    return {}"
+        with pytest.raises(TimeoutError):
+            await runner.run(user_code=code, inputs={}, timeout=1)
+        assert sys.stdout is original_stdout
