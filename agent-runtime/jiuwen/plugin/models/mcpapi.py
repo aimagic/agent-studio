@@ -19,7 +19,7 @@ from jiuwen.controller.common.constants import WorkflowConstants
 from jiuwen.insight.manager import TraceManager
 from jiuwen.insight.utils import get_instance_info
 from jiuwen.orchestration import Invokable
-from jiuwen.orchestration.flow.constant import DEFAULT_MCP_TIME_OUT_SECONDS
+from jiuwen.orchestration.flow.exception_handler import parse_mcp_time_out_seconds
 from jiuwen.orchestration.flow.string_utils import is_boolean_string, string_to_bool
 from jiuwen.orchestration.utils import Input, Output
 from jiuwen.plugin.common import constant
@@ -37,7 +37,7 @@ time_out_seconds = float(
     os.getenv(PLUGIN_REQUEST_TIMEOUT_KEY, constant.REQUEST_TIME_OUT)
 )
 time_out_aiohttp = aiohttp.ClientTimeout(total=time_out_seconds)
-mcp_time_out_seconds = float(os.getenv("MCP_TIME_OUT_SECONDS", DEFAULT_MCP_TIME_OUT_SECONDS))
+mcp_time_out_seconds = parse_mcp_time_out_seconds()
 
 
 def flatten_exception_group(eg: ExceptionGroup | BaseException) -> list[BaseException]:
